@@ -54,4 +54,4 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --no-install-package specialist-description
       - name: Run tests
-        run: uv run --no-sync pytest || [ $? -eq 5 ]
+        run: uv run --no-sync pytest

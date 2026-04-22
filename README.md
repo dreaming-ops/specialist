@@ -10,7 +10,7 @@ Each hand-held gripper carries an Insta360 (two back-to-back fisheye cameras) pl
 uv sync --extra dev
 ```
 
-This pulls `gtsam>=4.3a0` (the alpha — it is the only release with cp312 wheels), `numpy`, `scipy`, `rerun-sdk`, `tyro`, `telemetry-parser`, `opencv-python`, `pupil-apriltags`, and `allantools`, plus the dev tools `pytest`, `ruff`, `mypy`, and `pre-commit`. `specialist-description` (gripper URDF assets) is a private SSH git dependency.
+This pulls `gtsam>=4.3a0` (the alpha — it is the only release with cp312 wheels), `numpy`, `scipy`, `rerun-sdk`, `tyro`, `telemetry-parser`, `opencv-python`, `pupil-apriltags`, `allantools`, and `imageio-ffmpeg` (wheel-bundled ffmpeg for audio clap-sync), plus the dev tools `pytest`, `ruff`, `mypy`, and `pre-commit`. `specialist-description` (gripper URDF assets) is a private SSH git dependency.
 
 ## Test
 
