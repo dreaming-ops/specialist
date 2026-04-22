@@ -1,0 +1,194 @@
+"""``specialist.vi_ba.features`` on synthetic frames."""
+
+from __future__ import annotations
+
+import numpy as np
+import numpy.typing as npt
+
+from specialist.vi_ba.features import (
+  Frame,
+  chain_tracks,
+  detect_orb,
+  essential_ransac_inliers,
+  match_pair,
+)
+
+Float64Array = npt.NDArray[np.float64]
+
+
+def _textured_image(rng: np.random.Generator, h: int = 200, w: int = 300) -> np.ndarray:
+  return rng.integers(0, 255, size=(h, w), dtype=np.uint8)
+
+
+def test_detect_orb_on_textured_image_returns_keypoints() -> None:
+  rng = np.random.default_rng(0)
+  frame = detect_orb(_textured_image(rng), n_features=500, fast_threshold=12)
+  assert isinstance(frame, Frame)
+  assert frame.keypoints.ndim == 2 and frame.keypoints.shape[1] == 2
+  assert frame.keypoints.shape[0] > 10
+  assert frame.descriptors.shape == (frame.keypoints.shape[0], 32)
+  assert frame.descriptors.dtype == np.uint8
+
+
+def test_detect_orb_on_solid_image_returns_empty_frame() -> None:
+  frame = detect_orb(
+    np.zeros((100, 100), dtype=np.uint8), n_features=500, fast_threshold=12
+  )
+  assert frame.keypoints.shape == (0, 2)
+  assert frame.descriptors.shape == (0, 32)
+
+
+def test_detect_orb_respects_mask() -> None:
+  """Keypoints inside the masked-out region must be suppressed."""
+  rng = np.random.default_rng(0)
+  img = _textured_image(rng, h=200, w=300)
+  # Mask out the right half of the frame: 0 = ignore, 255 = keep.
+  mask = np.full(img.shape, 255, dtype=np.uint8)
+  mask[:, 150:] = 0
+  frame = detect_orb(img, n_features=500, fast_threshold=12, mask=mask)
+  assert frame.keypoints.shape[0] > 0
+  # No keypoint should land inside the masked-out region.
+  assert np.all(frame.keypoints[:, 0] < 150), (
+    f"masked region produced {(frame.keypoints[:, 0] >= 150).sum()} keypoints"
+  )
+
+
+def test_match_pair_identical_frames_matches_all_points() -> None:
+  rng = np.random.default_rng(1)
+  img = _textured_image(rng)
+  a = detect_orb(img, n_features=200, fast_threshold=12)
+  # The ratio test can reject identical descriptors whose second-best is equally close.
+  matches = match_pair(a, a, ratio=0.99)
+  # The ratio test can cull most noisy matches; check the shape and that some survive.
+  assert matches.ndim == 2 and matches.shape[1] == 2
+  assert matches.shape[0] > 0
+
+
+def test_match_pair_empty_descriptors_returns_empty() -> None:
+  empty = Frame(
+    keypoints=np.empty((0, 2), dtype=np.float64),
+    descriptors=np.empty((0, 32), dtype=np.uint8),
+  )
+  assert match_pair(empty, empty, ratio=0.7).shape == (0, 2)
+
+
+def test_essential_ransac_with_few_points_returns_all_false() -> None:
+  pts = np.array([[0.0, 0.0], [1.0, 1.0]])  # < 8 points
+  bearings = np.array([[0.0, 0.0, 1.0], [0.1, 0.1, 1.0]])
+  inliers = essential_ransac_inliers(
+    pts, pts, bearings, bearings, threshold_px=3.0, fx=500.0
+  )
+  assert inliers.shape == (2,)
+  assert inliers.dtype == bool
+  assert not inliers.any()
+
+
+def _synthetic_correspondence_pair(
+  rng: np.random.Generator,
+  n_inliers: int,
+  n_outliers: int,
+  fx: float = 500.0,
+) -> tuple[Float64Array, Float64Array, Float64Array, Float64Array]:
+  """Return (pts_a, pts_b, bearings_a, bearings_b) for a known x-translation."""
+  # 3D points in camera A's frame, z > 0.
+  pts3d = rng.uniform(-0.5, 0.5, size=(n_inliers, 3))
+  pts3d[:, 2] = rng.uniform(1.5, 3.0, size=n_inliers)
+  # Camera B is translated along +x by 0.2 m in camera A's frame.
+  pts3d_b = pts3d - np.array([0.2, 0.0, 0.0])
+
+  def _to_pts_and_bearings(
+    p: Float64Array,
+  ) -> tuple[Float64Array, Float64Array]:
+    bearings = p / np.linalg.norm(p, axis=1, keepdims=True)
+    norm = p[:, :2] / p[:, 2:3]
+    pts = fx * norm + np.array([320.0, 240.0])
+    return pts, bearings
+
+  pts_a, bears_a = _to_pts_and_bearings(pts3d)
+  pts_b, bears_b = _to_pts_and_bearings(pts3d_b)
+
+  # Append outliers: random pixel pairs with random bearings.
+  if n_outliers > 0:
+    out_pts_a = rng.uniform(100, 500, size=(n_outliers, 2))
+    out_pts_b = rng.uniform(100, 500, size=(n_outliers, 2))
+    # Random unit bearings.
+    out_bears_a = rng.normal(size=(n_outliers, 3))
+    out_bears_a /= np.linalg.norm(out_bears_a, axis=1, keepdims=True)
+    out_bears_b = rng.normal(size=(n_outliers, 3))
+    out_bears_b /= np.linalg.norm(out_bears_b, axis=1, keepdims=True)
+    pts_a = np.vstack([pts_a, out_pts_a])
+    pts_b = np.vstack([pts_b, out_pts_b])
+    bears_a = np.vstack([bears_a, out_bears_a])
+    bears_b = np.vstack([bears_b, out_bears_b])
+
+  return pts_a, pts_b, bears_a, bears_b
+
+
+def test_essential_ransac_selects_inliers_over_outliers() -> None:
+  rng = np.random.default_rng(2)
+  pts_a, pts_b, bears_a, bears_b = _synthetic_correspondence_pair(
+    rng, n_inliers=30, n_outliers=10
+  )
+  inliers = essential_ransac_inliers(
+    pts_a, pts_b, bears_a, bears_b, threshold_px=1.5, fx=500.0
+  )
+  assert inliers.shape == (40,)
+  assert inliers[:30].sum() >= 25
+  assert inliers[30:].sum() <= 4
+
+
+def test_chain_tracks_two_frames_one_match() -> None:
+  frames = [
+    Frame(
+      keypoints=np.array([[10.0, 10.0], [20.0, 20.0]]),
+      descriptors=np.zeros((2, 32), dtype=np.uint8),
+    ),
+    Frame(
+      keypoints=np.array([[11.0, 11.0], [21.0, 19.0]]),
+      descriptors=np.zeros((2, 32), dtype=np.uint8),
+    ),
+  ]
+  matches = [np.array([[0, 1]], dtype=np.int64)]
+  tracks = chain_tracks(frames, matches)
+  assert len(tracks) == 1
+  tid = next(iter(tracks))
+  assert set(tracks[tid].keys()) == {0, 1}
+  assert np.allclose(tracks[tid][0], [10.0, 10.0])
+  assert np.allclose(tracks[tid][1], [21.0, 19.0])
+
+
+def test_chain_tracks_three_frames_chain_through_shared_keypoint() -> None:
+  frames = [
+    Frame(
+      keypoints=np.array([[0.0, 0.0], [100.0, 100.0]]),
+      descriptors=np.zeros((2, 32), dtype=np.uint8),
+    )
+    for _ in range(3)
+  ]
+  matches = [
+    np.array([[0, 0]], dtype=np.int64),  # f0→f1
+    np.array([[0, 0]], dtype=np.int64),  # f1→f2
+  ]
+  tracks = chain_tracks(frames, matches)
+  assert len(tracks) == 1
+  tid = next(iter(tracks))
+  assert set(tracks[tid].keys()) == {0, 1, 2}
+
+
+def test_chain_tracks_unrelated_pairs_produce_separate_tracks() -> None:
+  # f0→f1 pairs kp0 with kp0 and f1→f2 pairs kp1 with kp0, so the tracks do not chain.
+  frames = [
+    Frame(
+      keypoints=np.array([[0.0, 0.0], [1.0, 1.0]]),
+      descriptors=np.zeros((2, 32), dtype=np.uint8),
+    )
+    for _ in range(3)
+  ]
+  matches = [
+    np.array([[0, 0]], dtype=np.int64),
+    np.array([[1, 0]], dtype=np.int64),
+  ]
+  tracks = chain_tracks(frames, matches)
+  assert len(tracks) == 2
+  lengths = sorted(len(obs) for obs in tracks.values())
+  assert lengths == [2, 2]

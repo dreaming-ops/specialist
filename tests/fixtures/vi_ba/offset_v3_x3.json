@@ -1,0 +1,23 @@
+{
+  "source_capture": "VID_20260421_210237_00_002_yaw_flick.insv",
+  "source_metadata_key": "Default.Metadata.offset_v3",
+  "camera": "Insta360 X3",
+  "firmware": "v1.0.83_build1",
+  "notes": "Factory per-lens calibration (40 floats). Layout: [lens_count, front_block(19), rear_block(19), trailer]. Block fields: xi, fx, fy, cx, cy, yaw_deg, pitch_deg, roll_deg, tx, ty, tz, k1, k2, k3, p1, p2, frame_width, frame_height, _unknown.",
+  "offset_v3": [
+    2.0,
+    1.94817, 4625.45, 4623.58, 2968.61, 2994.87,
+    0.581, 0.714, 90.712,
+    0.0, 0.0, 0.0,
+    0.39252487, 1.23661351, -3.86204076,
+    -1.075e-05, -0.00215951,
+    11904.0, 5952.0, 71.0,
+    1.94817, 4627.0, 4627.39, 8931.88, 2989.66,
+    -0.518, 0.41, 90.417,
+    -0.001542, -1e-05, -0.026248,
+    0.39135978, 1.2525574, -3.91095424,
+    -0.00138846, -0.00263395,
+    11904.0, 5952.0, 71.0,
+    199424.0
+  ]
+}
