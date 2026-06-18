@@ -112,3 +112,9 @@ cython_debug/
 # Run artifacts
 **/logs/
 **/artifacts/
+
+# macOS
+.DS_Store
+
+# model weights
+*.pt

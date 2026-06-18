@@ -14,7 +14,7 @@ from scipy.spatial.transform import Slerp
 Float64Array = npt.NDArray[np.float64]
 
 # Incremental-SfM tuning: parallax, PnP inliers, triangulation residual, passes.
-SFM_MIN_PARALLAX = float(np.deg2rad(0.6))
+SFM_MIN_PARALLAX_DEG = 0.6
 # Minimum parallax the two-view init pair (0, K) must span.
 SFM_INIT_PAIR_MIN_PARALLAX = float(np.deg2rad(2.0))
 SFM_MIN_PNP_POINTS = 6
@@ -36,6 +36,7 @@ __all__ = [
   "apply_alignment_to_poses",
   "body_poses_from_lens_poses",
   "gravity_alignment_rotation",
+  "incremental_sfm",
   "interpolate_camera_poses",
   "pick_init_pair",
   "triangulate_track_multiview",
@@ -138,6 +139,173 @@ def body_poses_from_lens_poses(
   return [p.compose(inv) for p in lens_poses]
 
 
+def _triangulate_bearings(
+  views: list[tuple[Float64Array, Float64Array, Float64Array]],
+) -> Float64Array | None:
+  """Multi-view DLT for (R, t world→cam, unit bearing) views → world point."""
+  rows: list[Float64Array] = []
+  for r, t, b in views:
+    if b[2] <= 1e-6:
+      continue
+    x, y = b[0] / b[2], b[1] / b[2]
+    p = np.hstack([r, t.reshape(3, 1)])
+    rows.append(x * p[2] - p[0])
+    rows.append(y * p[2] - p[1])
+  if len(rows) < 4:
+    return None
+  _, _, vh = np.linalg.svd(np.array(rows))
+  x_h = vh[-1]
+  if abs(x_h[3]) < 1e-12:
+    return None
+  return np.asarray(x_h[:3] / x_h[3], dtype=np.float64)
+
+
+def _reproj_bearing(
+  r: Float64Array, t: Float64Array, x: Float64Array, b: Float64Array
+) -> float:
+  p = r @ x + t
+  if p[2] <= 1e-6:
+    return 1e9
+  return float(np.hypot(p[0] / p[2] - b[0] / b[2], p[1] / p[2] - b[1] / b[2]))
+
+
+def _max_parallax_deg(
+  views: list[tuple[Float64Array, Float64Array, Float64Array]], x: Float64Array
+) -> float:
+  dirs: list[Float64Array] = []
+  for r, t, _ in views:
+    d = x - (-r.T @ t)
+    n = float(np.linalg.norm(d))
+    if n > 1e-12:
+      dirs.append(d / n)
+  if len(dirs) < 2:
+    return 0.0
+  # Widest pairwise bearing angle, at the minimum pairwise cosine.
+  d_arr = np.asarray(dirs, dtype=np.float64)
+  cos = d_arr @ d_arr.T
+  iu = np.triu_indices(d_arr.shape[0], k=1)
+  return float(np.degrees(np.arccos(np.clip(cos[iu].min(), -1.0, 1.0))))
+
+
+def _pnp_bearings(
+  pts: Float64Array, bears: Float64Array, min_points: int
+) -> tuple[Float64Array, Float64Array] | None:
+  """Robust PnP from 3D points + unit bearings → (R, t) world→cam."""
+  front = bears[:, 2] > 1e-6
+  if int(front.sum()) < min_points:
+    return None
+  pts, bears = pts[front], bears[front]
+  norm = (bears[:, :2] / bears[:, 2:3]).astype(np.float64).reshape(-1, 1, 2)
+  obj = pts.astype(np.float64).reshape(-1, 1, 3)
+  ok, rvec, tvec, inl = cv2.solvePnPRansac(
+    obj,
+    norm,
+    np.eye(3),
+    np.zeros(4),
+    reprojectionError=0.02,
+    iterationsCount=1000,
+    confidence=0.999,
+    flags=cv2.SOLVEPNP_EPNP,
+  )
+  if not ok or inl is None or len(inl) < min_points:
+    return None
+  inl = inl.ravel()
+  rvec, tvec = cv2.solvePnPRefineLM(
+    obj[inl], norm[inl], np.eye(3), np.zeros(4), rvec, tvec
+  )
+  r, _ = cv2.Rodrigues(rvec)
+  return r.astype(np.float64), tvec.reshape(3).astype(np.float64)
+
+
+def incremental_sfm(
+  bearings: dict[int, dict[int, Float64Array]],
+  min_shared: int = 40,
+) -> tuple[dict[int, gtsam.Pose3], dict[int, Float64Array]]:
+  """``(lens_poses, landmark_map)`` of incremental monocular SfM, or empty dicts."""
+  cv2.setRNGSeed(0)  # deterministic RANSAC for solvePnP/essential
+  frames = sorted({k for tr in bearings.values() for k in tr})
+  if len(frames) < 2:
+    return {}, {}
+  poses: dict[int, tuple[Float64Array, Float64Array]] = {}
+  landmark_map: dict[int, Float64Array] = {}
+
+  def tri(tid: int) -> None:
+    views = [
+      (poses[k][0], poses[k][1], bearings[tid][k]) for k in bearings[tid] if k in poses
+    ]
+    if len(views) < 2:
+      return
+    x = _triangulate_bearings(views)
+    if x is None:
+      return
+    if sum(1 for r, t, _ in views if (r @ x + t)[2] > 0.05) < 2:
+      return
+    if _max_parallax_deg(views, x) < SFM_MIN_PARALLAX_DEG:
+      return
+    if np.median([_reproj_bearing(r, t, x, b) for r, t, b in views]) > SFM_MAX_REPROJ:
+      return
+    landmark_map[tid] = x
+
+  first = frames[0]
+  last: int | None = None
+  for candidate in frames[1:]:
+    shared = [
+      tid for tid in bearings if first in bearings[tid] and candidate in bearings[tid]
+    ]
+    if len(shared) < min_shared:
+      continue
+    parallax = float(
+      np.median(
+        [
+          np.arccos(np.clip(bearings[tid][first] @ bearings[tid][candidate], -1.0, 1.0))
+          for tid in shared
+        ]
+      )
+    )
+    last = candidate
+    if parallax >= SFM_INIT_PAIR_MIN_PARALLAX:
+      break
+  if last is None:
+    return {}, {}
+  shared = [tid for tid in bearings if first in bearings[tid] and last in bearings[tid]]
+  r_cw, t_cw, _ = two_view_essential(
+    np.array([bearings[tid][first] for tid in shared]),
+    np.array([bearings[tid][last] for tid in shared]),
+  )
+  poses[first] = (np.eye(3), np.zeros(3))
+  poses[last] = (r_cw, t_cw)
+  for tid in shared:
+    tri(tid)
+
+  for _pass in range(SFM_PASSES):
+    progress = False
+    for k in frames:
+      if k in poses:
+        continue
+      tids = [tid for tid in bearings if k in bearings[tid] and tid in landmark_map]
+      if len(tids) < SFM_MIN_PNP_POINTS:
+        continue
+      pnp_pose = _pnp_bearings(
+        np.array([landmark_map[tid] for tid in tids]),
+        np.array([bearings[tid][k] for tid in tids]),
+        SFM_MIN_PNP_POINTS,
+      )
+      if pnp_pose is None:
+        continue
+      poses[k] = pnp_pose
+      progress = True
+      for tid in bearings:
+        if k in bearings[tid]:
+          tri(tid)
+    if not progress:
+      break
+
+  lens_poses = {
+    k: gtsam.Pose3(gtsam.Rot3(r.T), -r.T @ t) for k, (r, t) in poses.items()
+  }
+  return lens_poses, landmark_map
+
+
 def triangulate_track_multiview(
   bearings: list[Float64Array],
   body_poses: list[gtsam.Pose3],
@@ -199,6 +367,7 @@ def visual_inertial_align(
   body_poses: list[gtsam.Pose3],
   preintegrated: list[gtsam.PreintegratedCombinedMeasurements],
   velocity_regularization: float = 1.0e-2,
+  fixed_gravity: Float64Array | None = None,
 ) -> Alignment:
   """Least-squares scale, gravity and velocities from keyframe NavState constraints."""
   n = len(body_poses)
@@ -243,6 +412,14 @@ def visual_inertial_align(
     for i in range(n):
       r = n_eq_data + 3 * i
       A[r : r + 3, 4 + 3 * i : 4 + 3 * i + 3] = sqrt_lam * eye3
+
+  if fixed_gravity is not None:
+    # A joint scale, gravity and velocity solve lets the scale collapse on slow motion.
+    w_g = 1.0e3
+    rows_g = np.zeros((3, n_unknowns))
+    rows_g[:, 1:4] = w_g * eye3
+    A = np.vstack([A, rows_g])
+    b = np.concatenate([b, w_g * np.asarray(fixed_gravity, dtype=np.float64)])
 
   x, *_ = np.linalg.lstsq(A, b, rcond=None)
   scale = float(x[0])

@@ -668,6 +668,7 @@ def log_multi_ba_run(
     rr.spawn(connect=False)
     rr.set_sinks(rr.FileSink(str(rrd_path)), rr.GrpcSink())
   else:
+    # --no-open-viewer writes the rrd directly, for headless servers.
     rr.save(str(rrd_path))
   rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
   rr.log("world", rr.Transform3D(child_frame="world"), static=True)

@@ -20,6 +20,16 @@ class FrontendCfg:
   max_landmark_depth: float = 5.0
   mask_rear_rects: tuple[tuple[int, int, int, int], ...] = ((728, 1425, 2153, 2880),)
   init_min_shared_tracks: int = 60
+  # Re-match ORB features between spatially close, non-adjacent keyframes.
+  revisit: bool = True
+  loop_closure_max_dist: float = 0.1
+  loop_closure_min_kf_gap: int = 15
+  # Shape the trajectory by front-lens SfM; the anchor enters only as a graph factor.
+  use_visual_odometry: bool = True
+  # Cap on triangulated landmarks per lens in VO mode, keeping the longest tracks.
+  vo_max_landmarks_per_lens: int = 400
+  # Cap on BA observations per track in VO mode: endpoints plus evenly spaced middles.
+  vo_max_obs_per_track: int = 8
 
 
 @dataclass
@@ -39,8 +49,9 @@ class ImuCfg:
 class AnchorCfg:
   tag_id: int
   tag_size: float = 0.1
-  translation_sigma: float = 0.002
-  rotation_sigma: float = 0.005
+  # Loose anchor PnP σ (m); a tight σ forces PnP scale error onto the trajectory.
+  translation_sigma: float = 0.02
+  rotation_sigma: float = 0.05
   prior_translation_sigma: float = 1.0e-4
   prior_rotation_sigma: float = 1.0e-4
   # σ multiplier = (1 + max(0, r − pivot) / scale)² for tag image radius r.

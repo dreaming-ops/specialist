@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import copy
+import hashlib
 import json
+import pickle
 import time
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field
@@ -58,6 +61,8 @@ class Args:
   urdf_path: Path | None = None
   log_frames_in_rrd: bool = False
   open_viewer: bool = True
+  # Cache the per-tracker prep by its args; incompatible with --log-frames-in-rrd.
+  prep_cache: bool = False
   # One id per tracker; cross-tracker disambiguation needs distinct ids.
   base_tag_ids: tuple[int, ...] = ()
   # Per-tracker finger tag ids; 0 disables that tracker's finger.
@@ -377,6 +382,33 @@ def _scaled_sigma(base: float, rf: float, pivot: float, scale: float) -> float:
   return base * (1.0 + (rf - pivot) / scale) ** 2
 
 
+def _prepare_cached(name: str, targs: "CameraArgs", enabled: bool) -> "PreparedCamera":
+  """prepare_camera cached on disk; a cached run cannot use --log-frames-in-rrd."""
+  if not enabled:
+    return prepare_camera(name, targs)
+  cache_dir = Path("/tmp/specialist_prep_cache")
+  try:
+    mt = targs.insv_path.stat().st_mtime
+  except OSError:
+    mt = 0.0
+  key = hashlib.sha256(f"{targs!r}|{mt}".encode()).hexdigest()[:16]
+  cpath = cache_dir / f"{name}_{key}.pkl"
+  if cpath.exists():
+    print(f"  [prep cache HIT] {cpath.name} — skipping decode+frontend")
+    return pickle.loads(cpath.read_bytes())
+  tracker = prepare_camera(name, targs)
+  cache_dir.mkdir(parents=True, exist_ok=True)
+  slim = copy.copy(tracker)
+  slim.front_frames = tracker.front_frames[:1]
+  slim.rear_frames = tracker.rear_frames[:1]
+  try:
+    cpath.write_bytes(pickle.dumps(slim))
+    print(f"  [prep cache saved] {cpath.name}")
+  except Exception as exc:  # noqa: BLE001 - caching is best-effort
+    print(f"  [prep cache save failed: {exc}]")
+  return tracker
+
+
 def _bounding_box_diagonal(poses: list[gtsam.Pose3]) -> float:
   if len(poses) < 2:
     return 0.0
@@ -436,6 +468,22 @@ def _tracks_side_dict(
   }
 
 
+def _print_capture_diagnostics(
+  cameras: list[PreparedCamera],
+  optimized_body_poses: dict[str, list[gtsam.Pose3]],
+) -> None:
+  """Print the maximum keyframe-to-keyframe speed."""
+  print("\n=== max kf-to-kf speed (real motion if IMU agrees) ===")
+  for name, poses in optimized_body_poses.items():
+    pts = np.array([np.asarray(p.translation(), dtype=np.float64) for p in poses])
+    t_obj = next(t for t in cameras if t.name == name)
+    kf_t = np.asarray(t_obj.keyframe_times, dtype=np.float64)
+    dt = np.diff(kf_t)
+    speed = np.linalg.norm(np.diff(pts, axis=0), axis=1) / np.where(dt > 0, dt, 1.0)
+    i = int(np.argmax(speed))
+    print(f"  [{name}] max={speed[i]:.2f} m/s at kf {i}→{i + 1} (t={kf_t[i]:.2f}s)")
+
+
 def main(args: Args) -> None:
   if not args.input_insvs:
     raise ValueError("at least one .insv input required")
@@ -483,7 +531,7 @@ def main(args: Args) -> None:
     strict=True,
   ):
     print(f"\n=== prep tracker {name!r} ({path.name}, start={start:.3f}s) ===")
-    tracker = prepare_camera(
+    tracker = _prepare_cached(
       name,
       CameraArgs(
         insv_path=path,
@@ -499,6 +547,7 @@ def main(args: Args) -> None:
         anchor=args.anchor,
         gripper=args.gripper,
       ),
+      args.prep_cache,
     )
     print(
       f"  kf={tracker.n_keyframes}  anchor_obs={len(tracker.anchor_obs_per_kf)}  "
@@ -718,9 +767,13 @@ def main(args: Args) -> None:
 
   urdf_path = args.urdf_path
   if urdf_path is None:
-    from specialist_description import get_urdf_path
+    try:
+      from specialist_description import get_urdf_path
 
-    urdf_path = Path(get_urdf_path("specialist_handheld"))
+      urdf_path = Path(get_urdf_path("specialist_handheld"))
+    except ImportError as exc:  # headless env without the gripper-URDF package
+      print(f"  [viz] gripper URDF unavailable ({exc}); skipping URDF overlay")
+      urdf_path = None
 
   tag_size_by_id: dict[int, float] = {
     int(args.anchor.tag_id): float(args.anchor.tag_size),
@@ -882,17 +935,6 @@ def main(args: Args) -> None:
       )
     )
 
-  log_multi_ba_run(
-    rrd_path=rrd_path,
-    cameras=viz_trackers,
-    world_T_anchor=ref_anchor,
-    anchor_tag_size=args.anchor.tag_size,
-    anchor_tag_id=args.anchor.tag_id,
-    mask_pad_px=args.frontend.mask_tag_pad,
-    urdf_path=urdf_path,
-    open_viewer=args.open_viewer,
-  )
-
   bbox_diag = tuple(
     _bounding_box_diagonal(optimized_body_poses[t.name]) for t in cameras
   )
@@ -910,17 +952,7 @@ def main(args: Args) -> None:
     bounding_box_diagonal=bbox_diag,
     trajectory_path_length=path_len,
   )
-  print("\n=== max kf-to-kf speed (real motion if IMU agrees) ===")
-  for name, poses in optimized_body_poses.items():
-    pts = np.array([np.asarray(p.translation(), dtype=np.float64) for p in poses])
-    if pts.shape[0] < 2:
-      continue
-    t_obj = next(t for t in cameras if t.name == name)
-    kf_t = np.asarray(t_obj.keyframe_times, dtype=np.float64)
-    dt = np.diff(kf_t)
-    speed = np.linalg.norm(np.diff(pts, axis=0), axis=1) / np.where(dt > 0, dt, 1.0)
-    i = int(np.argmax(speed))
-    print(f"  [{name}] max={speed[i]:.2f} m/s at kf {i}→{i + 1} (t={kf_t[i]:.2f}s)")
+  _print_capture_diagnostics(cameras, optimized_body_poses)
 
   # Raw observations for downstream evaluation, free of derived metrics.
   raw: dict[str, object] = {}
@@ -991,7 +1023,23 @@ def main(args: Args) -> None:
   summary_dict.update(raw)
   json_path = args.output_dir / f"track_{stamp}.json"
   json_path.write_text(json.dumps(summary_dict, indent=2, default=str))
-  print(f"\nWrote {rrd_path} and {json_path}")
+  print(f"\nWrote {json_path}")
+
+  # Best-effort viz after the result JSON is on disk: a viz failure never masks a solve.
+  try:
+    log_multi_ba_run(
+      rrd_path=rrd_path,
+      cameras=viz_trackers,
+      world_T_anchor=ref_anchor,
+      anchor_tag_size=args.anchor.tag_size,
+      anchor_tag_id=args.anchor.tag_id,
+      mask_pad_px=args.frontend.mask_tag_pad,
+      urdf_path=urdf_path,
+      open_viewer=args.open_viewer,
+    )
+    print(f"Wrote {rrd_path}")
+  except Exception as exc:  # noqa: BLE001 - viz is best-effort; JSON already saved
+    print(f"  [viz] skipped ({exc})")
 
 
 if __name__ == "__main__":
