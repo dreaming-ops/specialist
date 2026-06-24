@@ -1,13 +1,16 @@
-"""Tests for the anchored loop-closure merge (``_add_revisit_landmarks``)."""
+"""``single_camera``: the anchored loop-closure merge and per-lens concurrency."""
 
 from __future__ import annotations
 
+import cv2
 import gtsam
 import numpy as np
+import pytest
 
 from specialist.loader.mei_model import MeiParams, mei_project
 from specialist.vi_ba.build import LensSetup
-from specialist.vi_ba.single_camera import _add_revisit_landmarks
+from specialist.vi_ba.pipeline import FrontendConfig, run_lens_frontend
+from specialist.vi_ba.single_camera import _add_revisit_landmarks, run_two_concurrently
 
 
 def _params() -> MeiParams:
@@ -23,6 +26,20 @@ def _params() -> MeiParams:
     p2=0.0,
     xi=0.8,
   )
+
+
+def test_returns_results_in_order() -> None:
+  a, b = run_two_concurrently(lambda: "a", lambda: 2)
+  assert a == "a"
+  assert b == 2
+
+
+def test_propagates_exceptions() -> None:
+  def boom() -> int:
+    raise ValueError("boom")
+
+  with pytest.raises(ValueError, match="boom"):
+    run_two_concurrently(lambda: 1, boom)
 
 
 def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:
@@ -75,3 +92,44 @@ def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:
   # The drifted tail still feeds the BA factors, which pull its pose onto the structure.
   assert 5 in fk_rel[99]
   assert 7 in fk_rel
+
+
+def _translating_frames(n: int, shift: int, seed: int) -> list[np.ndarray]:
+  """A textured frame translated ``shift`` px per frame, so every match is an inlier."""
+  rng = np.random.default_rng(seed)
+  base = rng.integers(0, 255, size=(240, 320), dtype=np.uint8)
+  base = cv2.GaussianBlur(base, (0, 0), sigmaX=2.0)
+  return [np.roll(base, shift * k, axis=1)[:, 40:280].copy() for k in range(n)]
+
+
+def _tracks_equal(
+  a: dict[int, dict[int, np.ndarray]], b: dict[int, dict[int, np.ndarray]]
+) -> bool:
+  if a.keys() != b.keys():
+    return False
+  for tid in a:
+    if a[tid].keys() != b[tid].keys():
+      return False
+    for kf in a[tid]:
+      if not np.array_equal(a[tid][kf], b[tid][kf]):
+        return False
+  return True
+
+
+def test_frontend_parallel_matches_serial() -> None:
+  """Concurrent lens frontends yield exactly the serial run's tracks."""
+  params = _params()
+  cfg = FrontendConfig(n_features=300)
+  front = _translating_frames(6, 2, seed=1)
+  rear = _translating_frames(6, 3, seed=2)
+
+  (_, pf_tracks), (_, pr_tracks) = run_two_concurrently(
+    lambda: run_lens_frontend(front, params, cfg),
+    lambda: run_lens_frontend(rear, params, cfg),
+  )
+  _, sf_tracks = run_lens_frontend(front, params, cfg)
+  _, sr_tracks = run_lens_frontend(rear, params, cfg)
+
+  assert _tracks_equal(pf_tracks, sf_tracks)
+  assert _tracks_equal(pr_tracks, sr_tracks)
+  assert len(sf_tracks) > 0 and len(sr_tracks) > 0

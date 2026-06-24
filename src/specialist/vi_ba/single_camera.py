@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from pathlib import Path
+from typing import TypeVar
 
 import cv2
 import gtsam
@@ -58,6 +61,9 @@ from specialist.vi_ba.tag_detection import (
 
 Float64Array = npt.NDArray[np.float64]
 
+_A = TypeVar("_A")
+_B = TypeVar("_B")
+
 # ORB loop-closure track recovery (``_revisit_tracks``).
 _REVISIT_N_NEIGHBORS = 4  # spatially-closest non-adjacent revisit kfs to re-match
 _REVISIT_MATCH_RATIO = 0.7  # Lowe ratio-test threshold
@@ -72,7 +78,18 @@ __all__ = [
   "PreparedCamera",
   "CameraArgs",
   "prepare_camera",
+  "run_two_concurrently",
 ]
+
+
+def run_two_concurrently(
+  task_a: Callable[[], _A], task_b: Callable[[], _B]
+) -> tuple[_A, _B]:
+  """Run two CPU-bound thunks on separate threads and return ``(a, b)``."""
+  with ThreadPoolExecutor(max_workers=2) as ex:
+    fut_a = ex.submit(task_a)
+    fut_b = ex.submit(task_b)
+    return fut_a.result(), fut_b.result()
 
 
 @dataclass
@@ -616,8 +633,10 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     raise RuntimeError(f"only {n_keyframes} keyframes decoded — window too short")
   keyframe_times = keyframe_timestamps(args.start, fps, keyframe_every, n_keyframes)
 
-  front_tags_per_kf = detect_all_tags(front_gray)
-  rear_tags_per_kf = detect_all_tags(rear_gray)
+  front_tags_per_kf, rear_tags_per_kf = run_two_concurrently(
+    lambda: detect_all_tags(front_gray),
+    lambda: detect_all_tags(rear_gray),
+  )
 
   # Gyro rotation increments carry the tag disambiguation prior through fast rotation.
   body_R_imu = np.asarray(args.imu.body_R_imu, dtype=np.float64)
@@ -661,17 +680,21 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     ransac_threshold=args.frontend.ransac_threshold,
     max_half_angle=args.frontend.max_half_angle,
   )
-  front_feature_frames, front_tracks = run_lens_frontend(
-    front_gray,
-    front_lens.params,
-    cfg,
-    masks=front_masks,
-  )
-  rear_feature_frames, rear_tracks = run_lens_frontend(
-    rear_gray,
-    rear_lens.params,
-    cfg,
-    masks=rear_masks,
+  (front_feature_frames, front_tracks), (rear_feature_frames, rear_tracks) = (
+    run_two_concurrently(
+      lambda: run_lens_frontend(
+        front_gray,
+        front_lens.params,
+        cfg,
+        masks=front_masks,
+      ),
+      lambda: run_lens_frontend(
+        rear_gray,
+        rear_lens.params,
+        cfg,
+        masks=rear_masks,
+      ),
+    )
   )
   front_kept = {
     t: o for t, o in front_tracks.items() if len(o) >= args.frontend.min_track_length
