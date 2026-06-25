@@ -17,6 +17,21 @@ uv sync --extra dev
 
 This pulls `gtsam>=4.3a0` (the alpha — it is the only release with cp312 wheels), `numpy`, `scipy`, `rerun-sdk`, `tyro`, `telemetry-parser`, `opencv-python`, `pupil-apriltags`, `allantools`, and `imageio-ffmpeg` (wheel-bundled ffmpeg for audio clap-sync), plus the dev tools `pytest`, `ruff`, `mypy`, and `pre-commit`. `specialist-description` (gripper URDF assets) is a private SSH git dependency.
 
+`uv sync` also compiles the native MEI bundle-adjustment factor
+(`_mei_factor_cpp`). This C++ port of the reprojection factor makes bundle
+adjustment about 88× faster (about 35% off the total wall clock), with a
+bit-identical optimum. It needs a C++17 compiler, `git` and Boost headers
+(`libboost-dev`, or `brew install boost` on macOS). The gtsam wheel ships no
+headers. So the first build clones the matching gtsam headers into a gitignored
+`.build/` cache.
+
+The `.so` is specific to the architecture and gitignored, so run `uv sync` on
+each host. To rebuild after you edit the C++ source:
+
+```
+uv run build-mei-factor
+```
+
 ## Test
 
 ```
@@ -41,9 +56,9 @@ src/specialist/
 ├── record/      offset_v3 (factory lens intrinsics and body_T_lens)
 ├── vi_ba/       per-tracker visual-inertial bundle adjustment — single_camera
 │                (per-camera prep), pipeline + features (frontend), init
-│                (incremental SfM + VI alignment), build / compose (graph),
-│                mei_factor, imu, tag_detection, optimize,
-│                configs, viz
+│                (incremental SfM + VI alignment), build / compose (graph) +
+│                the native cpp/ MEI factor, imu, tag_detection,
+│                optimize, configs, viz
 ├── graph/       factors (shared GTSAM factor constructors)
 └── synthesis/   tag_detection (the cross-tracker observation record)
 

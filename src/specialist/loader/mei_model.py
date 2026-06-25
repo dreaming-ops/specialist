@@ -86,66 +86,6 @@ def mei_project(points_cam: Float64Array, params: MeiParams) -> Float64Array:
   return np.stack([u, v], axis=1)
 
 
-def mei_project_with_jacobian(
-  point_cam: Float64Array, params: MeiParams
-) -> tuple[Float64Array, Float64Array]:
-  """Pixel and 2×3 Jacobian of one lens-frame point, both NaN past the fold."""
-  p = np.asarray(point_cam, dtype=np.float64).reshape(3)
-  norm = float(np.linalg.norm(p))
-  if norm == 0.0:
-    nan_pixel = np.full(2, np.nan, dtype=np.float64)
-    nan_jac = np.full((2, 3), np.nan, dtype=np.float64)
-    return nan_pixel, nan_jac
-
-  s = p / norm
-  # Pixels need z > -xi, and z > -1/xi for xi > 1, where the image radius folds back.
-  fold = params.xi if params.xi <= 1.0 else 1.0 / params.xi
-  denom = float(s[2] + params.xi)
-  if s[2] <= -fold:
-    nan_pixel = np.full(2, np.nan, dtype=np.float64)
-    nan_jac = np.full((2, 3), np.nan, dtype=np.float64)
-    return nan_pixel, nan_jac
-
-  x = s[0] / denom
-  y = s[1] / denom
-
-  r2 = x * x + y * y
-  radial = 1.0 + params.k1 * r2 + params.k2 * r2 * r2 + params.k3 * r2**3
-  radial_dr2 = params.k1 + 2.0 * params.k2 * r2 + 3.0 * params.k3 * r2 * r2
-
-  x_d = x * radial + 2.0 * params.p1 * x * y + params.p2 * (r2 + 2.0 * x * x)
-  y_d = y * radial + params.p1 * (r2 + 2.0 * y * y) + 2.0 * params.p2 * x * y
-
-  pixel = np.array(
-    [params.fx * x_d + params.cx, params.fy * y_d + params.cy], dtype=np.float64
-  )
-
-  e_x = np.array([1.0, 0.0, 0.0], dtype=np.float64)
-  e_y = np.array([0.0, 1.0, 0.0], dtype=np.float64)
-  e_z = np.array([0.0, 0.0, 1.0], dtype=np.float64)
-  inv = 1.0 / (norm * denom)
-  dx_dp = (e_x - x * e_z - x * params.xi * s) * inv
-  dy_dp = (e_y - y * e_z - y * params.xi * s) * inv
-  dr2_dp = 2.0 * x * dx_dp + 2.0 * y * dy_dp
-  dradial_dp = radial_dr2 * dr2_dp
-
-  dxd_dp = (
-    dx_dp * radial
-    + x * dradial_dp
-    + 2.0 * params.p1 * (dx_dp * y + x * dy_dp)
-    + params.p2 * (dr2_dp + 4.0 * x * dx_dp)
-  )
-  dyd_dp = (
-    dy_dp * radial
-    + y * dradial_dp
-    + params.p1 * (dr2_dp + 4.0 * y * dy_dp)
-    + 2.0 * params.p2 * (dx_dp * y + x * dy_dp)
-  )
-
-  jac = np.stack([params.fx * dxd_dp, params.fy * dyd_dp], axis=0)
-  return pixel, jac
-
-
 def mei_unproject(pixels: Float64Array, params: MeiParams) -> Float64Array:
   """``(N, 3)`` unit bearings of ``(N, 2)`` pixels, NaN outside the model."""
   require_2d(pixels, 2, "pixels")

@@ -5,7 +5,8 @@ description = "Multi-camera AprilTag SLAM for human data collection"
 requires-python = ">=3.12,<3.13"
 license = {text = "MIT"}
 dependencies = [
-  "gtsam>=4.3a0",
+  # The only cp312 wheels; the native MEI factor links this wheel's libgtsam.
+  "gtsam==4.3a0",
   "numpy>=1.26",
   "scipy>=1.11",
   "rerun-sdk>=0.21",
@@ -25,17 +26,27 @@ dev = [
   "ruff==0.15.0",
   "mypy>=1.13",
   "pre-commit>=3.8",
+  # 2.x matches the gtsam wheel's pybind11 ABI; `uv run build-mei-factor` rebuilds.
+  "pybind11==2.13.6",
 ]
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "gtsam==4.3a0", "pybind11==2.13.6", "numpy>=1.26"]
 build-backend = "hatchling.build"
+
+[project.scripts]
+build-mei-factor = "specialist.vi_ba._buildext:main"
 
 [tool.uv.sources]
 specialist-description = { git = "ssh://git@github.com/specialist-ai/specialist_description.git", branch = "main" }
 
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
+
 [tool.hatch.build.targets.wheel]
 packages = ["src/specialist"]
+# The C++ source ships; the compiled extension (gitignored) is force-included.
+artifacts = ["src/specialist/vi_ba/_mei_factor_cpp*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -54,6 +65,7 @@ files = ["src/specialist"]
 [[tool.mypy.overrides]]
 module = [
   "gtsam", "gtsam.*",
+  "specialist.vi_ba._mei_factor_cpp",
   "rerun", "rerun.*",
   "scipy", "scipy.*",
   "telemetry_parser", "telemetry_parser.*",
