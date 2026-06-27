@@ -19,7 +19,7 @@ _MAX_LANDMARKS_PER_CAMERA = 1_000_000
 
 
 class CameraKeys:
-  """Collision-free GTSAM keys per camera; the anchor lives at ``symbol('A', 0)``."""
+  """Collision-free GTSAM keys per camera; anchor corners at ``symbol('A', 0..3)``."""
 
   def __init__(self, slots: Sequence[str]) -> None:
     if len(set(slots)) != len(slots):
@@ -63,8 +63,9 @@ class CameraKeys:
   def rear_landmark_key(self, slot: str, track_id: int) -> int:
     return self._lm_key(slot, 1, track_id)
 
-  def anchor_key(self) -> int:
-    return int(gtsam.symbol(ANCHOR_CHAR, 0))
+  def anchor_corner_key(self, corner_idx: int) -> int:
+    """Key for one of the anchor tag's four metric corners, ``corner_idx`` 0..3."""
+    return int(gtsam.symbol(ANCHOR_CHAR, corner_idx))
 
   def vi_graph_kwargs(self, slot: str) -> dict[str, Callable[[int], int]]:
     """Per-camera key callables to pass to ``build_vi_graph``."""

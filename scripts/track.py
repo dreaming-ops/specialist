@@ -16,15 +16,16 @@ import numpy as np
 import numpy.typing as npt
 import tyro
 
-from specialist.graph.factors import (
-  make_anchor_observation_factor,
-  make_anchor_prior,
-  make_cross_tracker_factor,
-)
+from specialist.graph.factors import make_cross_tracker_factor
 from specialist.loader.audio_sync import sync_two_claps
 from specialist.loader.mei_model import MeiParams, mei_project
 from specialist.synthesis.tag_detection import TagObservation
-from specialist.vi_ba.build import LensSetup, build_vi_graph
+from specialist.vi_ba.build import (
+  LensSetup,
+  add_mei_factor,
+  build_vi_graph,
+  huber_pixel_noise,
+)
 from specialist.vi_ba.compose import CameraKeys
 from specialist.vi_ba.configs import (
   AnchorCfg,
@@ -45,6 +46,7 @@ from specialist.vi_ba.single_camera import (
 from specialist.vi_ba.tag_detection import (
   TagDetection,
   estimate_lens_T_tag,
+  tag_corners_local,
 )
 from specialist.vi_ba.viz import CameraVizData, log_multi_ba_run
 
@@ -185,6 +187,35 @@ def _cross_tracker_observations(
   return obs
 
 
+def _anchor_corners_world(ref_anchor: gtsam.Pose3, tag_size: float) -> Float64Array:
+  """The anchor tag's four metric corners in the world frame, ``(4, 3)``."""
+  return np.array(
+    [
+      np.asarray(ref_anchor.transformFrom(gtsam.Point3(*corner)), dtype=np.float64)
+      for corner in tag_corners_local(tag_size)
+    ]
+  )
+
+
+def _anchor_sightings(
+  tracker: PreparedCamera, anchor_tag_id: int
+) -> list[tuple[LensSetup, int, TagDetection]]:
+  """Per ``(lens, keyframe)`` anchor-tag detection."""
+  out: list[tuple[LensSetup, int, TagDetection]] = []
+  for lens, tags_per_kf in (
+    (tracker.front_lens, tracker.front_tags_per_kf),
+    (tracker.rear_lens, tracker.rear_tags_per_kf),
+  ):
+    sightings = [
+      (kf, det)
+      for kf, dets in enumerate(tags_per_kf)
+      for det in dets
+      if det.tag_id == anchor_tag_id
+    ]
+    out.extend((lens, kf, det) for kf, det in sightings)
+  return out
+
+
 def _factor_observation_lines(
   observer: PreparedCamera,
   observer_poses: list[gtsam.Pose3],
@@ -303,20 +334,6 @@ def _project_tag_axes_per_lens(
   return out
 
 
-# Past this radius fraction the anchor σ gets 7× more.
-_EXTREME_RADIUS_FRAC = 0.65
-
-
-def _radius_frac(pixel_center: Float64Array, frame_shape: tuple[int, ...]) -> float:
-  """Distance from the image center, ``1.0`` at the lens optical-circle edge."""
-  h, w = frame_shape[:2]
-  cx, cy = float(w) / 2.0, float(h) / 2.0
-  return float(
-    np.sqrt((pixel_center[0] - cx) ** 2 + (pixel_center[1] - cy) ** 2)
-    / (min(w, h) / 2.0)
-  )
-
-
 def _per_keyframe_reproj_rmse_for_viz(
   values: gtsam.Values,
   tracks: dict[int, dict[int, Float64Array]],
@@ -374,12 +391,6 @@ def _mei_to_dict(p: MeiParams) -> dict:
     "p2": float(p.p2),
     "xi": float(p.xi),
   }
-
-
-def _scaled_sigma(base: float, rf: float, pivot: float, scale: float) -> float:
-  if rf <= pivot:
-    return base
-  return base * (1.0 + (rf - pivot) / scale) ** 2
 
 
 def _prepare_cached(name: str, targs: "CameraArgs", enabled: bool) -> "PreparedCamera":
@@ -587,59 +598,35 @@ def main(args: Args) -> None:
       **keys.vi_graph_kwargs(t.name),
     )
 
-  # Anchor variable + per-tracker anchor observation factors.
-  anchor_key = keys.anchor_key()
-  values.insert(anchor_key, ref_anchor)
-  graph.add(
-    make_anchor_prior(
-      anchor_key,
-      ref_anchor,
-      args.anchor.prior_translation_sigma,
-      args.anchor.prior_rotation_sigma,
-    )
-  )
-  pivot = args.anchor.sigma_radius_pivot
-  rscale = args.anchor.sigma_radius_scale
-  sigma_rs: list[float] = []
-  # Extra σ multiplier past _EXTREME_RADIUS_FRAC, where AprilTag PnP fails badly.
-  extreme_r_mult = 7.0
+  # Reproject the anchor tag's four metric corners through the MEI model.
+  anchor_tag_id = int(args.anchor.tag_id)
+  anchor_corners_world = _anchor_corners_world(ref_anchor, args.anchor.tag_size)
+  corner_keys = [keys.anchor_corner_key(j) for j in range(4)]
+  corner_prior = gtsam.noiseModel.Isotropic.Sigma(3, 1.0e-4)
+  corner_noise = huber_pixel_noise(args.anchor.corner_reproj_sigma)
+  for corner_key, corner_xyz in zip(corner_keys, anchor_corners_world, strict=True):
+    point = gtsam.Point3(*corner_xyz)
+    values.insert(corner_key, point)
+    graph.add(gtsam.PriorFactorPoint3(corner_key, point, corner_prior))
+
+  n_anchor_sightings = 0
   for t in cameras:
-    for kf, sides in t.anchor_obs_per_kf.items():
-      for side, lens_T_tag in sides.items():
-        lens = t.front_lens if side == "front" else t.rear_lens
-        tags_per_kf = t.front_tags_per_kf if side == "front" else t.rear_tags_per_kf
-        frames = t.front_frames if side == "front" else t.rear_frames
-        anchor_det = next(
-          (d for d in tags_per_kf[kf] if int(d.tag_id) == int(args.anchor.tag_id)),
-          None,
+    for lens, kf, anchor_det in _anchor_sightings(t, anchor_tag_id):
+      n_anchor_sightings += 1
+      pose_key = keys.pose_key(t.name, kf)
+      # The detected tag direction in the lens frame fixes the omni depth sign.
+      side = "front" if lens is t.front_lens else "rear"
+      lens_T_tag = t.anchor_obs_per_kf.get(kf, {}).get(side)
+      obs_bearing = (
+        None
+        if lens_T_tag is None
+        else np.asarray(lens_T_tag.translation(), dtype=np.float64)
+      )
+      for corner_key, pixel in zip(corner_keys, anchor_det.corners, strict=True):
+        add_mei_factor(
+          graph, pose_key, corner_key, pixel, corner_noise, lens, obs_bearing
         )
-        rf = (
-          _radius_frac(anchor_det.center, frames[0].shape)
-          if anchor_det and frames
-          else pivot
-        )
-        sigma_t = _scaled_sigma(args.anchor.translation_sigma, rf, pivot, rscale)
-        sigma_r = _scaled_sigma(args.anchor.rotation_sigma, rf, pivot, rscale)
-        if rf > _EXTREME_RADIUS_FRAC:
-          sigma_t *= extreme_r_mult
-          sigma_r *= extreme_r_mult
-        sigma_rs.append(sigma_r)
-        graph.add(
-          make_anchor_observation_factor(
-            keys.pose_key(t.name, kf),
-            anchor_key,
-            lens_T_tag,
-            lens.body_T_lens,
-            sigma_t,
-            sigma_r,
-            huber_k=args.anchor.huber_k,
-          )
-        )
-  if sigma_rs:
-    print(
-      f"anchor σ_r min/median/max = "
-      f"{min(sigma_rs):.4f}/{float(np.median(sigma_rs)):.4f}/{max(sigma_rs):.4f} rad"
-    )
+  print(f"anchor corner reprojection: {n_anchor_sightings} anchor sightings")
 
   # The owner's body_T_tag comes from its first stationary rear-lens PnP of its tag.
   body_T_tag_by_name = {

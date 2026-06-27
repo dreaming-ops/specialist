@@ -23,6 +23,7 @@ class MeiFactorCpp : public NoiseModelFactorN<Pose3, Point3> {
 
   double fx_, fy_, cx_, cy_, k1_, k2_, k3_, p1_, p2_, xi_;
   Vector2 pixel_;
+  Vector3 obs_bearing_;  // observed tag direction in the lens frame, or zero
   Matrix3 R_lb_;  // body_T_lens.rotation().transpose()  (lens <- body)
   Vector3 t_bl_;  // body_T_lens.translation()           (body -> lens origin)
 
@@ -30,10 +31,10 @@ class MeiFactorCpp : public NoiseModelFactorN<Pose3, Point3> {
   MeiFactorCpp(Key poseKey, Key pointKey, const Vector2& pixel,
                const SharedNoiseModel& model, const Pose3& body_T_lens, double fx,
                double fy, double cx, double cy, double k1, double k2, double k3,
-               double p1, double p2, double xi)
+               double p1, double p2, double xi, const Vector3& obs_bearing)
       : Base(model, poseKey, pointKey),
         fx_(fx), fy_(fy), cx_(cx), cy_(cy), k1_(k1), k2_(k2), k3_(k3), p1_(p1),
-        p2_(p2), xi_(xi), pixel_(pixel) {
+        p2_(p2), xi_(xi), pixel_(pixel), obs_bearing_(obs_bearing) {
     R_lb_ = body_T_lens.rotation().matrix().transpose();
     t_bl_ = body_T_lens.translation();
   }
@@ -52,6 +53,17 @@ class MeiFactorCpp : public NoiseModelFactorN<Pose3, Point3> {
       if (H2) *H2 = Matrix::Zero(2, 3);
       return Vector2::Zero();
     };
+
+    // Cheirality for a frontally-observed tag (the wall anchor). With xi > 1 the
+    // unified-sphere model maps the whole sphere, including points behind the
+    // camera, to finite pixels, so the corner reprojection has a spurious
+    // behind-camera minimum. Deactivate the factor where the point falls on the
+    // opposite side of the camera from the detected ray: a frontal detection's
+    // behind-camera twin is that opposite-hemisphere point, so its minimum is
+    // removed, while the true corner stays aligned with the ray and active. A
+    // zero bearing (landmarks) disables the check.
+    if (obs_bearing_.squaredNorm() > 0.0 && p_lens.dot(obs_bearing_) <= 0.0)
+      return inactive();
 
     const double norm = p_lens.norm();
     if (norm == 0.0) return inactive();
@@ -114,16 +126,16 @@ using Intrinsics = Eigen::Matrix<double, 10, 1>;  // fx fy cx cy k1 k2 k3 p1 p2 
 static NoiseModelFactor::shared_ptr make_mei_factor_cpp(
     size_t poseKey, size_t pointKey, const Vector2& pixel,
     const SharedNoiseModel& model, const Pose3& body_T_lens,
-    const Intrinsics& intrinsics) {
+    const Intrinsics& intrinsics, const Vector3& obs_bearing) {
   const Intrinsics& k = intrinsics;
   return std::make_shared<MeiFactorCpp>(poseKey, pointKey, pixel, model,
                                         body_T_lens, k[0], k[1], k[2], k[3], k[4],
-                                        k[5], k[6], k[7], k[8], k[9]);
+                                        k[5], k[6], k[7], k[8], k[9], obs_bearing);
 }
 
 PYBIND11_MODULE(_mei_factor_cpp, m) {
   m.doc() = "Native MEI reprojection factor with analytical Jacobians.";
   m.def("make_mei_factor_cpp", &make_mei_factor_cpp, py::arg("pose_key"),
         py::arg("point_key"), py::arg("pixel"), py::arg("noise"),
-        py::arg("body_T_lens"), py::arg("intrinsics"));
+        py::arg("body_T_lens"), py::arg("intrinsics"), py::arg("obs_bearing"));
 }

@@ -38,8 +38,12 @@ def _noise() -> gtsam.noiseModel.Base:
 
 
 def _factor(
-  pixel: npt.NDArray[np.float64], body_T_lens: gtsam.Pose3, params: MeiParams
+  pixel: npt.NDArray[np.float64],
+  body_T_lens: gtsam.Pose3,
+  params: MeiParams,
+  obs_bearing: npt.NDArray[np.float64] | None = None,
 ) -> gtsam.NonlinearFactor:
+  bearing = np.zeros(3) if obs_bearing is None else np.asarray(obs_bearing, float)
   return make_mei_factor_cpp(
     _POSE_KEY,
     _LM_KEY,
@@ -47,6 +51,7 @@ def _factor(
     _noise(),
     body_T_lens,
     np.array(astuple(params)),
+    bearing,
   )
 
 
@@ -191,3 +196,40 @@ def test_mei_cheirality_past_90_degrees_preserves_hemisphere() -> None:
       f"cheirality flip: base z={base_ray[2]:.3f}, recovered z={bearing[2]:.3f}"
     )
     assert np.linalg.norm(bearing - base_ray) < 0.05
+
+
+def test_obs_bearing_deactivates_opposite_hemisphere() -> None:
+  """A point opposite the observed ray zeroes the residual and the Jacobian."""
+  params = _params()
+  body_T_lens = gtsam.Pose3()
+  body_pose = gtsam.Pose3()
+  behind = np.array([1.0, 0.1, -0.36])  # 110 deg off-axis, short of the 121 deg fold
+  pixel = mei_project(behind[None, :], params)[0]
+  assert np.all(np.isfinite(pixel)), "ξ>1 omni model projects behind-camera points"
+  forward = np.array([0.0, 0.0, 1.0])  # the tag was observed in front
+
+  # Without a bearing the factor is active even behind the camera (the basin).
+  off = _factor(pixel + np.array([4.0, -4.0]), body_T_lens, params)
+  assert np.linalg.norm(off.unwhitenedError(_values(body_pose, behind))) > 0.0
+
+  # With the forward bearing the opposite-side point deactivates entirely.
+  on = _factor(pixel + np.array([4.0, -4.0]), body_T_lens, params, obs_bearing=forward)
+  v = _values(body_pose, behind)
+  assert np.allclose(on.unwhitenedError(v), 0.0)
+  a, _ = on.linearize(v).jacobian()
+  assert np.allclose(a, 0.0)
+
+
+def test_obs_bearing_keeps_same_hemisphere_active() -> None:
+  """A peripheral past-90° (z<0) detection on the same side stays fully active."""
+  params = _params()
+  body_T_lens = gtsam.Pose3()
+  body_pose = gtsam.Pose3()
+  periph = np.array([1.0, 0.0, -0.1])  # ~95° half-angle, z<0 but in-FOV
+  pixel = mei_project(periph[None, :], params)[0] + np.array([2.0, -3.0])
+  bearing = periph / np.linalg.norm(periph)  # observed along the same ray
+  v = _values(body_pose, periph)
+  off = _factor(pixel, body_T_lens, params).unwhitenedError(v)
+  on = _factor(pixel, body_T_lens, params, obs_bearing=bearing).unwhitenedError(v)
+  assert np.linalg.norm(on) > 0.0  # active, not deactivated
+  assert np.allclose(off, on)  # bearing on the observed side changes nothing

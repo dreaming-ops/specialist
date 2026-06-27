@@ -11,10 +11,12 @@ import numpy.typing as npt
 from scipy.spatial.transform import Rotation as Rscp
 from scipy.spatial.transform import Slerp
 
+from specialist.vi_ba.geometry import max_parallax
+
 Float64Array = npt.NDArray[np.float64]
 
 # Incremental-SfM tuning: parallax, PnP inliers, triangulation residual, passes.
-SFM_MIN_PARALLAX_DEG = 0.6
+SFM_MIN_PARALLAX = float(np.deg2rad(0.6))
 # Minimum parallax the two-view init pair (0, K) must span.
 SFM_INIT_PAIR_MIN_PARALLAX = float(np.deg2rad(2.0))
 SFM_MIN_PNP_POINTS = 6
@@ -169,22 +171,11 @@ def _reproj_bearing(
   return float(np.hypot(p[0] / p[2] - b[0] / b[2], p[1] / p[2] - b[1] / b[2]))
 
 
-def _max_parallax_deg(
+def _max_parallax(
   views: list[tuple[Float64Array, Float64Array, Float64Array]], x: Float64Array
 ) -> float:
-  dirs: list[Float64Array] = []
-  for r, t, _ in views:
-    d = x - (-r.T @ t)
-    n = float(np.linalg.norm(d))
-    if n > 1e-12:
-      dirs.append(d / n)
-  if len(dirs) < 2:
-    return 0.0
-  # Widest pairwise bearing angle, at the minimum pairwise cosine.
-  d_arr = np.asarray(dirs, dtype=np.float64)
-  cos = d_arr @ d_arr.T
-  iu = np.triu_indices(d_arr.shape[0], k=1)
-  return float(np.degrees(np.arccos(np.clip(cos[iu].min(), -1.0, 1.0))))
+  centers = [-r.T @ t for r, t, _ in views]
+  return max_parallax(centers, x)
 
 
 def _pnp_bearings(
@@ -240,7 +231,7 @@ def incremental_sfm(
       return
     if sum(1 for r, t, _ in views if (r @ x + t)[2] > 0.05) < 2:
       return
-    if _max_parallax_deg(views, x) < SFM_MIN_PARALLAX_DEG:
+    if _max_parallax(views, x) < SFM_MIN_PARALLAX:
       return
     if np.median([_reproj_bearing(r, t, x, b) for r, t, b in views]) > SFM_MAX_REPROJ:
       return

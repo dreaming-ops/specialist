@@ -13,7 +13,7 @@ from gtsam.symbol_shorthand import B, L, V, X
 from specialist.loader.mei_model import MeiParams
 
 try:
-  # Native C++ MEI reprojection factor.
+  # Native C++ MEI reprojection factor on (body pose, world landmark).
   from specialist.vi_ba._mei_factor_cpp import make_mei_factor_cpp
 except ImportError as _exc:  # pragma: no cover - extension is built by uv sync
   raise ImportError(
@@ -28,10 +28,25 @@ _REAR_LANDMARK_OFFSET = 1_000_000
 
 __all__ = [
   "LensSetup",
+  "add_mei_factor",
   "build_vi_graph",
   "front_landmark_key",
+  "huber_pixel_noise",
   "rear_landmark_key",
 ]
+
+
+def _as_pixel(v: Float64Array) -> Float64Array:
+  return np.asarray(v, dtype=np.float64).reshape(2)
+
+
+def _as_vec3(v: Float64Array) -> Float64Array:
+  return np.asarray(v, dtype=np.float64).reshape(3)
+
+
+def _gauge_noise() -> gtsam.noiseModel.Base:
+  """Tight gauge prior (σ=1e-4 on all six pose DoF) that pins the frame."""
+  return gtsam.noiseModel.Diagonal.Sigmas(np.full(6, 1e-4, dtype=np.float64))
 
 
 @dataclass(frozen=True)
@@ -50,16 +65,35 @@ def rear_landmark_key(track_id: int) -> int:
   return int(L(_REAR_LANDMARK_OFFSET + track_id))
 
 
-def _gauge_noise() -> gtsam.noiseModel.Base:
-  """Tight gauge prior (σ=1e-4 on all six pose DoF) that pins the frame."""
-  return gtsam.noiseModel.Diagonal.Sigmas(np.full(6, 1e-4, dtype=np.float64))
-
-
 def huber_pixel_noise(sigma: float) -> gtsam.noiseModel.Base:
   """Robust isotropic pixel noise (Huber, k=1.345) for a reprojection factor."""
   return gtsam.noiseModel.Robust.Create(
     gtsam.noiseModel.mEstimator.Huber.Create(1.345),
     gtsam.noiseModel.Isotropic.Sigma(2, sigma),
+  )
+
+
+def add_mei_factor(
+  graph: gtsam.NonlinearFactorGraph,
+  pose_key: int,
+  point_key: int,
+  pixel: Float64Array,
+  noise: gtsam.noiseModel.Base,
+  lens: LensSetup,
+  obs_bearing: Float64Array | None = None,
+) -> None:
+  """Push one MEI reprojection factor; ``obs_bearing`` arms the cheirality guard."""
+  bearing = np.zeros(3) if obs_bearing is None else _as_vec3(obs_bearing)
+  graph.push_back(
+    make_mei_factor_cpp(
+      pose_key,
+      point_key,
+      _as_pixel(pixel),
+      noise,
+      lens.body_T_lens,
+      np.array(astuple(lens.params)),
+      bearing,
+    )
   )
 
 
@@ -77,17 +111,8 @@ def _add_projection_factors(
     lm_key = landmark_key_fn(tid)
     if not values.exists(lm_key):
       values.insert(lm_key, gtsam.Point3(float(xyz[0]), float(xyz[1]), float(xyz[2])))
-    for fi, pt in tracks[tid].items():
-      graph.push_back(
-        make_mei_factor_cpp(
-          pose_key_fn(fi),
-          lm_key,
-          np.asarray(pt, dtype=np.float64).reshape(2),
-          pixel_noise,
-          lens.body_T_lens,
-          np.array(astuple(lens.params)),
-        )
-      )
+    for kf, pt in tracks[tid].items():
+      add_mei_factor(graph, pose_key_fn(kf), lm_key, pt, pixel_noise, lens)
 
 
 def _add_both_lenses(

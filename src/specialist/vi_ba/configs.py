@@ -36,8 +36,9 @@ class FrontendCfg:
 
 @dataclass
 class ImuCfg:
-  gyro_noise_sigma: float = 0.1
-  accel_noise_sigma: float = 1.0
+  # IMU noise sigmas (rad/s/sqrtHz, m/s2/sqrtHz), a few times the measured floor.
+  gyro_noise_sigma: float = 0.0125
+  accel_noise_sigma: float = 0.01
   gyro_random_walk: float = 1.0e-7
   accel_random_walk: float = 1.0e-7
   body_R_imu: tuple[tuple[float, float, float], ...] = (
@@ -51,16 +52,8 @@ class ImuCfg:
 class AnchorCfg:
   tag_id: int
   tag_size: float = 0.1
-  # Loose anchor PnP σ (m); a tight σ forces PnP scale error onto the trajectory.
-  translation_sigma: float = 0.02
-  rotation_sigma: float = 0.05
-  prior_translation_sigma: float = 1.0e-4
-  prior_rotation_sigma: float = 1.0e-4
-  # σ multiplier = (1 + max(0, r − pivot) / scale)² for tag image radius r.
-  sigma_radius_pivot: float = 0.5
-  sigma_radius_scale: float = 0.1
-  # Huber threshold; caps single-frame PnP outliers. None disables.
-  huber_k: float | None = 1.5
+  # The anchor's four metric corners reproject into the bundle and pin absolute scale.
+  corner_reproj_sigma: float = 1.5
 
 
 @dataclass
