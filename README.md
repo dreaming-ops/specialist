@@ -58,7 +58,8 @@ src/specialist/
 │                (per-camera prep), pipeline + features (frontend), init
 │                (incremental SfM + VI alignment), build / compose (graph) +
 │                the native cpp/ MEI factor, imu, tag_detection,
-│                optimize, configs, viz
+│                optimize, landmark_cull, configs,
+│                viz
 ├── graph/       factors (shared GTSAM factor constructors)
 └── synthesis/   tag_detection (the cross-tracker observation record)
 

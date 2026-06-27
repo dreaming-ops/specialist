@@ -296,3 +296,39 @@ def test_triangulate_track_multiview_is_geometric_closest_point() -> None:
     ray = ray / np.linalg.norm(ray)
     grad += (np.eye(3) - np.outer(ray, ray)) @ (xyz - center)
   assert np.linalg.norm(grad) < 1e-9
+
+
+def test_visual_inertial_align_fixed_scale_pins_metric_scale() -> None:
+  """The velocities follow the pinned scale, whatever the data alone implies."""
+  gravity = np.array([0.0, 0.0, -9.81])
+  accel_phases = [
+    np.array([0.4, 0.3, 0.2]),
+    np.array([-0.2, -0.1, 0.0]),
+    np.array([0.1, -0.3, 0.2]),
+    np.array([0.3, 0.1, -0.2]),
+    np.array([-0.3, 0.4, 0.1]),
+  ]
+  dt = 0.1
+  pims = [_pim_with_motion(dt, gravity, a) for a in accel_phases]
+  dts = [float(pim.deltaTij()) for pim in pims]
+  mp = [np.zeros(3)]
+  mv = [np.zeros(3)]
+  for i, a in enumerate(accel_phases):
+    di = dts[i]
+    mp.append(mp[-1] + mv[-1] * di + 0.5 * a * di * di)
+    mv.append(mv[-1] + a * di)
+
+  # Metric seed (scale 1): pinning to 1.0 returns ~1.0 and recovers velocities.
+  metric_poses = [gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(*p)) for p in mp]
+  a1 = visual_inertial_align(
+    metric_poses, pims, velocity_regularization=0.0, fixed_scale=1.0
+  )
+  assert abs(a1.scale - 1.0) < 1e-2
+  assert np.allclose(a1.velocities[-1], mv[-1], atol=0.05)
+
+  # A 1/3-scaled seed (true scale 3) pinned to 1.0 stays near 1.0.
+  third_poses = [gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(*(p / 3.0))) for p in mp]
+  a2 = visual_inertial_align(
+    third_poses, pims, velocity_regularization=0.0, fixed_scale=1.0
+  )
+  assert abs(a2.scale - 1.0) < 1e-2

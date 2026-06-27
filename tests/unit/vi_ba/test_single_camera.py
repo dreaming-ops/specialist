@@ -1,4 +1,4 @@
-"""``single_camera``: the anchored loop-closure merge and per-lens concurrency."""
+"""``vi_ba.single_camera``: lens concurrency, anchor seed and scale, loop landmarks."""
 
 from __future__ import annotations
 
@@ -10,7 +10,26 @@ import pytest
 from specialist.loader.mei_model import MeiParams, mei_project
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.pipeline import FrontendConfig, run_lens_frontend
-from specialist.vi_ba.single_camera import _add_revisit_landmarks, run_two_concurrently
+from specialist.vi_ba.single_camera import (
+  _add_revisit_landmarks,
+  _anchor_metric_scale,
+  _anchor_pose_seed,
+  run_two_concurrently,
+)
+
+
+def test_returns_results_in_order() -> None:
+  a, b = run_two_concurrently(lambda: "a", lambda: 2)
+  assert a == "a"
+  assert b == 2
+
+
+def test_propagates_exceptions() -> None:
+  def boom() -> int:
+    raise ValueError("boom")
+
+  with pytest.raises(ValueError, match="boom"):
+    run_two_concurrently(lambda: 1, boom)
 
 
 def _params() -> MeiParams:
@@ -28,18 +47,107 @@ def _params() -> MeiParams:
   )
 
 
-def test_returns_results_in_order() -> None:
-  a, b = run_two_concurrently(lambda: "a", lambda: 2)
-  assert a == "a"
-  assert b == 2
+def _translating_frames(n: int, shift: int, seed: int) -> list[np.ndarray]:
+  """A textured frame translated ``shift`` px per frame, so every match is an inlier."""
+  rng = np.random.default_rng(seed)
+  base = rng.integers(0, 255, size=(240, 320), dtype=np.uint8)
+  base = cv2.GaussianBlur(base, (0, 0), sigmaX=2.0)
+  return [np.roll(base, shift * k, axis=1)[:, 40:280].copy() for k in range(n)]
 
 
-def test_propagates_exceptions() -> None:
-  def boom() -> int:
-    raise ValueError("boom")
+def _tracks_equal(
+  a: dict[int, dict[int, np.ndarray]], b: dict[int, dict[int, np.ndarray]]
+) -> bool:
+  if a.keys() != b.keys():
+    return False
+  for tid in a:
+    if a[tid].keys() != b[tid].keys():
+      return False
+    for kf in a[tid]:
+      if not np.array_equal(a[tid][kf], b[tid][kf]):
+        return False
+  return True
 
-  with pytest.raises(ValueError, match="boom"):
-    run_two_concurrently(lambda: 1, boom)
+
+def test_frontend_parallel_matches_serial() -> None:
+  """Concurrent lens frontends yield exactly the serial run's tracks."""
+  params = _params()
+  cfg = FrontendConfig(n_features=300)
+  front = _translating_frames(6, 2, seed=1)
+  rear = _translating_frames(6, 3, seed=2)
+
+  (_, pf_tracks), (_, pr_tracks) = run_two_concurrently(
+    lambda: run_lens_frontend(front, params, cfg),
+    lambda: run_lens_frontend(rear, params, cfg),
+  )
+  _, sf_tracks = run_lens_frontend(front, params, cfg)
+  _, sr_tracks = run_lens_frontend(rear, params, cfg)
+
+  assert _tracks_equal(pf_tracks, sf_tracks)
+  assert _tracks_equal(pr_tracks, sr_tracks)
+  assert len(sf_tracks) > 0 and len(sr_tracks) > 0
+
+
+def test_anchor_pose_seed_reconstructs_metric_body_poses() -> None:
+  """The seed's world is the anchor-tag frame, through ``body_T_lens``."""
+  ext = gtsam.Pose3(gtsam.Rot3.Rodrigues(0.1, 0.0, 0.0), gtsam.Point3(0.05, 0.0, 0.0))
+  n = 10
+  body = [
+    gtsam.Pose3(
+      gtsam.Rot3.Rodrigues(0.0, 0.02 * k, 0.0), gtsam.Point3(0.1 * k, 0.0, 0.5)
+    )
+    for k in range(n)
+  ]
+  # lens_T_tag = (world_T_lens)^-1 with world = tag and world_T_lens = body o ext.
+  anchor_obs = {k: {"front": body[k].compose(ext).inverse()} for k in range(n)}
+  seed = _anchor_pose_seed(anchor_obs, ext, n)
+  assert seed is not None and len(seed) == n
+  for k in range(n):
+    assert np.allclose(seed[k].matrix(), body[k].matrix(), atol=1e-9)
+
+
+def test_anchor_pose_seed_none_when_too_few_anchor_keyframes() -> None:
+  anchor_obs = {0: {"front": gtsam.Pose3()}, 1: {"front": gtsam.Pose3()}}
+  assert _anchor_pose_seed(anchor_obs, gtsam.Pose3(), 100) is None
+
+
+def test_anchor_metric_scale_recovers_scale() -> None:
+  """With VO = metric positions times ``c``, the estimator returns ``1/c``."""
+  ext = gtsam.Pose3(gtsam.Rot3.Rodrigues(0.1, 0.0, 0.0), gtsam.Point3(0.05, 0.0, 0.0))
+  n = 10
+  metric_body = [
+    gtsam.Pose3(
+      gtsam.Rot3.Rodrigues(0.0, 0.02 * k, 0.0),
+      gtsam.Point3(0.1 * k, 0.03 * k, 0.5),
+    )
+    for k in range(n)
+  ]
+  anchor_obs = {k: {"front": metric_body[k].compose(ext).inverse()} for k in range(n)}
+  c = 0.5
+  vo_body = [
+    gtsam.Pose3(
+      metric_body[k].rotation(),
+      gtsam.Point3(*(c * np.asarray(metric_body[k].translation()))),
+    )
+    for k in range(n)
+  ]
+  scale = _anchor_metric_scale(vo_body, anchor_obs, ext, ext)
+  assert scale is not None
+  assert abs(scale - 1.0 / c) < 1e-9
+
+
+def test_anchor_metric_scale_none_when_degenerate() -> None:
+  """Fewer than 3 anchored keyframes or a zero-spread trajectory yields ``None``."""
+  ext = gtsam.Pose3()
+  two = {k: {"front": gtsam.Pose3()} for k in range(2)}
+  assert _anchor_metric_scale([gtsam.Pose3()] * 2, two, ext, ext) is None
+  # Three anchored views but the VO is stationary → zero spread → None.
+  stationary = [gtsam.Pose3()] * 3
+  obs = {
+    k: {"front": gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(0.1 * k, 0.0, 0.5)).inverse()}
+    for k in range(3)
+  }
+  assert _anchor_metric_scale(stationary, obs, ext, ext) is None
 
 
 def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:
@@ -92,44 +200,3 @@ def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:
   # The drifted tail still feeds the BA factors, which pull its pose onto the structure.
   assert 5 in fk_rel[99]
   assert 7 in fk_rel
-
-
-def _translating_frames(n: int, shift: int, seed: int) -> list[np.ndarray]:
-  """A textured frame translated ``shift`` px per frame, so every match is an inlier."""
-  rng = np.random.default_rng(seed)
-  base = rng.integers(0, 255, size=(240, 320), dtype=np.uint8)
-  base = cv2.GaussianBlur(base, (0, 0), sigmaX=2.0)
-  return [np.roll(base, shift * k, axis=1)[:, 40:280].copy() for k in range(n)]
-
-
-def _tracks_equal(
-  a: dict[int, dict[int, np.ndarray]], b: dict[int, dict[int, np.ndarray]]
-) -> bool:
-  if a.keys() != b.keys():
-    return False
-  for tid in a:
-    if a[tid].keys() != b[tid].keys():
-      return False
-    for kf in a[tid]:
-      if not np.array_equal(a[tid][kf], b[tid][kf]):
-        return False
-  return True
-
-
-def test_frontend_parallel_matches_serial() -> None:
-  """Concurrent lens frontends yield exactly the serial run's tracks."""
-  params = _params()
-  cfg = FrontendConfig(n_features=300)
-  front = _translating_frames(6, 2, seed=1)
-  rear = _translating_frames(6, 3, seed=2)
-
-  (_, pf_tracks), (_, pr_tracks) = run_two_concurrently(
-    lambda: run_lens_frontend(front, params, cfg),
-    lambda: run_lens_frontend(rear, params, cfg),
-  )
-  _, sf_tracks = run_lens_frontend(front, params, cfg)
-  _, sr_tracks = run_lens_frontend(rear, params, cfg)
-
-  assert _tracks_equal(pf_tracks, sf_tracks)
-  assert _tracks_equal(pr_tracks, sr_tracks)
-  assert len(sf_tracks) > 0 and len(sr_tracks) > 0

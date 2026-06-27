@@ -33,6 +33,7 @@ from specialist.vi_ba.imu import (
   preintegrate_between_keyframes,
 )
 from specialist.vi_ba.init import (
+  Alignment,
   apply_alignment_to_poses,
   body_poses_from_lens_poses,
   incremental_sfm,
@@ -475,6 +476,54 @@ def _fill_lens_poses(
   return out
 
 
+def _anchor_pose_seed(
+  anchor_obs_per_kf: dict[int, dict[str, gtsam.Pose3]],
+  body_T_front_lens: gtsam.Pose3,
+  n_keyframes: int,
+) -> list[gtsam.Pose3] | None:
+  """Anchor-PnP body poses, gaps filled; ``None`` when too few keyframes see it."""
+  lens_poses = {
+    kf: sides["front"].inverse()
+    for kf, sides in anchor_obs_per_kf.items()
+    if "front" in sides
+  }
+  if len(lens_poses) < max(8, n_keyframes // 4):
+    return None
+  return body_poses_from_lens_poses(
+    _fill_lens_poses(lens_poses, n_keyframes), body_T_front_lens
+  )
+
+
+def _anchor_metric_scale(
+  body_poses_unscaled: list[gtsam.Pose3],
+  anchor_obs_per_kf: dict[int, dict[str, gtsam.Pose3]],
+  body_T_front_lens: gtsam.Pose3,
+  rear_extrinsic: gtsam.Pose3,
+) -> float | None:
+  """Metric scale: anchor-implied over visual body-position spread, or ``None``."""
+  vo: list[Float64Array] = []
+  anc: list[Float64Array] = []
+  for kf, sides in anchor_obs_per_kf.items():
+    if "front" in sides:
+      ext, lens_T_tag = body_T_front_lens, sides["front"]
+    elif "rear" in sides:
+      ext, lens_T_tag = rear_extrinsic, sides["rear"]
+    else:
+      continue
+    body_in_tag = ext.compose(lens_T_tag).inverse()
+    anc.append(np.asarray(body_in_tag.translation(), dtype=np.float64))
+    vo.append(np.asarray(body_poses_unscaled[kf].translation(), dtype=np.float64))
+  if len(vo) < 3:
+    return None
+  vo_arr = np.asarray(vo, dtype=np.float64)
+  anc_arr = np.asarray(anc, dtype=np.float64)
+  vo_spread = float(np.sqrt(((vo_arr - vo_arr.mean(axis=0)) ** 2).sum()))
+  anc_spread = float(np.sqrt(((anc_arr - anc_arr.mean(axis=0)) ** 2).sum()))
+  if vo_spread < 1e-9:
+    return None
+  return anc_spread / vo_spread
+
+
 def _side_lens_and_pose(
   sides: dict[str, gtsam.Pose3], front_lens: LensSetup, rear_lens: LensSetup
 ) -> tuple[LensSetup, gtsam.Pose3 | None]:
@@ -746,7 +795,8 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   lens_poses = interpolate_camera_poses(r_cw_last, t_cw_last, n_keyframes)
   body_poses_unscaled = body_poses_from_lens_poses(lens_poses, init_extrinsic)
 
-  # Visual odometry replaces the straight line when enough keyframes register.
+  # Visual odometry recovers the trajectory shape from front-lens correspondences.
+  anchor_seed_used = False
   if args.frontend.use_visual_odometry:
     sfm_cams, _ = incremental_sfm(
       _bearings_by_track(front_kept, front_lens.params),
@@ -766,10 +816,22 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
         f"{len(sfm_cams)}/{n_keyframes} keyframes"
       )
     else:
-      print(
-        f"  [{slot}] visual-odometry init: only {len(sfm_cams)}/{n_keyframes} "
-        f"keyframes registered — using straight-line init"
+      anchor_seed = _anchor_pose_seed(
+        anchor_obs_per_kf, front_lens.body_T_lens, n_keyframes
       )
+      if anchor_seed is not None:
+        body_poses_unscaled = anchor_seed
+        anchor_seed_used = True
+        n_anchor_kf = sum("front" in s for s in anchor_obs_per_kf.values())
+        print(
+          f"  [{slot}] visual-odometry starved ({len(sfm_cams)}/{n_keyframes}); "
+          f"anchor-pose init from {n_anchor_kf} anchor keyframes"
+        )
+      else:
+        print(
+          f"  [{slot}] visual-odometry init: only {len(sfm_cams)}/{n_keyframes} "
+          f"keyframes registered — using straight-line init"
+        )
 
   imu, bias0, gravity_world_initial = _imu_and_initial_gravity(
     args, data, keyframe_times, body_poses_unscaled
@@ -805,17 +867,35 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     if gravity_world_initial is not None
     else (0.0, 0.0, -9.81)
   )
-  params_pim = make_preintegration_params(
-    gyro_noise_sigma=args.imu.gyro_noise_sigma,
-    accel_noise_sigma=args.imu.accel_noise_sigma,
-    gyro_bias_rw_sigma=args.imu.gyro_random_walk,
-    accel_bias_rw_sigma=args.imu.accel_random_walk,
-    gravity_world=pim_gravity,
+
+  def _pim_params(
+    gravity: tuple[float, float, float],
+  ) -> gtsam.PreintegrationCombinedParams:
+    return make_preintegration_params(
+      gyro_noise_sigma=args.imu.gyro_noise_sigma,
+      accel_noise_sigma=args.imu.accel_noise_sigma,
+      gyro_bias_rw_sigma=args.imu.gyro_random_walk,
+      accel_bias_rw_sigma=args.imu.accel_random_walk,
+      gravity_world=gravity,
+    )
+
+  params_pim = _pim_params(pim_gravity)
+  # Scale: 1.0 for an anchor seed, else from a visible anchor, else floated on the IMU.
+  anchor_scale = _anchor_metric_scale(
+    body_poses_visual, anchor_obs_per_kf, front_lens.body_T_lens, rear_lens.body_T_lens
   )
+  fixed_scale = 1.0 if anchor_seed_used else anchor_scale
   pim_init = preintegrate_between_keyframes(params_pim, imu, keyframe_times, bias0)
-  alignment = visual_inertial_align(
-    body_poses_visual, pim_init, fixed_gravity=gravity_world_initial
-  )
+
+  def _align(poses: list[gtsam.Pose3]) -> Alignment:
+    return visual_inertial_align(
+      poses,
+      pim_init,
+      fixed_gravity=gravity_world_initial,
+      fixed_scale=fixed_scale,
+    )
+
+  alignment = _align(body_poses_visual)
   if alignment.scale < 0.0:
     origin = np.asarray(body_poses_visual[0].translation(), dtype=np.float64)
     body_poses_visual = [
@@ -825,9 +905,7 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
       )
       for p in body_poses_visual
     ]
-    alignment = visual_inertial_align(
-      body_poses_visual, pim_init, fixed_gravity=gravity_world_initial
-    )
+    alignment = _align(body_poses_visual)
   # Prefer the IMU stationary-window gravity to the LSQ fit, which can tilt the world.
   if gravity_world_initial is not None:
     alignment = replace(alignment, gravity_world=gravity_world_initial)
@@ -835,13 +913,7 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   body_poses, world_R_prealign = apply_alignment_to_poses(body_poses_visual, alignment)
   world_rot_mat = world_R_prealign.matrix()
   velocities = [world_rot_mat @ v for v in alignment.velocities]
-  params_aligned = make_preintegration_params(
-    gyro_noise_sigma=args.imu.gyro_noise_sigma,
-    accel_noise_sigma=args.imu.accel_noise_sigma,
-    gyro_bias_rw_sigma=args.imu.gyro_random_walk,
-    accel_bias_rw_sigma=args.imu.accel_random_walk,
-    gravity_world=(0.0, 0.0, -9.81),
-  )
+  params_aligned = _pim_params((0.0, 0.0, -9.81))
   pim = preintegrate_between_keyframes(params_aligned, imu, keyframe_times, bias0)
 
   use_anchor = args.anchor.tag_id >= 0 and bool(anchor_obs_per_kf)

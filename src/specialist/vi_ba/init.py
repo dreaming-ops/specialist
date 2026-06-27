@@ -359,6 +359,7 @@ def visual_inertial_align(
   preintegrated: list[gtsam.PreintegratedCombinedMeasurements],
   velocity_regularization: float = 1.0e-2,
   fixed_gravity: Float64Array | None = None,
+  fixed_scale: float | None = None,
 ) -> Alignment:
   """Least-squares scale, gravity and velocities from keyframe NavState constraints."""
   n = len(body_poses)
@@ -411,6 +412,14 @@ def visual_inertial_align(
     rows_g[:, 1:4] = w_g * eye3
     A = np.vstack([A, rows_g])
     b = np.concatenate([b, w_g * np.asarray(fixed_gravity, dtype=np.float64)])
+
+  if fixed_scale is not None:
+    # Pin the metric scale, for a seed that is already metric.
+    w_s = 1.0e3
+    row_s = np.zeros((1, n_unknowns))
+    row_s[0, 0] = w_s
+    A = np.vstack([A, row_s])
+    b = np.concatenate([b, [w_s * fixed_scale]])
 
   x, *_ = np.linalg.lstsq(A, b, rcond=None)
   scale = float(x[0])
