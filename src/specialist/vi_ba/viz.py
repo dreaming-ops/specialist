@@ -288,7 +288,7 @@ class CameraVizData:
   tcp_in_base_tag: tuple[float, float, float] | None = None
   front_lens_extrinsic: gtsam.Pose3 | None = None
   rear_lens_extrinsic: gtsam.Pose3 | None = None
-  # Per-keyframe ``(n, 2, 3)`` lens-to-tag lines, one per firing factor.
+  # Per-keyframe ``(n, 2, 3)`` lens lines to anchor corners and to other cameras' tags.
   anchor_obs_lines: list[Float64Array] | None = None
   cross_tracker_lines: list[Float64Array] | None = None
 
