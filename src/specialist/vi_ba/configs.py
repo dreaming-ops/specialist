@@ -24,6 +24,8 @@ class FrontendCfg:
   revisit: bool = True
   loop_closure_max_dist: float = 0.1
   loop_closure_min_kf_gap: int = 15
+  # Run loop closure in anchor-seeded mode as well as under visual odometry.
+  anchored_revisit: bool = True
   # Shape the trajectory by front-lens SfM; the anchor enters only as a graph factor.
   use_visual_odometry: bool = True
   # Cap on triangulated landmarks per lens in VO mode, keeping the longest tracks.

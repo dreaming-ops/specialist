@@ -41,7 +41,7 @@ src/specialist/
 ├── record/      offset_v3 (factory lens intrinsics and body_T_lens)
 ├── vi_ba/       per-tracker visual-inertial bundle adjustment — single_camera
 │                (per-camera prep), pipeline + features (frontend), init
-│                (two-view bootstrap + VI alignment), build / compose (graph),
+│                (incremental SfM + VI alignment), build / compose (graph),
 │                mei_factor, imu, tag_detection, optimize,
 │                configs, viz
 ├── graph/       factors (shared GTSAM factor constructors)
@@ -67,4 +67,3 @@ uv run python scripts/video_imu_timing.py --input-insv path/to/yaw.insv
 uv run python scripts/track.py --input-insvs path/to/manipulation.insv --base-tag-ids <base-tag-id> --anchor.tag-id <anchor-tag-id> --window.master-start 2.0 --window.duration 10.0
 ```
 
-`track.py` runs both fisheyes jointly with the MEI projection factor using each lens's intrinsics and body_T_lens decoded from `offset_v3` — no separate calibration YAML needed — pulling IMU preintegration (`CombinedImuFactor` chain) into the graph and recovering metric scale + gravity via a VINS-Mono-style linear alignment between a short visual-only pre-pass and the IMU integrations. It accepts any number of `.insv` inputs (one tracker per input) and audio-syncs them via clap detection when `N ≥ 2`.
