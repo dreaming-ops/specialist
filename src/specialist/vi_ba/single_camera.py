@@ -24,6 +24,7 @@ from specialist.vi_ba.configs import (
   ImuCfg,
 )
 from specialist.vi_ba.features import detect_orb, match_pair
+from specialist.vi_ba.finger_kinematics import FingerReproj, build_finger_reproj
 from specialist.vi_ba.imu import (
   ImuSamples,
   factory_imu_bias,
@@ -59,6 +60,7 @@ from specialist.vi_ba.tag_detection import (
   estimate_lens_T_tag,
   lens_T_tag_per_kf,
 )
+from specialist.vi_ba.urdf_joints import read_revolute_joints
 
 Float64Array = npt.NDArray[np.float64]
 
@@ -105,6 +107,7 @@ class CameraArgs:
   keyframe_every: int = 0  # 0 = auto (round(fps/10)); see WindowCfg.keyframe_every
   # Retain decoded keyframes (as JPEG) for the Rerun frame overlay.
   keep_frames: bool = False
+  urdf_path: Path | None = None  # gripper URDF for finger joint kinematics
   # 0 disables the corresponding URDF revolute joint angle recovery.
   left_finger_tag_id: int = 0
   right_finger_tag_id: int = 0
@@ -132,8 +135,6 @@ class PreparedCamera:
   anchor_obs_per_kf: dict[int, dict[str, gtsam.Pose3]]
   anchor_local: gtsam.Pose3 | None
   body_T_base_tag: gtsam.Pose3 | None
-  # URDF joint name → per-keyframe angle about the URDF z-axis, NaN with no tag pose.
-  joint_angles: dict[str, list[float]]
   keyframe_times: Float64Array
   # JPEG-encoded keyframes for the Rerun overlay (empty unless retained).
   front_frames: list[bytes]
@@ -145,11 +146,16 @@ class PreparedCamera:
   front_rejected: dict[int, dict[int, Float64Array]]
   rear_rejected: dict[int, dict[int, Float64Array]]
   rear_static_mask_rects: list[tuple[int, int, int, int]]
+  # URDF joint name -> kinematic inputs for the joint-angle reprojection factors.
+  finger_reproj: dict[str, FingerReproj]
+  # Per-keyframe body-frame finger-tag poses from rear-lens PnP, for the finger tie.
   body_T_left_finger_per_kf: dict[int, gtsam.Pose3]
   body_T_right_finger_per_kf: dict[int, gtsam.Pose3]
   left_finger_tag_id: int
   right_finger_tag_id: int
   n_keyframes: int
+  # Joint name -> solved angle about the joint z-axis per keyframe, NaN where unseen.
+  joint_angles: dict[str, list[float]] = field(default_factory=dict)
 
   def vi_graph_inputs(self) -> dict[str, object]:
     """Bundle this tracker's state + lens data for ``build_vi_graph``."""
@@ -210,23 +216,6 @@ def _apply_static_mask_rects(
   return masks
 
 
-def _per_kf_cam_T_tag(
-  tags_per_kf: list[list[TagDetection]],
-  lens: LensSetup,
-  tag_id: int,
-  tag_size: float,
-  n_keyframes: int,
-  kf_rotations: list[Float64Array],
-) -> list[gtsam.Pose3 | None]:
-  """Per-keyframe ``lens_T_tag`` of one tag, IPPE resolved by the gyro-rotated prior."""
-  out: list[gtsam.Pose3 | None] = [None] * n_keyframes
-  for kf, p in lens_T_tag_per_kf(
-    tags_per_kf[:n_keyframes], tag_id, tag_size, lens.params, kf_rotations
-  ).items():
-    out[kf] = p
-  return out
-
-
 def _mean_pose(poses: list[gtsam.Pose3]) -> gtsam.Pose3:
   """Mean translation and log-mean rotation about the first pose."""
   ref = poses[0]
@@ -240,36 +229,6 @@ def _mean_pose(poses: list[gtsam.Pose3]) -> gtsam.Pose3:
   return gtsam.Pose3(
     ref.rotation().compose(delta), gtsam.Point3(*translations.mean(axis=0))
   )
-
-
-def _finger_joint_angles_per_kf(
-  tags_per_kf: list[list[TagDetection]],
-  lens: LensSetup,
-  base_tag_id: int,
-  finger_tag_id: int,
-  tag_size: float,
-  n_keyframes: int,
-  kf_rotations: list[Float64Array],
-) -> list[float]:
-  """Per keyframe, the finger's signed +z angle to the base tag; NaN where unseen."""
-  cam_T_base_per_kf = _per_kf_cam_T_tag(
-    tags_per_kf, lens, base_tag_id, tag_size, n_keyframes, kf_rotations
-  )
-  lens_T_finger_tag_per_kf = _per_kf_cam_T_tag(
-    tags_per_kf, lens, finger_tag_id, tag_size, n_keyframes, kf_rotations
-  )
-  observed_base = [p for p in cam_T_base_per_kf if p is not None]
-  if not observed_base:
-    return [float("nan")] * n_keyframes
-  lens_T_base_tag = _mean_pose(observed_base)
-  out: list[float] = [float("nan")] * n_keyframes
-  for kf in range(n_keyframes):
-    lens_T_finger_tag = lens_T_finger_tag_per_kf[kf]
-    if lens_T_finger_tag is None:
-      continue
-    base_tag_T_finger_tag = lens_T_base_tag.between(lens_T_finger_tag)
-    out[kf] = float(gtsam.Rot3.Logmap(base_tag_T_finger_tag.rotation())[2])
-  return out
 
 
 def _bearings_by_track(
@@ -579,6 +538,72 @@ def _imu_and_initial_gravity(
       body_poses_unscaled[kf_for_g].rotation().matrix() @ gravity_body
     )
   return imu, bias0, gravity_world_initial
+
+
+def _recover_gripper_tags(
+  args: CameraArgs,
+  rear_tags_per_kf: list[list[TagDetection]],
+  rear_lens: LensSetup,
+  n_keyframes: int,
+  kf_rotations: list[Float64Array],
+) -> tuple[gtsam.Pose3 | None, dict[str, FingerReproj]]:
+  """Base-tag body pose and per-finger reprojection inputs."""
+  base_tag_obs = lens_T_tag_per_kf(
+    rear_tags_per_kf,
+    tag_id=args.base_tag_id,
+    tag_size=args.gripper.tag_size,
+    params=rear_lens.params,
+    kf_rotations=kf_rotations,
+  )
+  body_T_base_tag: gtsam.Pose3 | None = None
+  if base_tag_obs:
+    body_T_base_tag = _mean_pose(
+      [rear_lens.body_T_lens.compose(p) for p in base_tag_obs.values()]
+    )
+  if args.base_tag_id > 0 and body_T_base_tag is None:
+    raise ValueError(
+      f"base tag {args.base_tag_id} was configured but never detected in the rear "
+      f"lens across {n_keyframes} keyframes — its base-tag, finger, and cross-tracker "
+      f"factors would all be silently disabled. Wrong id, or the tag out of the "
+      f"rear-lens field of view?"
+    )
+
+  finger_joint_tags = (
+    ("left_finger", args.left_finger_tag_id),
+    ("right_finger", args.right_finger_tag_id),
+  )
+  finger_reproj: dict[str, FingerReproj] = {}
+  if args.urdf_path is not None:
+    # URDF joints sit in the base frame; body_T_base_tag carries them to the body.
+    joints = read_revolute_joints(args.urdf_path)
+    for joint_name, finger_id in finger_joint_tags:
+      if finger_id <= 0:
+        continue
+      joint = joints.get(joint_name)
+      if joint is None or joint.joint_T_tag0 is None:
+        raise ValueError(
+          f"finger tag {finger_id} was configured for '{joint_name}', but "
+          f"{args.urdf_path} has no revolute joint '{joint_name}' carrying an "
+          f"AprilTag frame (revolute joints present: {sorted(joints)}). Wrong URDF?"
+        )
+      if body_T_base_tag is None:
+        continue
+      reproj = build_finger_reproj(
+        joint,
+        rear_tags_per_kf[:n_keyframes],
+        rear_lens,
+        finger_id,
+        body_T_base_tag,
+        args.gripper.tag_size,
+      )
+      if reproj is None:
+        print(
+          f"  [warn] finger tag {finger_id} ({joint_name}) never detected in the "
+          f"rear keyframes; its angle stays unsolved"
+        )
+      else:
+        finger_reproj[joint_name] = reproj
+  return body_T_base_tag, finger_reproj
 
 
 def _snap_to_anchor_and_fill_gaps(
@@ -1035,19 +1060,6 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   print(f"  [{slot}] VIO LSQ |v|max={v_max:.2f} m/s")
   biases = [bias0 for _ in range(n_keyframes)]
 
-  base_tag_obs = lens_T_tag_per_kf(
-    rear_tags_per_kf,
-    tag_id=args.base_tag_id,
-    tag_size=args.gripper.tag_size,
-    params=rear_lens.params,
-    kf_rotations=rear_kf_rotations,
-  )
-  body_T_base_tag: gtsam.Pose3 | None = None
-  if base_tag_obs:
-    body_T_base_tag = _mean_pose(
-      [rear_lens.body_T_lens.compose(p) for p in base_tag_obs.values()]
-    )
-
   def _per_kf_body_T_finger(finger_id: int) -> dict[int, gtsam.Pose3]:
     if finger_id <= 0:
       return {}
@@ -1070,22 +1082,9 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   body_T_left_finger_per_kf = _per_kf_body_T_finger(args.left_finger_tag_id)
   body_T_right_finger_per_kf = _per_kf_body_T_finger(args.right_finger_tag_id)
 
-  joint_angles: dict[str, list[float]] = {}
-  for joint_name, finger_id in (
-    ("left_finger", args.left_finger_tag_id),
-    ("right_finger", args.right_finger_tag_id),
-  ):
-    if finger_id <= 0:
-      continue
-    joint_angles[joint_name] = _finger_joint_angles_per_kf(
-      rear_tags_per_kf,
-      rear_lens,
-      base_tag_id=args.base_tag_id,
-      finger_tag_id=finger_id,
-      tag_size=args.gripper.tag_size,
-      n_keyframes=n_keyframes,
-      kf_rotations=rear_kf_rotations,
-    )
+  body_T_base_tag, finger_reproj = _recover_gripper_tags(
+    args, rear_tags_per_kf, rear_lens, n_keyframes, rear_kf_rotations
+  )
 
   return PreparedCamera(
     name=slot,
@@ -1103,7 +1102,6 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     anchor_obs_per_kf=anchor_obs_per_kf,
     anchor_local=anchor_local,
     body_T_base_tag=body_T_base_tag,
-    joint_angles=joint_angles,
     keyframe_times=keyframe_times,
     front_frames=front_color,
     rear_frames=rear_color,
@@ -1114,6 +1112,7 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     front_rejected=front_rejected,
     rear_rejected=rear_rejected,
     rear_static_mask_rects=static_rects,
+    finger_reproj=finger_reproj,
     body_T_left_finger_per_kf=body_T_left_finger_per_kf,
     body_T_right_finger_per_kf=body_T_right_finger_per_kf,
     left_finger_tag_id=args.left_finger_tag_id,

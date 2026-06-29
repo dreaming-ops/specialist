@@ -61,6 +61,13 @@ class GripperCfg:
   tag_size: float = 0.01
   # Tool center point (m), the jaw center between the fingertips.
   tcp_in_base_tag: tuple[float, float, float] = (0.1095, 0.0, -0.018)
+  # Finger-angle sigmas: corner reprojection (px) and left-right symmetry prior (rad).
+  finger_reproj_sigma: float = 1.5
+  finger_symmetry_sigma: float = 0.05
+  # Base-tag pose sigmas: corner reprojection (px) and loose PnP-seeded prior (rad, m).
+  base_tag_reproj_sigma: float = 1.5
+  base_tag_prior_sigma_rot: float = 0.3
+  base_tag_prior_sigma_trans: float = 0.05
 
 
 @dataclass

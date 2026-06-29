@@ -9,10 +9,12 @@ import gtsam
 __all__ = ["CameraKeys"]
 
 ANCHOR_CHAR = "A"
+BASE_TAG_CHAR = "G"
 _POSE_CHAR = "p"
 _VEL_CHAR = "v"
 _BIAS_CHAR = "b"
 _LANDMARK_CHAR = "l"
+_JOINT_ANGLE_CHAR = "a"
 
 _MAX_KEYFRAMES_PER_CAMERA = 100_000
 _MAX_LANDMARKS_PER_CAMERA = 1_000_000
@@ -62,6 +64,19 @@ class CameraKeys:
 
   def rear_landmark_key(self, slot: str, track_id: int) -> int:
     return self._lm_key(slot, 1, track_id)
+
+  def theta_key(self, slot: str, finger_idx: int, keyframe_idx: int) -> int:
+    """Key for a finger joint angle at ``kf``; ``finger_idx`` 0 is left, 1 is right."""
+    return int(
+      gtsam.symbol(
+        _JOINT_ANGLE_CHAR,
+        (self.camera_index(slot) * 2 + finger_idx) * self._kf_step + keyframe_idx,
+      )
+    )
+
+  def base_tag_key(self, slot: str) -> int:
+    """Key for the camera's static base-tag pose in its body frame."""
+    return int(gtsam.symbol(BASE_TAG_CHAR, self.camera_index(slot)))
 
   def anchor_corner_key(self, corner_idx: int) -> int:
     """Key for one of the anchor tag's four metric corners, ``corner_idx`` 0..3."""

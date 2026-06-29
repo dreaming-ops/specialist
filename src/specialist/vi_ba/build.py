@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import astuple, dataclass
 
 import gtsam
@@ -13,7 +13,7 @@ from gtsam.symbol_shorthand import B, L, V, X
 from specialist.loader.mei_model import MeiParams
 
 try:
-  # Native C++ MEI reprojection factor on (body pose, world landmark).
+  # Native C++ MEI reprojection factors (pose+point, base-tag, and finger).
   from specialist.vi_ba._mei_factor_cpp import make_mei_factor_cpp
 except ImportError as _exc:  # pragma: no cover - extension is built by uv sync
   raise ImportError(
@@ -29,6 +29,7 @@ _REAR_LANDMARK_OFFSET = 1_000_000
 __all__ = [
   "LensSetup",
   "add_mei_factor",
+  "add_mei_tag_factor",
   "build_vi_graph",
   "front_landmark_key",
   "huber_pixel_noise",
@@ -42,6 +43,10 @@ def _as_pixel(v: Float64Array) -> Float64Array:
 
 def _as_vec3(v: Float64Array) -> Float64Array:
   return np.asarray(v, dtype=np.float64).reshape(3)
+
+
+def _as_point3(v: Float64Array) -> gtsam.Point3:
+  return gtsam.Point3(*np.asarray(v, dtype=np.float64).reshape(3))
 
 
 def _gauge_noise() -> gtsam.noiseModel.Base:
@@ -93,6 +98,33 @@ def add_mei_factor(
       lens.body_T_lens,
       np.array(astuple(lens.params)),
       bearing,
+    )
+  )
+
+
+def add_mei_tag_factor(
+  graph: gtsam.NonlinearFactorGraph,
+  make: Callable[..., gtsam.NonlinearFactor],
+  keys: Sequence[int],
+  pixel: Float64Array,
+  noise: gtsam.noiseModel.Base,
+  lens: LensSetup,
+  corner: Float64Array,
+  obs_bearing: Float64Array,
+  base_T_joint: gtsam.Pose3 | None = None,
+) -> None:
+  """Push one native ``make`` factor on ``keys`` for a tag ``corner`` through ``lens``."""
+  joint = () if base_T_joint is None else (base_T_joint,)
+  graph.push_back(
+    make(
+      *keys,
+      _as_pixel(pixel),
+      noise,
+      lens.body_T_lens,
+      *joint,
+      _as_point3(corner),
+      np.array(astuple(lens.params)),
+      _as_vec3(obs_bearing),
     )
   )
 

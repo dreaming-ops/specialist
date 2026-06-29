@@ -1,10 +1,15 @@
 # specialist
 
-Multi-camera AprilTag SLAM for human data collection.
+6DoF tracking of gripper-mounted Insta360 dual-fisheye + IMU cameras in an
+AprilTag wall-anchor frame, for human fingertip data collection.
 
-Each hand-held gripper carries an Insta360 (two back-to-back fisheye cameras) plus an AprilTag mounted on the body. A large wall- or ceiling-mounted anchor tag provides the world gauge. Per-tracker VIO supplies odometry; the lenses see the anchor and the other cameras' tags. A GTSAM `NonlinearFactorGraph` fuses all three signals into globally-consistent, inter-tracker-consistent trajectories.
-
-The pipeline runs on real Insta360 X3 captures end to end: the loader parses `.insv` video + telemetry, and `scripts/track.py` runs per-tracker visual-inertial bundle adjustment against the wall anchor. See **Probes** below for the real-data characterization scripts the pipeline is built on.
+Each gripper carries an Insta360 (two back-to-back fisheye cameras) plus an IMU,
+with AprilTags rigidly mounted on the gripper body. A wall- or ceiling-mounted
+anchor tag pins the world frame and metric scale. One GTSAM factor graph fuses
+each camera's visual odometry, IMU preintegration, and tag-corner reprojection;
+with multiple grippers, sightings of each other's tags tie the cameras
+together. The output is globally-consistent metric trajectories and finger
+joint angles.
 
 A transform is a_T_b: p_a = a_T_b · p_b, the pose of frame b in frame a. a_R_b
 is its rotation, and a_t_b is b's origin in frame a.
@@ -15,7 +20,10 @@ is its rotation, and a_t_b is b's origin in frame a.
 uv sync --extra dev
 ```
 
-This pulls `gtsam>=4.3a0` (the alpha — it is the only release with cp312 wheels), `numpy`, `scipy`, `rerun-sdk`, `tyro`, `telemetry-parser`, `opencv-python`, `pupil-apriltags`, `allantools`, and `imageio-ffmpeg` (wheel-bundled ffmpeg for audio clap-sync), plus the dev tools `pytest`, `ruff`, `mypy`, and `pre-commit`. `specialist-description` (gripper URDF assets) is a private SSH git dependency.
+Pulls `gtsam>=4.3a0` (the alpha is the only release with cp312 wheels), `numpy`,
+`scipy`, `rerun-sdk`, `tyro`, `telemetry-parser`, `opencv-python`,
+`pupil-apriltags`, `allantools`, plus dev tools `pytest`, `ruff`,
+`mypy`, `pre-commit`.
 
 `uv sync` also compiles the native MEI bundle-adjustment factor
 (`_mei_factor_cpp`). This C++ port of the reprojection factor makes bundle
@@ -38,48 +46,53 @@ uv run build-mei-factor
 uv run pytest
 ```
 
-Unit tests per `loader` / `vi_ba` module, plus integration tests covering the VI-BA pipeline on a synthetic scene and IMU preintegration on a real 30-second stationary window. VI-BA real-data assertions use tiny fixtures (40-float `offset_v3` JSON, 30-s IMU `.npz`) committed under `tests/fixtures/vi_ba/`.
+## Run
 
-## Visualize
+`scripts/track.py` is the pipeline. One `.insv` per tracker; with `N ≥ 2` the
+clips are audio-synced via clap detection. Base tag ids must be distinct per
+tracker (cross-tracker disambiguation).
 
-Open a saved `.rrd` in the Rerun viewer:
+Single tracker against a wall anchor:
 
 ```
-uv run rerun logs/track_<stamp>.rrd
+uv run python scripts/track.py \
+  --input-insvs path/to/clip.insv \
+  --base-tag-ids <base-tag-id> --anchor.tag-id <anchor-tag-id> \
+  --window.duration None --output-dir logs/run
 ```
+
+Two grippers (cross-tag multi-tracker):
+
+```
+uv run python scripts/track.py \
+  --input-insvs path/to/g0.insv path/to/g1.insv \
+  --base-tag-ids <g0-base-tag-id> <g1-base-tag-id> --anchor.tag-id <anchor-tag-id> \
+  --left-finger-tag-ids <g0-left-finger-tag-id> <g1-left-finger-tag-id> --right-finger-tag-ids <g0-right-finger-tag-id> <g1-right-finger-tag-id> \
+  --window.duration None --output-dir logs/run
+```
+
+`track.py` writes a per-keyframe trajectory JSON and a Rerun `.rrd`.
+`--log-frames-in-rrd` adds the camera image panels and the gripper URDF mesh.
+View a result with `uv run rerun logs/run/track_<stamp>.rrd`.
 
 ## Layout
 
 ```
 src/specialist/
-├── loader/      parse_insv, mei_model, audio_sync
+├── vi_ba/       the pipeline — single_camera (per-camera prep), pipeline +
+│                features (frontend), init (incremental SfM + VI alignment),
+│                build / compose (graph) + the native cpp/ MEI factor,
+│                finger_kinematics + urdf_joints (gripper joint recovery), imu,
+│                tag_detection, optimize, landmark_cull,
+│                configs, viz
 ├── record/      offset_v3 (factory lens intrinsics and body_T_lens)
-├── vi_ba/       per-tracker visual-inertial bundle adjustment — single_camera
-│                (per-camera prep), pipeline + features (frontend), init
-│                (incremental SfM + VI alignment), build / compose (graph) +
-│                the native cpp/ MEI factor, imu, tag_detection,
-│                optimize, landmark_cull, configs,
-│                viz
+├── loader/      parse_insv, mei_model, audio_sync
 ├── graph/       factors (shared GTSAM factor constructors)
 └── synthesis/   tag_detection (the cross-tracker observation record)
 
-tests/
-├── unit/        loader + vi_ba module tests
-└── integration/ VI-BA pipeline on a synthetic scene, IMU preintegration
-
 scripts/
-├── imu.py              sample rate, jitter, gaps, Allan deviation
-├── video_imu_timing.py LK-flow / gyro cross-correlation + rolling-shutter shear
-└── track.py            VI-BA driver for any number of cameras (N ≥ 1)
+├── track.py            the VI-BA driver (N ≥ 1 cameras)
+├── imu.py              IMU rate / noise / Allan-deviation probe
+├── video_imu_timing.py video↔IMU clock + rolling-shutter probe
+└── _probe.py           summary output the probes share
 ```
-
-## Probes
-
-`scripts/` holds real-data probes that answer open questions about Insta360 X3 captures before the SLAM pipeline is built on top. Each probe is a standalone `tyro`-driven CLI that writes a Rerun `.rrd` and a JSON summary to `logs/` and prints a one-line verdict. Pass `--input-insv <path>` per run.
-
-```
-uv run python scripts/imu.py --input-insv path/to/stationary.insv
-uv run python scripts/video_imu_timing.py --input-insv path/to/yaw.insv
-uv run python scripts/track.py --input-insvs path/to/manipulation.insv --base-tag-ids <base-tag-id> --anchor.tag-id <anchor-tag-id> --window.master-start 2.0 --window.duration 10.0
-```
-
