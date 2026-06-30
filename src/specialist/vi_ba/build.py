@@ -13,7 +13,6 @@ from gtsam.symbol_shorthand import B, L, V, X
 from specialist.loader.mei_model import MeiParams
 
 try:
-  # Native C++ MEI reprojection factors (pose+point, base-tag, and finger).
   from specialist.vi_ba._mei_factor_cpp import make_mei_factor_cpp
 except ImportError as _exc:  # pragma: no cover - extension is built by uv sync
   raise ImportError(

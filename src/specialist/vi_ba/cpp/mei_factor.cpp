@@ -1,12 +1,15 @@
 // MEI (unified-sphere + Brown-Conrady incl. k3) reprojection factors with
 // analytical Jacobians. Every factor reprojects a point (a feature landmark or
 // an AprilTag corner) through one shared lens kernel (MeiCorner) and differs
-// only in how the point reaches the body frame; the finger factor carries a
-// RevoluteCorner joint kernel:
-//   * MeiFactorCpp        — binary on (body_pose, world_landmark).
-//   * MeiFingerFactorCpp  — binary on (theta, body_T_base_tag); a finger tag
-//                           on a 1-DoF joint off the base tag.
-//   * MeiBaseTagFactorCpp — unary on body_T_base_tag; the base tag.
+// only in how the point reaches the body frame; the two finger factors also
+// share a RevoluteCorner joint kernel:
+//   * MeiFactorCpp            — binary on (body_pose, world_landmark).
+//   * MeiFingerFactorCpp      — binary on (theta, body_T_base_tag); a finger tag
+//                               on a 1-DoF joint off the base tag.
+//   * MeiBaseTagFactorCpp     — unary on body_T_base_tag; the base tag.
+//   * MeiCrossTagFactorCpp    — ternary on (observer_pose, owner_pose,
+//                               body_T_base_tag); owner's base tag seen by another.
+//   * MeiCrossFingerFactorCpp — quaternary, adds the owner's joint angle theta.
 // The forward projection mirrors mei_project in specialist.loader.mei_model; the
 // analytical Jacobian is native-only, validated against finite differences of it.
 // Built by specialist.vi_ba._buildext and loaded by build.py.
@@ -123,10 +126,7 @@ struct MeiCorner {
   }
 };
 
-// The finger factor's revolute-joint kernel: the joint origin in the
-// base-tag frame (base_T_joint) and the tag corner in the joint frame at
-// theta = 0. ``corner`` gives the corner in the base-tag frame at angle theta
-// (q = base_T_joint . Rz(theta) . c) and its derivative dq/dtheta.
+// The finger factors' revolute joint: q = base_T_joint . Rz(theta) . c and dq/dtheta.
 struct RevoluteCorner {
   Matrix3 base_R_joint;
   Vector3 base_t_joint;
@@ -251,6 +251,110 @@ class MeiBaseTagFactorCpp : public NoiseModelFactorN<Pose3> {
   }
 };
 
+// Ternary on (observer_pose X_O, owner_pose X_W, body_T_base_tag): observer O's
+// lens sees owner W's base tag, so
+//   p_lensO = lensO_T_bodyO . X_O^-1 . X_W . body_T_base_tag . c
+class MeiCrossTagFactorCpp : public NoiseModelFactorN<Pose3, Pose3, Pose3> {
+  using Base = NoiseModelFactorN<Pose3, Pose3, Pose3>;
+  MeiCorner lens_;
+  Vector3 c_;  // base tag corner in the base-tag frame
+
+ public:
+  MeiCrossTagFactorCpp(Key observerKey, Key ownerKey, Key baseTagKey,
+                       const SharedNoiseModel& model, MeiCorner lens,
+                       const Vector3& c)
+      : Base(model, observerKey, ownerKey, baseTagKey),
+        lens_(std::move(lens)),
+        c_(c) {}
+
+  Vector evaluateError(const Pose3& X_O, const Pose3& X_W,
+                       const Pose3& body_T_base_tag, OptionalMatrixType H1,
+                       OptionalMatrixType H2,
+                       OptionalMatrixType H3) const override {
+    const Matrix3 R_bt = body_T_base_tag.rotation().matrix();
+    const Vector3 m = R_bt * c_ + body_T_base_tag.translation();  // owner body
+    const Matrix3 R_W = X_W.rotation().matrix();
+    const Vector3 p_world = R_W * m + X_W.translation();
+    const Matrix3 R_bwO = X_O.rotation().matrix().transpose();
+    const Vector3 p_bodyO = R_bwO * (p_world - X_O.translation());
+
+    Vector2 residual;
+    Matrix23 j_mei_r_lb;
+    if (!lens_.reproject(p_bodyO, residual, j_mei_r_lb)) {
+      if (H1) *H1 = Matrix::Zero(2, 6);
+      if (H2) *H2 = Matrix::Zero(2, 6);
+      if (H3) *H3 = Matrix::Zero(2, 6);
+      return Vector2::Zero();
+    }
+    if (H1) *H1 = pose_to_jac(j_mei_r_lb, p_bodyO);  // observer pose
+    if (H2 || H3) {
+      const Matrix23 j_world = j_mei_r_lb * R_bwO;
+      if (H2) *H2 = pose_from_jac(j_world, R_W, m);  // owner pose
+      if (H3) *H3 = pose_from_jac(j_world * R_W, R_bt, c_);  // base-tag pose
+    }
+    return residual;
+  }
+
+  gtsam::NonlinearFactor::shared_ptr clone() const override {
+    return std::make_shared<MeiCrossTagFactorCpp>(*this);
+  }
+};
+
+// Quaternary on (X_O, X_W, body_T_base_tag, theta): observer O's lens sees owner
+// W's finger tag, which rides W's revolute joint:
+//   p_lensO = lensO_T_bodyO . X_O^-1 . X_W . body_T_base_tag . base_T_joint
+//             . Rz(theta) . c
+class MeiCrossFingerFactorCpp
+    : public NoiseModelFactorN<Pose3, Pose3, Pose3, double> {
+  using Base = NoiseModelFactorN<Pose3, Pose3, Pose3, double>;
+  MeiCorner lens_;
+  RevoluteCorner joint_;
+
+ public:
+  MeiCrossFingerFactorCpp(Key observerKey, Key ownerKey, Key baseTagKey,
+                          Key thetaKey, const SharedNoiseModel& model,
+                          MeiCorner lens, RevoluteCorner joint)
+      : Base(model, observerKey, ownerKey, baseTagKey, thetaKey),
+        lens_(std::move(lens)),
+        joint_(std::move(joint)) {}
+
+  Vector evaluateError(const Pose3& X_O, const Pose3& X_W,
+                       const Pose3& body_T_base_tag, const double& theta,
+                       OptionalMatrixType H1, OptionalMatrixType H2,
+                       OptionalMatrixType H3,
+                       OptionalMatrixType H4) const override {
+    Vector3 q, dq_dtheta;
+    joint_.corner(theta, q, dq_dtheta);
+    const Matrix3 R_bt = body_T_base_tag.rotation().matrix();
+    const Vector3 m = R_bt * q + body_T_base_tag.translation();  // owner body
+    const Matrix3 R_W = X_W.rotation().matrix();
+    const Vector3 p_world = R_W * m + X_W.translation();
+    const Matrix3 R_bwO = X_O.rotation().matrix().transpose();
+    const Vector3 p_bodyO = R_bwO * (p_world - X_O.translation());
+
+    Vector2 residual;
+    Matrix23 j_mei_r_lb;
+    if (!lens_.reproject(p_bodyO, residual, j_mei_r_lb)) {
+      if (H1) *H1 = Matrix::Zero(2, 6);
+      if (H2) *H2 = Matrix::Zero(2, 6);
+      if (H3) *H3 = Matrix::Zero(2, 6);
+      if (H4) *H4 = Matrix::Zero(2, 1);
+      return Vector2::Zero();
+    }
+    if (H1) *H1 = pose_to_jac(j_mei_r_lb, p_bodyO);  // observer pose
+    const Matrix23 j_world = j_mei_r_lb * R_bwO;
+    if (H2) *H2 = pose_from_jac(j_world, R_W, m);  // owner pose
+    const Matrix23 j_m = j_world * R_W;  // w.r.t. m (owner-body corner)
+    if (H3) *H3 = pose_from_jac(j_m, R_bt, q);  // base-tag pose
+    if (H4) *H4 = (j_m * R_bt) * dq_dtheta;  // joint angle
+    return residual;
+  }
+
+  gtsam::NonlinearFactor::shared_ptr clone() const override {
+    return std::make_shared<MeiCrossFingerFactorCpp>(*this);
+  }
+};
+
 // The make_* factories return NoiseModelFactor so Python sees its full API.
 static NoiseModelFactor::shared_ptr make_mei_factor_cpp(
     size_t poseKey, size_t pointKey, const Vector2& pixel,
@@ -281,6 +385,28 @@ static NoiseModelFactor::shared_ptr make_mei_base_tag_factor_cpp(
       c);
 }
 
+static NoiseModelFactor::shared_ptr make_mei_cross_tag_factor_cpp(
+    size_t observerKey, size_t ownerKey, size_t baseTagKey, const Vector2& pixel,
+    const SharedNoiseModel& model, const Pose3& observer_extrinsic,
+    const Vector3& c, const Intrinsics& intrinsics,
+    const Vector3& obs_bearing) {
+  return std::make_shared<MeiCrossTagFactorCpp>(
+      observerKey, ownerKey, baseTagKey, model,
+      MeiCorner(observer_extrinsic, intrinsics, pixel, obs_bearing),
+      c);
+}
+
+static NoiseModelFactor::shared_ptr make_mei_cross_finger_factor_cpp(
+    size_t observerKey, size_t ownerKey, size_t baseTagKey, size_t thetaKey,
+    const Vector2& pixel, const SharedNoiseModel& model,
+    const Pose3& observer_extrinsic, const Pose3& base_T_joint, const Vector3& c,
+    const Intrinsics& intrinsics, const Vector3& obs_bearing) {
+  return std::make_shared<MeiCrossFingerFactorCpp>(
+      observerKey, ownerKey, baseTagKey, thetaKey, model,
+      MeiCorner(observer_extrinsic, intrinsics, pixel, obs_bearing),
+      RevoluteCorner(base_T_joint, c));
+}
+
 PYBIND11_MODULE(_mei_factor_cpp, m) {
   m.doc() = "Native MEI reprojection factors with analytical Jacobians.";
   m.def("make_mei_factor_cpp", &make_mei_factor_cpp, py::arg("pose_key"),
@@ -294,4 +420,13 @@ PYBIND11_MODULE(_mei_factor_cpp, m) {
         py::arg("base_tag_key"), py::arg("pixel"), py::arg("noise"),
         py::arg("body_T_lens"), py::arg("c"), py::arg("intrinsics"),
         py::arg("obs_bearing"));
+  m.def("make_mei_cross_tag_factor_cpp", &make_mei_cross_tag_factor_cpp,
+        py::arg("observer_key"), py::arg("owner_key"), py::arg("base_tag_key"),
+        py::arg("pixel"), py::arg("noise"), py::arg("observer_extrinsic"),
+        py::arg("c"), py::arg("intrinsics"), py::arg("obs_bearing"));
+  m.def("make_mei_cross_finger_factor_cpp", &make_mei_cross_finger_factor_cpp,
+        py::arg("observer_key"), py::arg("owner_key"), py::arg("base_tag_key"),
+        py::arg("theta_key"), py::arg("pixel"), py::arg("noise"),
+        py::arg("observer_extrinsic"), py::arg("base_T_joint"), py::arg("c"),
+        py::arg("intrinsics"), py::arg("obs_bearing"));
 }

@@ -86,9 +86,7 @@ src/specialist/
 │                tag_detection, optimize, landmark_cull,
 │                configs, viz
 ├── record/      offset_v3 (factory lens intrinsics and body_T_lens)
-├── loader/      parse_insv, mei_model, audio_sync
-├── graph/       factors (shared GTSAM factor constructors)
-└── synthesis/   tag_detection (the cross-tracker observation record)
+└── loader/      parse_insv, mei_model, audio_sync
 
 scripts/
 ├── track.py            the VI-BA driver (N ≥ 1 cameras)

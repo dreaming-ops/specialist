@@ -7,6 +7,7 @@ import hashlib
 import json
 import pickle
 import time
+from collections import Counter
 from collections.abc import Callable, Iterable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
@@ -18,13 +19,13 @@ import numpy.typing as npt
 import tyro
 from specialist.vi_ba._mei_factor_cpp import (
   make_mei_base_tag_factor_cpp,
+  make_mei_cross_finger_factor_cpp,
+  make_mei_cross_tag_factor_cpp,
   make_mei_finger_factor_cpp,
 )
 
-from specialist.graph.factors import make_cross_tracker_factor
 from specialist.loader.audio_sync import sync_two_claps
 from specialist.loader.mei_model import MeiParams, mei_project, mei_unproject
-from specialist.synthesis.tag_detection import TagObservation
 from specialist.vi_ba.build import (
   LensSetup,
   add_mei_factor,
@@ -35,7 +36,6 @@ from specialist.vi_ba.build import (
 from specialist.vi_ba.compose import CameraKeys
 from specialist.vi_ba.configs import (
   AnchorCfg,
-  CrossTrackerCfg,
   FrontendCfg,
   GripperCfg,
   ImuCfg,
@@ -61,6 +61,13 @@ from specialist.vi_ba.viz import CameraVizData, log_multi_ba_run
 Float64Array = npt.NDArray[np.float64]
 
 
+def _lens_bearing(det: TagDetection, lens: LensSetup) -> Float64Array:
+  """Lens-frame bearing of a tag's center, the cheirality ray for MEI factors."""
+  return mei_unproject(
+    np.asarray(det.center, dtype=np.float64).reshape(1, 2), lens.params
+  )[0]
+
+
 @dataclass
 class Args:
   input_insvs: tuple[Path, ...]
@@ -84,7 +91,6 @@ class Args:
   )
   imu: ImuCfg = field(default_factory=ImuCfg)
   gripper: GripperCfg = field(default_factory=GripperCfg)
-  cross: CrossTrackerCfg = field(default_factory=CrossTrackerCfg)
   solver: SolverCfg = field(default_factory=SolverCfg)
 
 
@@ -155,44 +161,62 @@ def _align_to_shared_world(cameras: list[PreparedCamera]) -> gtsam.Pose3:
   return ref
 
 
+@dataclass(frozen=True)
+class _CrossSighting:
+  """One observer-lens sighting of another tracker's tag, for a cross factor."""
+
+  observer: str
+  owner: str
+  keyframe: int
+  lens: LensSetup
+  corners: Float64Array  # (4, 2) detected corner pixels
+  bearing: Float64Array  # (3,) lens-frame tag direction
+  finger: int | None  # None = base tag; 0 = left finger, 1 = right finger
+
+
 def _cross_tracker_observations(
   cameras: list[PreparedCamera],
   base_tag_ids: list[int],
   base_tag_size: float,
-) -> list[TagObservation]:
-  """A ``TagObservation`` per PnP of an owner's base tag in an observer's frames."""
-  obs: list[TagObservation] = []
-  ids = {t.name: base_tag_ids[i] for i, t in enumerate(cameras)}
+) -> list[_CrossSighting]:
+  """Every other-tracker sighting of a PnP-passing base tag or a modeled finger tag."""
+  sightings: list[_CrossSighting] = []
   for owner_idx, owner in enumerate(cameras):
-    owner_tag_id = ids[owner.name]
-    for obs_idx, observer in enumerate(cameras):
-      if obs_idx == owner_idx:
+    # Visible owner tags: the base tag and each finger tag with URDF joint kinematics.
+    targets: dict[int, int | None] = {base_tag_ids[owner_idx]: None}
+    for idx, name in ((0, "left_finger"), (1, "right_finger")):
+      finger_id = owner.left_finger_tag_id if idx == 0 else owner.right_finger_tag_id
+      if finger_id > 0 and name in owner.finger_reproj:
+        targets[finger_id] = idx
+    for observer in cameras:
+      if observer is owner:
         continue
       n = min(observer.n_keyframes, owner.n_keyframes)
-      for side, lens, tags_per_kf in (
-        ("front", observer.front_lens, observer.front_tags_per_kf),
-        ("rear", observer.rear_lens, observer.rear_tags_per_kf),
+      for lens, tags_per_kf in (
+        (observer.front_lens, observer.front_tags_per_kf),
+        (observer.rear_lens, observer.rear_tags_per_kf),
       ):
         for kf in range(n):
           for det in tags_per_kf[kf]:
-            if det.tag_id != owner_tag_id:
+            if det.tag_id not in targets:
               continue
-            lens_T_tag = estimate_lens_T_tag(det.corners, base_tag_size, lens.params)
-            if lens_T_tag is None:
-              continue
-            obs.append(
-              TagObservation(
-                observer_tracker=observer.name,
-                fisheye_side="front" if side == "front" else "back",
-                keyframe_index=kf,
-                tag_id=f"tracker_{owner.name}",
-                tag_kind="tracker",
-                tag_owner_tracker=owner.name,
-                camera_to_tag=lens_T_tag,
+            finger = targets[det.tag_id]
+            if finger is None and (
+              estimate_lens_T_tag(det.corners, base_tag_size, lens.params) is None
+            ):
+              continue  # base-tag PnP gate: drop degenerate / behind-camera
+            sightings.append(
+              _CrossSighting(
+                observer=observer.name,
+                owner=owner.name,
+                keyframe=kf,
+                lens=lens,
+                corners=np.asarray(det.corners, dtype=np.float64),
+                bearing=_lens_bearing(det, lens),
+                finger=finger,
               )
             )
-            break  # one detection per (kf, side) — owner's tag is unique
-  return obs
+  return sightings
 
 
 def _finger_symmetry_factor(
@@ -258,11 +282,12 @@ def _anchor_sightings(
 def _factor_observation_lines(
   observer: PreparedCamera,
   observer_poses: list[gtsam.Pose3],
-  cross_obs_for_observer: list[TagObservation],
+  cross_obs_for_observer: list[_CrossSighting],
   anchor_sightings: list[tuple[LensSetup, int, TagDetection]],
   anchor_corners_world: Float64Array,
+  base_tag_corners_world: dict[str, list[Float64Array]],
 ) -> tuple[list[Float64Array], list[Float64Array]]:
-  """Anchor-corner and cross-tracker lines, as per-keyframe ``(n, 2, 3)`` endpoints."""
+  """Per-keyframe ``(n, 2, 3)`` lens-to-corner lines of anchor and base-tag factors."""
   anchor_by_kf: dict[int, list[LensSetup]] = {}
   for lens, kf, _det in anchor_sightings:
     anchor_by_kf.setdefault(kf, []).append(lens)
@@ -281,21 +306,18 @@ def _factor_observation_lines(
       np.stack(anchor_strips) if anchor_strips else np.empty((0, 2, 3))
     )
     cross_strips: list[Float64Array] = []
-    for o in cross_obs_for_observer:
-      if o.keyframe_index != kf:
+    for sighting in cross_obs_for_observer:
+      if sighting.finger is not None or sighting.keyframe != kf:
+        continue  # base-tag rays only; owner_corners holds the base-tag corners
+      owner_corners = base_tag_corners_world.get(sighting.owner)
+      if owner_corners is None or kf >= len(owner_corners):
         continue
-      lens = observer.front_lens if o.fisheye_side == "front" else observer.rear_lens
-      lens_world = body_pose.compose(lens.body_T_lens)
-      lens_xyz = np.asarray(lens_world.translation(), dtype=np.float64)
-      tag_xyz = np.asarray(
-        lens_world.compose(o.camera_to_tag).translation(), dtype=np.float64
+      lens_xyz = np.asarray(
+        body_pose.compose(sighting.lens.body_T_lens).translation(), dtype=np.float64
       )
-      cross_strips.append(np.stack([lens_xyz, tag_xyz], axis=0))
-    cross_lines.append(
-      np.stack(cross_strips, axis=0)
-      if cross_strips
-      else np.empty((0, 2, 3), dtype=np.float64)
-    )
+      for corner_xyz in owner_corners[kf]:
+        cross_strips.append(np.stack([lens_xyz, corner_xyz]))
+    cross_lines.append(np.stack(cross_strips) if cross_strips else np.empty((0, 2, 3)))
   return anchor_lines, cross_lines
 
 
@@ -490,14 +512,14 @@ def _assemble_joint_graph(
   cameras: list[PreparedCamera],
   keys: CameraKeys,
   args: Args,
-  ref_anchor: gtsam.Pose3,
-  cross_obs: list[TagObservation],
+  cross_obs: list[_CrossSighting],
   anchor_tag_id: int,
   anchor_corners_world: Float64Array,
 ) -> tuple[gtsam.NonlinearFactorGraph, gtsam.Values]:
-  """The joint graph and seed values: VI, anchor-corner, tag and smoothness factors."""
+  """The joint graph: VI, anchor, gripper, cross-tracker and smoothness factors."""
   graph = gtsam.NonlinearFactorGraph()
   values = gtsam.Values()
+
   for t in cameras:
     build_vi_graph(
       **t.vi_graph_inputs(),
@@ -552,6 +574,8 @@ def _assemble_joint_graph(
   }
   finger_factor_count = 0
   base_tag_factor_count = 0
+  base_tag_inserted: set[str] = set()
+  theta_inserted: set[tuple[str, int, int]] = set()
   for t in cameras:
     reprojs = {
       0: t.finger_reproj.get("left_finger"),
@@ -563,6 +587,7 @@ def _assemble_joint_graph(
       continue
     bt_key = keys.base_tag_key(t.name)
     values.insert(bt_key, t.body_T_base_tag)
+    base_tag_inserted.add(t.name)
     graph.add(gtsam.PriorFactorPose3(bt_key, t.body_T_base_tag, base_tag_prior_noise))
     # Base-tag corners reproject through body_T_base_tag into this tracker's rear lens.
     if base_tag_id > 0:
@@ -570,9 +595,7 @@ def _assemble_joint_graph(
         det = next((d for d in dets if d.tag_id == base_tag_id), None)
         if det is None:
           continue
-        bearing = mei_unproject(
-          np.asarray(det.center, dtype=np.float64).reshape(1, 2), t.rear_lens.params
-        )[0]
+        bearing = _lens_bearing(det, t.rear_lens)
         for corner, pixel in zip(base_tag_corners, det.corners, strict=True):
           add_mei_tag_factor(
             graph,
@@ -597,6 +620,7 @@ def _assemble_joint_graph(
           continue
         tkey = keys.theta_key(t.name, finger_idx, kf)
         values.insert(tkey, float(obs.theta_seed))
+        theta_inserted.add((t.name, finger_idx, kf))
         for corner, pixel in zip(reproj.joint_t_corners, obs.pixels, strict=True):
           add_mei_tag_factor(
             graph,
@@ -617,82 +641,52 @@ def _assemble_joint_graph(
             values.insert(
               keys.theta_key(t.name, finger_idx, kf), -next(iter(seen_seed.values()))
             )
+            theta_inserted.add((t.name, finger_idx, kf))
         graph.add(
           _finger_symmetry_factor(
             keys.theta_key(t.name, 0, kf), keys.theta_key(t.name, 1, kf), sym_noise
           )
         )
 
-  # The owner's body_T_tag comes from its first stationary rear-lens PnP of its tag.
-  body_T_tag_by_name = {
-    t.name: t.body_T_base_tag for t in cameras if t.body_T_base_tag is not None
-  }
-  for o in cross_obs:
-    owner_offset = body_T_tag_by_name.get(o.tag_owner_tracker or "")
-    if owner_offset is None:
+  # Cross-tracker corner reprojection through observer, owner and owner base-tag poses.
+  camera_by_slot = {t.name: t for t in cameras}
+  base_count = finger_count = 0
+  for sighting in cross_obs:
+    if sighting.owner not in base_tag_inserted:
       continue
-    observer_lens = (
-      next(t for t in cameras if t.name == o.observer_tracker).front_lens
-      if o.fisheye_side == "front"
-      else next(t for t in cameras if t.name == o.observer_tracker).rear_lens
-    )
-    graph.add(
-      make_cross_tracker_factor(
-        keys.pose_key(o.observer_tracker, o.keyframe_index),
-        keys.pose_key(o.tag_owner_tracker or "", o.keyframe_index),
-        o.camera_to_tag,
-        observer_lens.body_T_lens,
-        owner_offset,
-        args.cross.translation_sigma,
-        args.cross.rotation_sigma,
-      )
-    )
-
-  # Finger-tag cross factors use the owner's per-keyframe body_T_finger and a looser σ.
-  finger_cross_count = 0
-  finger_cross_t_sigma = 0.040  # 40mm
-  finger_cross_r_sigma = 0.10  # ~6°
-  for owner in cameras:
-    for finger_id, btf_per_kf in (
-      (owner.left_finger_tag_id, owner.body_T_left_finger_per_kf),
-      (owner.right_finger_tag_id, owner.body_T_right_finger_per_kf),
-    ):
-      if finger_id <= 0 or not btf_per_kf:
-        continue
-      for observer in cameras:
-        if observer.name == owner.name:
-          continue
-        n = min(observer.n_keyframes, owner.n_keyframes)
-        for lens, tags_per_kf in (
-          (observer.front_lens, observer.front_tags_per_kf),
-          (observer.rear_lens, observer.rear_tags_per_kf),
-        ):
-          for kf in range(n):
-            if kf not in btf_per_kf:
-              continue
-            for det in tags_per_kf[kf]:
-              if det.tag_id != finger_id:
-                continue
-              lens_T_tag = estimate_lens_T_tag(
-                det.corners, args.gripper.tag_size, lens.params
-              )
-              if lens_T_tag is None:
-                continue
-              factor = make_cross_tracker_factor(
-                keys.pose_key(observer.name, kf),
-                keys.pose_key(owner.name, kf),
-                lens_T_tag,
-                lens.body_T_lens,
-                btf_per_kf[kf],
-                finger_cross_t_sigma,
-                finger_cross_r_sigma,
-                huber_k=1.0,
-              )
-              graph.add(factor)
-              finger_cross_count += 1
-              break
-  if finger_cross_count:
-    print(f"finger-tag cross-tracker factors: {finger_cross_count}")
+    obs_key = keys.pose_key(sighting.observer, sighting.keyframe)
+    owner_key = keys.pose_key(sighting.owner, sighting.keyframe)
+    owner_bt_key = keys.base_tag_key(sighting.owner)
+    if sighting.finger is None:
+      for corner, pixel in zip(base_tag_corners, sighting.corners, strict=True):
+        add_mei_tag_factor(
+          graph,
+          make_mei_cross_tag_factor_cpp,
+          (obs_key, owner_key, owner_bt_key),
+          pixel,
+          base_tag_noise,
+          sighting.lens,
+          corner,
+          sighting.bearing,
+        )
+      base_count += 4
+    elif (sighting.owner, sighting.finger, sighting.keyframe) in theta_inserted:
+      finger_name = "left_finger" if sighting.finger == 0 else "right_finger"
+      reproj = camera_by_slot[sighting.owner].finger_reproj[finger_name]
+      theta_key = keys.theta_key(sighting.owner, sighting.finger, sighting.keyframe)
+      for corner, pixel in zip(reproj.joint_t_corners, sighting.corners, strict=True):
+        add_mei_tag_factor(
+          graph,
+          make_mei_cross_finger_factor_cpp,
+          (obs_key, owner_key, owner_bt_key, theta_key),
+          pixel,
+          base_tag_noise,
+          sighting.lens,
+          corner,
+          sighting.bearing,
+          reproj.base_T_joint,
+        )
+      finger_count += 4
 
   # Pose and velocity priors on each unanchored consecutive keyframe pair cap IMU drift.
   smooth_sigmas = np.array([np.deg2rad(2.0)] * 3 + [0.10] * 3, dtype=np.float64)
@@ -732,7 +726,8 @@ def _assemble_joint_graph(
       vel_smooth_count += 1
   print(
     f"reprojection factors: base-tag {base_tag_factor_count}, "
-    f"finger {finger_factor_count}; smoothness priors: pose {smooth_count}, "
+    f"finger {finger_factor_count}, cross base {base_count}, cross finger "
+    f"{finger_count}; smoothness priors: pose {smooth_count}, "
     f"velocity {vel_smooth_count}"
   )
   return graph, values
@@ -930,9 +925,10 @@ def _build_tracker_viz_data(
   ],
   args: Args,
   tag_size_by_id: dict[int, float],
-  cross_obs_for_t: list[TagObservation],
+  cross_obs_for_t: list[_CrossSighting],
   anchor_tag_id: int,
   anchor_corners_world: Float64Array,
+  base_tag_corners_world: dict[str, list[Float64Array]],
   master_offset: float,
 ) -> tuple[
   CameraVizData,
@@ -1025,6 +1021,7 @@ def _build_tracker_viz_data(
     cross_obs_for_t,
     _anchor_sightings(t, anchor_tag_id),
     anchor_corners_world,
+    base_tag_corners_world,
   )
   viz_data = CameraVizData(
     name=t.name,
@@ -1198,10 +1195,7 @@ def main(args: Args) -> None:
   )
   print(f"cross-tracker observations: {len(cross_obs)}")
   if cross_obs:
-    by_pair: dict[tuple[str, str], int] = {}
-    for o in cross_obs:
-      key = (o.observer_tracker, o.tag_owner_tracker or "?")
-      by_pair[key] = by_pair.get(key, 0) + 1
+    by_pair = Counter((sighting.observer, sighting.owner) for sighting in cross_obs)
     for (obs_t, own_t), n in sorted(by_pair.items()):
       print(f"  {obs_t} → {own_t}: {n}")
   mark("cross-tracker obs assembled")
@@ -1240,13 +1234,30 @@ def main(args: Args) -> None:
     for t in cameras
   }
 
+  # Each tracker's base-tag corners in the world frame per keyframe, for cross rays.
+  base_tag_corner_local = tag_corners_local(args.gripper.tag_size)
+  base_tag_corners_world: dict[str, list[Float64Array]] = {}
+  for t in cameras:
+    if t.body_T_base_tag is None:
+      continue
+    base_tag_corners_world[t.name] = [
+      np.array(
+        [
+          pose.compose(t.body_T_base_tag).transformFrom(gtsam.Point3(*c))
+          for c in base_tag_corner_local
+        ],
+        dtype=np.float64,
+      )
+      for pose in optimized_body_poses[t.name]
+    ]
+
   # Per-tracker audio offset to convert local keyframe_times → master clock.
   master_offset_by_name: dict[str, float] = {
     t.name: offsets[i] for i, t in enumerate(cameras)
   }
-  cross_obs_by_observer: dict[str, list[TagObservation]] = {t.name: [] for t in cameras}
-  for o in cross_obs:
-    cross_obs_by_observer[o.observer_tracker].append(o)
+  cross_obs_by_observer: dict[str, list[_CrossSighting]] = {t.name: [] for t in cameras}
+  for sighting in cross_obs:
+    cross_obs_by_observer[sighting.observer].append(sighting)
 
   per_tracker_results: list[dict[str, object]] = []
   viz_trackers: list[CameraVizData] = []
@@ -1263,6 +1274,7 @@ def main(args: Args) -> None:
       cross_obs_by_observer[t.name],
       anchor_tag_id,
       anchor_corners_world,
+      base_tag_corners_world,
       master_offset_by_name[t.name],
     )
     viz_trackers.append(viz_data)

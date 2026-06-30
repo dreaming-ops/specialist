@@ -71,12 +71,6 @@ class GripperCfg:
 
 
 @dataclass
-class CrossTrackerCfg:
-  translation_sigma: float = 0.005
-  rotation_sigma: float = 0.0175
-
-
-@dataclass
 class SolverCfg:
   max_iterations: int = 30
   velocity_prior_sigma: float = 0.1

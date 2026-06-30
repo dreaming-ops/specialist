@@ -57,7 +57,6 @@ from specialist.vi_ba.pipeline import (
 from specialist.vi_ba.tag_detection import (
   TagDetection,
   detect_all_tags,
-  estimate_lens_T_tag,
   lens_T_tag_per_kf,
 )
 from specialist.vi_ba.urdf_joints import read_revolute_joints
@@ -148,9 +147,6 @@ class PreparedCamera:
   rear_static_mask_rects: list[tuple[int, int, int, int]]
   # URDF joint name -> kinematic inputs for the joint-angle reprojection factors.
   finger_reproj: dict[str, FingerReproj]
-  # Per-keyframe body-frame finger-tag poses from rear-lens PnP, for the finger tie.
-  body_T_left_finger_per_kf: dict[int, gtsam.Pose3]
-  body_T_right_finger_per_kf: dict[int, gtsam.Pose3]
   left_finger_tag_id: int
   right_finger_tag_id: int
   n_keyframes: int
@@ -1060,28 +1056,6 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   print(f"  [{slot}] VIO LSQ |v|max={v_max:.2f} m/s")
   biases = [bias0 for _ in range(n_keyframes)]
 
-  def _per_kf_body_T_finger(finger_id: int) -> dict[int, gtsam.Pose3]:
-    if finger_id <= 0:
-      return {}
-    out: dict[int, gtsam.Pose3] = {}
-    for kf in range(min(n_keyframes, len(rear_tags_per_kf))):
-      corners = next(
-        (d.corners for d in rear_tags_per_kf[kf] if d.tag_id == finger_id),
-        None,
-      )
-      if corners is None:
-        continue
-      lens_T_finger_tag = estimate_lens_T_tag(
-        corners, args.gripper.tag_size, rear_lens.params
-      )
-      if lens_T_finger_tag is None:
-        continue
-      out[kf] = rear_lens.body_T_lens.compose(lens_T_finger_tag)
-    return out
-
-  body_T_left_finger_per_kf = _per_kf_body_T_finger(args.left_finger_tag_id)
-  body_T_right_finger_per_kf = _per_kf_body_T_finger(args.right_finger_tag_id)
-
   body_T_base_tag, finger_reproj = _recover_gripper_tags(
     args, rear_tags_per_kf, rear_lens, n_keyframes, rear_kf_rotations
   )
@@ -1113,8 +1087,6 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     rear_rejected=rear_rejected,
     rear_static_mask_rects=static_rects,
     finger_reproj=finger_reproj,
-    body_T_left_finger_per_kf=body_T_left_finger_per_kf,
-    body_T_right_finger_per_kf=body_T_right_finger_per_kf,
     left_finger_tag_id=args.left_finger_tag_id,
     right_finger_tag_id=args.right_finger_tag_id,
     n_keyframes=n_keyframes,
