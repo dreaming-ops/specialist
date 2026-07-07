@@ -141,47 +141,9 @@ def _add_projection_factors(
   for tid, xyz in points.items():
     lm_key = landmark_key_fn(tid)
     if not values.exists(lm_key):
-      values.insert(lm_key, gtsam.Point3(float(xyz[0]), float(xyz[1]), float(xyz[2])))
+      values.insert(lm_key, _as_point3(xyz))
     for kf, pt in tracks[tid].items():
       add_mei_factor(graph, pose_key_fn(kf), lm_key, pt, pixel_noise, lens)
-
-
-def _add_both_lenses(
-  graph: gtsam.NonlinearFactorGraph,
-  values: gtsam.Values,
-  front: LensSetup,
-  front_tracks: Mapping[int, Mapping[int, Float64Array]],
-  front_points: Mapping[int, Float64Array],
-  front_landmark_key_fn: Callable[[int], int],
-  rear: LensSetup | None,
-  rear_tracks: Mapping[int, Mapping[int, Float64Array]] | None,
-  rear_points: Mapping[int, Float64Array] | None,
-  rear_landmark_key_fn: Callable[[int], int],
-  pixel_noise: gtsam.noiseModel.Base,
-  pose_key_fn: Callable[[int], int],
-) -> None:
-  """Add front projection factors, and rear ones when every rear input is present."""
-  _add_projection_factors(
-    graph,
-    values,
-    front_tracks,
-    front_points,
-    front,
-    front_landmark_key_fn,
-    pixel_noise,
-    pose_key_fn,
-  )
-  if rear is not None and rear_tracks is not None and rear_points is not None:
-    _add_projection_factors(
-      graph,
-      values,
-      rear_tracks,
-      rear_points,
-      rear,
-      rear_landmark_key_fn,
-      pixel_noise,
-      pose_key_fn,
-    )
 
 
 def build_vi_graph(
@@ -198,8 +160,6 @@ def build_vi_graph(
   rear_points: Mapping[int, Float64Array] | None,
   sigma: float,
   velocity_prior_sigma: float = 0.1,
-  bias_prior_accel_sigma: float = 1.0e-2,
-  bias_prior_gyro_sigma: float = 1.0e-3,
   anchor_last_pose: bool = False,
   pose_key_fn: Callable[[int], int] | None = None,
   velocity_key_fn: Callable[[int], int] | None = None,
@@ -244,10 +204,7 @@ def build_vi_graph(
     bias_key = bias_key_fn or (lambda i: int(B(i)))
     vel_noise = gtsam.noiseModel.Isotropic.Sigma(3, velocity_prior_sigma)
     bias_noise = gtsam.noiseModel.Diagonal.Sigmas(
-      np.asarray(
-        [bias_prior_accel_sigma] * 3 + [bias_prior_gyro_sigma] * 3,
-        dtype=np.float64,
-      )
+      np.asarray([1.0e-2] * 3 + [1.0e-3] * 3, dtype=np.float64)
     )
     for i in range(n):
       values.insert(pose_key(i), body_poses[i])
@@ -275,18 +232,11 @@ def build_vi_graph(
         )
       )
 
-  _add_both_lenses(
-    graph,
-    values,
-    front,
-    front_tracks,
-    front_points,
-    front_lm,
-    rear,
-    rear_tracks,
-    rear_points,
-    rear_lm,
-    pixel_noise,
-    pose_key,
+  _add_projection_factors(
+    graph, values, front_tracks, front_points, front, front_lm, pixel_noise, pose_key
   )
+  if rear is not None and rear_tracks is not None and rear_points is not None:
+    _add_projection_factors(
+      graph, values, rear_tracks, rear_points, rear, rear_lm, pixel_noise, pose_key
+    )
   return graph, values

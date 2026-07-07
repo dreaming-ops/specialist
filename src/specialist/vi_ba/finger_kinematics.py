@@ -50,7 +50,7 @@ def _seed_theta(
   t_lb = np.asarray(lens_T_body.translation(), dtype=np.float64)
   r_bj = body_T_joint.rotation().matrix()
   t_bj = np.asarray(body_T_joint.translation(), dtype=np.float64)
-  cx, cy, cz = joint_t_corners[:, 0], joint_t_corners[:, 1], joint_t_corners[:, 2]
+  cx, cy, cz = joint_t_corners.T
   best_theta, best_err = lower, np.inf
   for theta in np.linspace(lower, upper, _THETA_SCAN_SAMPLES):
     c, s = np.cos(theta), np.sin(theta)

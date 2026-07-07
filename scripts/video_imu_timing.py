@@ -82,24 +82,23 @@ def read_lens_grays(
 
 def _flow_magnitudes(grays: list[Float64Array], args: TimingArgs) -> Float64Array:
   """Median Lucas-Kanade flow magnitude per frame transition."""
+
+  def corners(img: np.ndarray) -> np.ndarray | None:
+    return cv2.goodFeaturesToTrack(
+      img,
+      maxCorners=args.flow_max_corners,
+      qualityLevel=args.flow_quality_level,
+      minDistance=args.flow_min_distance,
+    )
+
   mags: list[float] = []
   prev = grays[0].astype(np.uint8)
-  prev_pts = cv2.goodFeaturesToTrack(
-    prev,
-    maxCorners=args.flow_max_corners,
-    qualityLevel=args.flow_quality_level,
-    minDistance=args.flow_min_distance,
-  )
+  prev_pts = corners(prev)
   for k in range(1, len(grays)):
     curr = grays[k].astype(np.uint8)
     if prev_pts is None or len(prev_pts) < 10:
       mags.append(0.0)
-      prev_pts = cv2.goodFeaturesToTrack(
-        curr,
-        maxCorners=args.flow_max_corners,
-        qualityLevel=args.flow_quality_level,
-        minDistance=args.flow_min_distance,
-      )
+      prev_pts = corners(curr)
       prev = curr
       continue
     next_pts, status, _ = cv2.calcOpticalFlowPyrLK(prev, curr, prev_pts, None)
@@ -112,20 +111,9 @@ def _flow_magnitudes(grays: list[Float64Array], args: TimingArgs) -> Float64Arra
         mags.append(float(np.median(np.linalg.norm(delta, axis=1))))
       else:
         mags.append(0.0)
-    prev_pts = cv2.goodFeaturesToTrack(
-      curr,
-      maxCorners=args.flow_max_corners,
-      qualityLevel=args.flow_quality_level,
-      minDistance=args.flow_min_distance,
-    )
+    prev_pts = corners(curr)
     prev = curr
   return np.asarray([0.0, *mags], dtype=np.float64)
-
-
-def _resample(
-  src_t: Float64Array, src_v: Float64Array, dst_t: Float64Array
-) -> Float64Array:
-  return np.interp(dst_t, src_t, src_v)
 
 
 def _estimate_offset(
@@ -142,7 +130,7 @@ def _estimate_offset(
   offsets = np.arange(-max_offset, max_offset + step, step)
   best_off, best_corr = 0.0, -np.inf
   for off in offsets:
-    shifted = _resample(imu_t + off, gyro_mag, video_t)
+    shifted = np.interp(video_t, imu_t + off, gyro_mag)
     z = (shifted - shifted.mean()) / (shifted.std() + 1e-9)
     corr = float(np.dot(flow, z) / flow.size)
     if corr > best_corr:
@@ -179,8 +167,7 @@ def _estimate_rolling_shutter(
   factory_readout: float,
 ) -> ShearResult | None:
   """Per frame, the readout time (s) that turns the yaw rate into the measured line shear."""
-  height = grays[0].shape[0]
-  width = grays[0].shape[1]
+  height, width = grays[0].shape[:2]
   # Per pixel, a ~190 deg fisheye spread over the full lens-frame width.
   pixel_angle = math.radians(190.0) / width
 

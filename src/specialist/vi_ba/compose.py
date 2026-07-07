@@ -27,8 +27,6 @@ class CameraKeys:
     if len(set(slots)) != len(slots):
       raise ValueError(f"camera slots must be unique: {list(slots)}")
     self._names: list[str] = list(slots)
-    self._kf_step = int(_MAX_KEYFRAMES_PER_CAMERA)
-    self._lm_step = int(_MAX_LANDMARKS_PER_CAMERA)
 
   def camera_index(self, slot: str) -> int:
     if slot not in self._names:
@@ -38,7 +36,9 @@ class CameraKeys:
   def _kf_key(self, char: str, slot: str, keyframe_idx: int) -> int:
     """Collision-free key for a per-keyframe variable in one camera's slice."""
     return int(
-      gtsam.symbol(char, self.camera_index(slot) * self._kf_step + keyframe_idx)
+      gtsam.symbol(
+        char, self.camera_index(slot) * _MAX_KEYFRAMES_PER_CAMERA + keyframe_idx
+      )
     )
 
   def pose_key(self, slot: str, keyframe_idx: int) -> int:
@@ -55,7 +55,7 @@ class CameraKeys:
     return int(
       gtsam.symbol(
         _LANDMARK_CHAR,
-        (self.camera_index(slot) * 2 + half) * self._lm_step + track_id,
+        (self.camera_index(slot) * 2 + half) * _MAX_LANDMARKS_PER_CAMERA + track_id,
       )
     )
 
@@ -70,7 +70,8 @@ class CameraKeys:
     return int(
       gtsam.symbol(
         _JOINT_ANGLE_CHAR,
-        (self.camera_index(slot) * 2 + finger_idx) * self._kf_step + keyframe_idx,
+        (self.camera_index(slot) * 2 + finger_idx) * _MAX_KEYFRAMES_PER_CAMERA
+        + keyframe_idx,
       )
     )
 

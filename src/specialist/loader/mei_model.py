@@ -100,12 +100,13 @@ def mei_unproject(pixels: Float64Array, params: MeiParams) -> Float64Array:
     radial = 1.0 + params.k1 * r2 + params.k2 * r2 * r2 + params.k3 * r2**3
     dx_t = 2.0 * params.p1 * x * y + params.p2 * (r2 + 2.0 * x * x)
     dy_t = params.p1 * (r2 + 2.0 * y * y) + 2.0 * params.p2 * x * y
-    x_new = (x_d - dx_t) / np.where(radial == 0.0, 1.0, radial)
-    y_new = (y_d - dy_t) / np.where(radial == 0.0, 1.0, radial)
-    if np.max(np.abs(x_new - x)) < 1e-12 and np.max(np.abs(y_new - y)) < 1e-12:
-      x, y = x_new, y_new
-      break
+    safe_radial = np.where(radial == 0.0, 1.0, radial)
+    x_new = (x_d - dx_t) / safe_radial
+    y_new = (y_d - dy_t) / safe_radial
+    step = max(np.max(np.abs(x_new - x)), np.max(np.abs(y_new - y)))
     x, y = x_new, y_new
+    if step < 1e-12:
+      break
 
   r2 = x * x + y * y
   # Invert the sphere shift in closed form, valid for xi >= 0.

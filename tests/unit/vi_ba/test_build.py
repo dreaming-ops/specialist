@@ -47,6 +47,32 @@ def _project_point(
   return mei_project(np.asarray(p_lens)[None, :], params)[0]
 
 
+_GRAVITY = np.array([0.0, 0.0, -9.81])
+_LENS = LensSetup(body_T_lens=gtsam.Pose3(), params=_params())
+
+
+def _imu_only_graph(
+  body_poses: list[gtsam.Pose3],
+  velocities: list[np.ndarray],
+  biases: list[gtsam.imuBias.ConstantBias],
+  preintegrated: list[gtsam.PreintegratedCombinedMeasurements],
+) -> tuple[gtsam.NonlinearFactorGraph, gtsam.Values]:
+  """Visual-inertial graph with no observed landmarks (IMU chain only)."""
+  return build_vi_graph(
+    body_poses=body_poses,
+    velocities=velocities,
+    biases=biases,
+    preintegrated=preintegrated,
+    front=_LENS,
+    front_tracks={},
+    front_points={},
+    rear=None,
+    rear_tracks=None,
+    rear_points=None,
+    sigma=1.0,
+  )
+
+
 def test_build_graph_dual_lens_uses_disjoint_landmark_keys() -> None:
   params = _params()
   poses = [gtsam.Pose3(), gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(0.3, 0.0, 0.0))]
@@ -90,56 +116,36 @@ def test_build_graph_dual_lens_uses_disjoint_landmark_keys() -> None:
   assert graph.size() == 6
 
 
-def _stationary_pim(
-  duration: float, gravity_world: np.ndarray
-) -> gtsam.PreintegratedCombinedMeasurements:
-  n = int(duration * 1000)
-  t = np.linspace(0.0, duration, n, endpoint=False, dtype=np.float64)
+def _stationary_pim() -> gtsam.PreintegratedCombinedMeasurements:
+  """A 1 s stationary IMU preintegration: zero motion, gravity along −z."""
+  n = 1000
+  t = np.linspace(0.0, 1.0, n, endpoint=False, dtype=np.float64)
   samples = ImuSamples(
     t=t,
     gyro=np.zeros((n, 3), dtype=np.float64),
-    accel=np.tile(-gravity_world, (n, 1)),
+    accel=np.tile(-_GRAVITY, (n, 1)),
   )
   p = make_preintegration_params(
     gyro_noise_sigma=1e-4,
     accel_noise_sigma=1e-3,
     gyro_bias_rw_sigma=1e-5,
     accel_bias_rw_sigma=1e-4,
-    gravity_world=(
-      float(gravity_world[0]),
-      float(gravity_world[1]),
-      float(gravity_world[2]),
-    ),
+    gravity_world=(float(_GRAVITY[0]), float(_GRAVITY[1]), float(_GRAVITY[2])),
   )
   bias = gtsam.imuBias.ConstantBias(np.zeros(3), np.zeros(3))
   return integrate_samples(p, samples, bias)
 
 
 def test_build_vi_graph_adds_velocity_bias_imu_factors() -> None:
-  params = _params()
-  body_T_lens = gtsam.Pose3()
-  gravity = np.array([0.0, 0.0, -9.81])
   poses = [gtsam.Pose3(), gtsam.Pose3()]
   vel = [np.zeros(3), np.zeros(3)]
   bias = [
     gtsam.imuBias.ConstantBias(np.zeros(3), np.zeros(3)),
     gtsam.imuBias.ConstantBias(np.zeros(3), np.zeros(3)),
   ]
-  pim = [_stationary_pim(1.0, gravity)]
+  pim = [_stationary_pim()]
 
-  graph, values = build_vi_graph(
-    body_poses=poses,
-    velocities=vel,
-    biases=bias,
-    preintegrated=pim,
-    front=LensSetup(body_T_lens=body_T_lens, params=params),
-    front_tracks={},
-    front_points={},
-    rear=None,
-    rear_tracks=None,
-    rear_points=None,
-    sigma=1.0,
-  )
+  graph, values = _imu_only_graph(poses, vel, bias, pim)
   # 3 initial priors (X0, V0, B0) + 1 IMU factor = 4 factors; no projection.
   assert graph.size() == 4
   for i in range(2):
@@ -150,29 +156,14 @@ def test_build_vi_graph_adds_velocity_bias_imu_factors() -> None:
 
 def test_build_vi_graph_stationary_lm_converges() -> None:
   """2 poses, one IMU factor and no visual: LM keeps the state near-stationary."""
-  params = _params()
-  body_T_lens = gtsam.Pose3()
-  gravity = np.array([0.0, 0.0, -9.81])
   poses = [gtsam.Pose3(), gtsam.Pose3()]
   vel = [np.zeros(3), np.array([0.05, 0.0, 0.0])]  # slight init perturbation
   bias = [
     gtsam.imuBias.ConstantBias(np.zeros(3), np.zeros(3)),
     gtsam.imuBias.ConstantBias(np.zeros(3), np.zeros(3)),
   ]
-  pim = [_stationary_pim(1.0, gravity)]
-  graph, values = build_vi_graph(
-    body_poses=poses,
-    velocities=vel,
-    biases=bias,
-    preintegrated=pim,
-    front=LensSetup(body_T_lens=body_T_lens, params=params),
-    front_tracks={},
-    front_points={},
-    rear=None,
-    rear_tracks=None,
-    rear_points=None,
-    sigma=1.0,
-  )
+  pim = [_stationary_pim()]
+  graph, values = _imu_only_graph(poses, vel, bias, pim)
   initial_err = graph.error(values)
   result = optimize_graph(graph, values, max_iterations=20)
   assert result.final_error <= initial_err

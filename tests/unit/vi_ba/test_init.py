@@ -5,6 +5,7 @@ from __future__ import annotations
 import gtsam
 import numpy as np
 import numpy.typing as npt
+import pytest
 
 from specialist.vi_ba.imu import (
   ImuSamples,
@@ -52,11 +53,8 @@ def test_two_view_essential_recovers_pure_translation() -> None:
 def test_two_view_essential_too_few_bearings_raises() -> None:
   bearings = np.array([[0.0, 0.0, 1.0], [0.1, 0.0, 1.0]])
   bearings /= np.linalg.norm(bearings, axis=1, keepdims=True)
-  try:
+  with pytest.raises(RuntimeError):
     two_view_essential(bearings, bearings, threshold=1e-3)
-  except RuntimeError:
-    return
-  raise AssertionError("expected RuntimeError with <8 bearings")
 
 
 def test_interpolate_camera_poses_endpoints_and_midpoint() -> None:
@@ -66,7 +64,7 @@ def test_interpolate_camera_poses_endpoints_and_midpoint() -> None:
   assert len(poses) == 5
   # kf 0 is identity world→camera, ie. camera at origin.
   assert np.allclose(poses[0].translation(), (0.0, 0.0, 0.0))
-  # poses holds T_world_lens, so keyframe 4's center is its translation.
+  # kf 4: world-frame camera center = -R_cw^T @ t_cw = (-1, 0, 0).
   assert np.allclose(poses[-1].translation(), (-1.0, 0.0, 0.0), atol=1e-6)
   assert np.allclose(poses[2].translation(), (-0.5, 0.0, 0.0), atol=1e-6)
 
@@ -112,10 +110,9 @@ def _pim_with_motion(
   dt_total: float,
   gravity_world: np.ndarray,
   motion_accel_world: np.ndarray,
-  rate: int = 1000,
 ) -> gtsam.PreintegratedCombinedMeasurements:
   """Preintegrate a level body reading ``motion_accel_world - gravity``."""
-  n = max(2, int(dt_total * rate))
+  n = max(2, int(dt_total * 1000))
   t = np.linspace(0.0, dt_total, n, endpoint=False, dtype=np.float64)
   reading = motion_accel_world - gravity_world
   samples = ImuSamples(
@@ -141,9 +138,28 @@ def _pim_with_motion(
 def _stationary_pim(
   dt_total: float,
   gravity_world: np.ndarray,
-  rate: int = 1000,
 ) -> gtsam.PreintegratedCombinedMeasurements:
-  return _pim_with_motion(dt_total, gravity_world, np.zeros(3), rate)
+  return _pim_with_motion(dt_total, gravity_world, np.zeros(3))
+
+
+_ACCEL_PHASES = [
+  np.array([0.4, 0.3, 0.2]),
+  np.array([-0.2, -0.1, 0.0]),
+  np.array([0.1, -0.3, 0.2]),
+  np.array([0.3, 0.1, -0.2]),
+  np.array([-0.3, 0.4, 0.1]),
+]
+
+
+def _integrate_metric_trajectory(
+  accel_phases: list[np.ndarray], dts: list[float]
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+  """Per-keyframe metric positions and velocities of constant-accel phases from rest."""
+  positions, velocities = [np.zeros(3)], [np.zeros(3)]
+  for a, dt in zip(accel_phases, dts, strict=True):
+    positions.append(positions[-1] + velocities[-1] * dt + 0.5 * a * dt * dt)
+    velocities.append(velocities[-1] + a * dt)
+  return positions, velocities
 
 
 def test_visual_inertial_align_stationary_recovers_gravity_only() -> None:
@@ -163,28 +179,11 @@ def test_visual_inertial_align_stationary_recovers_gravity_only() -> None:
 def test_visual_inertial_align_recovers_scale_under_time_varying_acceleration() -> None:
   """Varying acceleration lets alignment recover scale, gravity and final velocity."""
   gravity = np.array([0.0, 0.0, -9.81])
-  # Three acceleration phases to give the solver rank.
-  accel_phases = [
-    np.array([0.4, 0.3, 0.2]),
-    np.array([-0.2, -0.1, 0.0]),
-    np.array([0.1, -0.3, 0.2]),
-    np.array([0.3, 0.1, -0.2]),
-    np.array([-0.3, 0.4, 0.1]),
-  ]
   dt = 0.1
   true_scale = 3.0
-  pims = [_pim_with_motion(dt, gravity, a) for a in accel_phases]
+  pims = [_pim_with_motion(dt, gravity, a) for a in _ACCEL_PHASES]
   dts = [float(pim.deltaTij()) for pim in pims]
-
-  # Integrate the accel phases forward from rest with constant-acceleration steps.
-  metric_positions = [np.zeros(3)]
-  metric_velocities = [np.zeros(3)]
-  for i, a in enumerate(accel_phases):
-    dt_i = dts[i]
-    p_new = metric_positions[-1] + metric_velocities[-1] * dt_i + 0.5 * a * dt_i * dt_i
-    v_new = metric_velocities[-1] + a * dt_i
-    metric_positions.append(p_new)
-    metric_velocities.append(v_new)
+  metric_positions, metric_velocities = _integrate_metric_trajectory(_ACCEL_PHASES, dts)
   body_poses = [
     gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(*(p / true_scale))) for p in metric_positions
   ]
@@ -301,33 +300,23 @@ def test_triangulate_track_multiview_is_geometric_closest_point() -> None:
 def test_visual_inertial_align_fixed_scale_pins_metric_scale() -> None:
   """The velocities follow the pinned scale, whatever the data alone implies."""
   gravity = np.array([0.0, 0.0, -9.81])
-  accel_phases = [
-    np.array([0.4, 0.3, 0.2]),
-    np.array([-0.2, -0.1, 0.0]),
-    np.array([0.1, -0.3, 0.2]),
-    np.array([0.3, 0.1, -0.2]),
-    np.array([-0.3, 0.4, 0.1]),
-  ]
   dt = 0.1
-  pims = [_pim_with_motion(dt, gravity, a) for a in accel_phases]
+  pims = [_pim_with_motion(dt, gravity, a) for a in _ACCEL_PHASES]
   dts = [float(pim.deltaTij()) for pim in pims]
-  mp = [np.zeros(3)]
-  mv = [np.zeros(3)]
-  for i, a in enumerate(accel_phases):
-    di = dts[i]
-    mp.append(mp[-1] + mv[-1] * di + 0.5 * a * di * di)
-    mv.append(mv[-1] + a * di)
+  metric_positions, metric_velocities = _integrate_metric_trajectory(_ACCEL_PHASES, dts)
 
   # Metric seed (scale 1): pinning to 1.0 returns ~1.0 and recovers velocities.
-  metric_poses = [gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(*p)) for p in mp]
+  metric_poses = [gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(*p)) for p in metric_positions]
   a1 = visual_inertial_align(
     metric_poses, pims, velocity_regularization=0.0, fixed_scale=1.0
   )
   assert abs(a1.scale - 1.0) < 1e-2
-  assert np.allclose(a1.velocities[-1], mv[-1], atol=0.05)
+  assert np.allclose(a1.velocities[-1], metric_velocities[-1], atol=0.05)
 
   # A 1/3-scaled seed (true scale 3) pinned to 1.0 stays near 1.0.
-  third_poses = [gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(*(p / 3.0))) for p in mp]
+  third_poses = [
+    gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(*(p / 3.0))) for p in metric_positions
+  ]
   a2 = visual_inertial_align(
     third_poses, pims, velocity_regularization=0.0, fixed_scale=1.0
   )

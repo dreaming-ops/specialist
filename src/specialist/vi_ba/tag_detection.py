@@ -60,12 +60,12 @@ def estimate_lens_T_tag(
   bearings = mei_unproject(corners_px.astype(np.float64), params)
   if not np.all(np.isfinite(bearings)) or np.any(bearings[:, 2] <= 1e-3):
     return None
-  norm = (bearings[:, :2] / bearings[:, 2:3]).astype(np.float64).reshape(-1, 1, 2)
+  normalized = (bearings[:, :2] / bearings[:, 2:3]).astype(np.float64).reshape(-1, 1, 2)
   obj = tag_corners_local(tag_size).reshape(-1, 1, 3)
   k = np.eye(3)
   dist = np.zeros(4)
   n_sols, rvecs, tvecs, _ = cv2.solvePnPGeneric(
-    obj, norm, k, dist, flags=cv2.SOLVEPNP_IPPE
+    obj, normalized, k, dist, flags=cv2.SOLVEPNP_IPPE
   )
   if n_sols == 0:
     return None
@@ -73,12 +73,7 @@ def estimate_lens_T_tag(
   for rvec, tvec in zip(rvecs, tvecs, strict=True):
     rmat, _ = cv2.Rodrigues(rvec)
     t = np.asarray(tvec, dtype=np.float64).reshape(3)
-    poses.append(
-      gtsam.Pose3(
-        gtsam.Rot3(rmat),
-        gtsam.Point3(float(t[0]), float(t[1]), float(t[2])),
-      )
-    )
+    poses.append(gtsam.Pose3(gtsam.Rot3(rmat), gtsam.Point3(*t)))
   # Bootstrap cheirality: tag +z must point toward the camera (R[:, 2] · t < 0).
   cheir = [
     p

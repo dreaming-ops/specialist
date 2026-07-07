@@ -43,9 +43,6 @@ class FrontendConfig:
   n_features: int = 2000
   ransac_threshold: float = 3.0
   max_half_angle: float = float(np.deg2rad(70.0))
-  fb_error_threshold: float = 1.0
-  min_distance: float = 8.0
-  redetect_ratio: float = 0.5
 
 
 def scaled_mei(offset: LensOffset, decoded_full_width: int, lens_idx: int) -> MeiParams:
@@ -232,9 +229,6 @@ def run_lens_frontend(
     frames,
     max_corners=cfg.n_features,
     masks=masks,
-    fb_error_threshold=cfg.fb_error_threshold,
-    min_distance=cfg.min_distance,
-    redetect_ratio=cfg.redetect_ratio,
   )
   filtered: list[np.ndarray] = []
   for k in range(1, len(feature_frames)):
@@ -281,7 +275,7 @@ def filter_tracks_by_parallax(
     if len(obs) < 2:
       rejected[tid] = obs
       continue
-    pixels = np.stack([obs[k] for k in sorted(obs.keys())])
+    pixels = np.stack([obs[k] for k in sorted(obs)])
     bearings = mei_unproject(pixels, params)
     dots = np.clip(bearings @ bearings.T, -1.0, 1.0)
     if float(dots.min()) <= cos_min:
@@ -305,7 +299,7 @@ def triangulate_lens(
   for tid, obs in tracks.items():
     if len(obs) < min_track_length:
       continue
-    kfs = sorted(obs.keys())
+    kfs = sorted(obs)
     pixels = np.stack([obs[k] for k in kfs])
     bearings = list(mei_unproject(pixels, params))
     poses = [body_poses[k] for k in kfs]

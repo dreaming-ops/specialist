@@ -145,6 +145,5 @@ def test_pipeline_recovers_ground_truth_from_two_view_init() -> None:
 
   assert np.allclose(_normalized(recovered), _normalized(truth), atol=0.05)
 
-  # LM actually took steps and still ended with reasonable reprojection.
   for i in range(n_keyframes):
     assert result.values.exists(X(i))

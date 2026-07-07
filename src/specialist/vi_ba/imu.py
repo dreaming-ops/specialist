@@ -123,17 +123,6 @@ def slice_samples_at_keyframes(
   return out
 
 
-def preintegrate_between_keyframes(
-  params: gtsam.PreintegrationCombinedParams,
-  samples: ImuSamples,
-  keyframe_times: Float64Array,
-  bias: gtsam.imuBias.ConstantBias,
-) -> list[gtsam.PreintegratedCombinedMeasurements]:
-  """One ``PreintegratedCombinedMeasurements`` per consecutive keyframe pair."""
-  per_window = slice_samples_at_keyframes(samples, keyframe_times)
-  return [integrate_samples(params, w, bias) for w in per_window]
-
-
 def integrate_samples(
   params: gtsam.PreintegrationCombinedParams,
   samples: ImuSamples,
@@ -152,3 +141,14 @@ def integrate_samples(
       dt,
     )
   return pim
+
+
+def preintegrate_between_keyframes(
+  params: gtsam.PreintegrationCombinedParams,
+  samples: ImuSamples,
+  keyframe_times: Float64Array,
+  bias: gtsam.imuBias.ConstantBias,
+) -> list[gtsam.PreintegratedCombinedMeasurements]:
+  """One ``PreintegratedCombinedMeasurements`` per consecutive keyframe pair."""
+  per_window = slice_samples_at_keyframes(samples, keyframe_times)
+  return [integrate_samples(params, w, bias) for w in per_window]

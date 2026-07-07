@@ -24,7 +24,7 @@ _PINHOLE = MeiParams(
 )  # fmt: skip
 
 
-def test_mei_round_trip_pinhole_centered() -> None:
+def test_mei_unprojects_principal_point_to_optical_axis() -> None:
   params = _PINHOLE
   pixels = np.array([[320.0, 240.0]])
   bearing = mei_unproject(pixels, params)

@@ -13,6 +13,7 @@ from specialist.vi_ba.imu import (
 )
 
 _GRAVITY = np.array([0.0, 0.0, -9.81], dtype=np.float64)
+_ZERO_BIAS = gtsam.imuBias.ConstantBias(np.zeros(3), np.zeros(3))
 
 
 def test_constant_gyro_yields_correct_rotation() -> None:
@@ -31,7 +32,7 @@ def test_constant_gyro_yields_correct_rotation() -> None:
     accel_bias_rw_sigma=1e-5,
     gravity_world=tuple(_GRAVITY),
   )
-  bias = gtsam.imuBias.ConstantBias(np.zeros(3), np.zeros(3))
+  bias = _ZERO_BIAS
   pim = integrate_samples(params, samples, bias)
 
   omega = gtsam.Rot3.Logmap(pim.deltaRij())
@@ -81,9 +82,8 @@ def test_preintegrate_between_keyframes_partitions_the_samples() -> None:
     accel_bias_rw_sigma=1e-5,
     gravity_world=tuple(_GRAVITY),
   )
-  bias = gtsam.imuBias.ConstantBias(np.zeros(3), np.zeros(3))
   pims = preintegrate_between_keyframes(
-    params, samples, np.array([0.0, 1.0, 2.0, 3.0, 4.0]), bias
+    params, samples, np.array([0.0, 1.0, 2.0, 3.0, 4.0]), _ZERO_BIAS
   )
   np.testing.assert_allclose(
     [pim.deltaTij() for pim in pims], [1.0, 1.0, 1.0, 0.0], atol=3e-3

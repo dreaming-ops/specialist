@@ -250,13 +250,14 @@ def _resolve_urdf_path(explicit: Path | None) -> Path | None:
     return None
 
 
-def _anchor_corners_world(ref_anchor: gtsam.Pose3, tag_size: float) -> Float64Array:
-  """The anchor tag's four metric corners in the world frame, ``(4, 3)``."""
+def _tag_corners_world(pose: gtsam.Pose3, tag_size: float) -> Float64Array:
+  """A tag's four metric corners transformed into the world frame, ``(4, 3)``."""
   return np.array(
     [
-      np.asarray(ref_anchor.transformFrom(gtsam.Point3(*corner)), dtype=np.float64)
+      pose.transformFrom(gtsam.Point3(*corner))
       for corner in tag_corners_local(tag_size)
-    ]
+    ],
+    dtype=np.float64,
   )
 
 
@@ -357,8 +358,8 @@ def _reproject_landmarks_per_kf(
   return [np.stack(b) if b else np.empty((0, 2)) for b in buckets]
 
 
-def _project_tag_axes_per_lens(
-  tags_per_kf: list,
+def _project_tag_axes_per_kf(
+  tags_per_kf: list[list[TagDetection]],
   lens: LensSetup,
   tag_size_by_id: dict[int, float],
   n_keyframes: int,
@@ -366,7 +367,7 @@ def _project_tag_axes_per_lens(
   out: list[Float64Array] = []
   for kf in range(n_keyframes):
     tags = tags_per_kf[kf] if kf < len(tags_per_kf) else []
-    strips: list[np.ndarray] = []
+    strips: list[Float64Array] = []
     for det in tags:
       size = tag_size_by_id.get(int(det.tag_id))
       if size is None:
@@ -398,7 +399,12 @@ def _project_tag_axes_per_lens(
   return out
 
 
-def _per_keyframe_reproj_rmse_for_viz(
+def _rms(values: list[float]) -> float:
+  """Root-mean-square of ``values``; NaN when empty."""
+  return float(np.sqrt(np.mean(np.square(values)))) if values else float("nan")
+
+
+def _per_kf_reproj_rmse_for_viz(
   values: gtsam.Values,
   tracks: dict[int, dict[int, Float64Array]],
   lens: LensSetup,
@@ -424,15 +430,11 @@ def _per_keyframe_reproj_rmse_for_viz(
       pred = mei_project(np.asarray(p_lens)[None, :], lens.params)[0]
       if np.all(np.isfinite(pred)):
         buckets[kf].append(float(np.linalg.norm(pred - pt)))
-  return [
-    float(np.sqrt(np.mean(np.square(errs)))) if errs else float("nan")
-    for errs in buckets
-  ]
+  return [_rms(errs) for errs in buckets]
 
 
 def _aggregate_rmse_for_print(per_kf: list[float]) -> float:
-  finite = [v for v in per_kf if np.isfinite(v)]
-  return float(np.sqrt(np.mean(np.square(finite)))) if finite else float("nan")
+  return _rms([v for v in per_kf if np.isfinite(v)])
 
 
 def _pose_to_dict(p: gtsam.Pose3) -> dict:
@@ -443,18 +445,7 @@ def _pose_to_dict(p: gtsam.Pose3) -> dict:
 
 
 def _mei_to_dict(p: MeiParams) -> dict:
-  return {
-    "fx": float(p.fx),
-    "fy": float(p.fy),
-    "cx": float(p.cx),
-    "cy": float(p.cy),
-    "k1": float(p.k1),
-    "k2": float(p.k2),
-    "k3": float(p.k3),
-    "p1": float(p.p1),
-    "p2": float(p.p2),
-    "xi": float(p.xi),
-  }
+  return {k: float(v) for k, v in asdict(p).items()}
 
 
 def _prepare_cached(name: str, targs: "CameraArgs", enabled: bool) -> "PreparedCamera":
@@ -463,22 +454,22 @@ def _prepare_cached(name: str, targs: "CameraArgs", enabled: bool) -> "PreparedC
     return prepare_camera(name, targs)
   cache_dir = Path("/tmp/specialist_prep_cache")
   try:
-    mt = targs.insv_path.stat().st_mtime
+    mtime = targs.insv_path.stat().st_mtime
   except OSError:
-    mt = 0.0
-  key = hashlib.sha256(f"{targs!r}|{mt}".encode()).hexdigest()[:16]
-  cpath = cache_dir / f"{name}_{key}.pkl"
-  if cpath.exists():
-    print(f"  [prep cache HIT] {cpath.name} — skipping decode+frontend")
-    return pickle.loads(cpath.read_bytes())
+    mtime = 0.0
+  key = hashlib.sha256(f"{targs!r}|{mtime}".encode()).hexdigest()[:16]
+  cache_path = cache_dir / f"{name}_{key}.pkl"
+  if cache_path.exists():
+    print(f"  [prep cache HIT] {cache_path.name} — skipping decode+frontend")
+    return pickle.loads(cache_path.read_bytes())
   tracker = prepare_camera(name, targs)
   cache_dir.mkdir(parents=True, exist_ok=True)
   slim = copy.copy(tracker)
   slim.front_frames = []
   slim.rear_frames = []
   try:
-    cpath.write_bytes(pickle.dumps(slim))
-    print(f"  [prep cache saved] {cpath.name}")
+    cache_path.write_bytes(pickle.dumps(slim))
+    print(f"  [prep cache saved] {cache_path.name}")
   except Exception as exc:  # noqa: BLE001 - caching is best-effort
     print(f"  [prep cache save failed: {exc}]")
   return tracker
@@ -513,7 +504,6 @@ def _assemble_joint_graph(
   keys: CameraKeys,
   args: Args,
   cross_obs: list[_CrossSighting],
-  anchor_tag_id: int,
   anchor_corners_world: Float64Array,
 ) -> tuple[gtsam.NonlinearFactorGraph, gtsam.Values]:
   """The joint graph: VI, anchor, gripper, cross-tracker and smoothness factors."""
@@ -541,7 +531,7 @@ def _assemble_joint_graph(
 
   n_anchor_sightings = 0
   for t in cameras:
-    for lens, kf, anchor_det in _anchor_sightings(t, anchor_tag_id):
+    for lens, kf, anchor_det in _anchor_sightings(t, args.anchor.tag_id):
       n_anchor_sightings += 1
       pose_key = keys.pose_key(t.name, kf)
       # The detected tag direction in the lens frame fixes the omni depth sign.
@@ -582,7 +572,7 @@ def _assemble_joint_graph(
       1: t.finger_reproj.get("right_finger"),
     }
     has_fingers = any(r is not None for r in reprojs.values())
-    base_tag_id = base_tag_id_by_name.get(t.name, -1)
+    base_tag_id = base_tag_id_by_name[t.name]
     if t.body_T_base_tag is None or (not has_fingers and base_tag_id <= 0):
       continue
     bt_key = keys.base_tag_key(t.name)
@@ -849,7 +839,7 @@ def _build_raw_export(
   optimized_body_poses: dict[str, list[gtsam.Pose3]],
   culled_points: dict[str, tuple[dict[int, Float64Array], dict[int, Float64Array]]],
   ref_anchor: gtsam.Pose3,
-  master_offset_by_name: dict[str, float],
+  audio_offset_by_name: dict[str, float],
   args: Args,
 ) -> dict[str, object]:
   """Raw observations for downstream evaluation, free of derived metrics."""
@@ -901,7 +891,7 @@ def _build_raw_export(
   raw["kf_times_by_tracker"] = {
     t.name: [float(x) for x in t.keyframe_times] for t in cameras
   }
-  raw["audio_offset_by_tracker"] = master_offset_by_name
+  raw["audio_offset_by_tracker"] = audio_offset_by_name
   raw["body_T_base_tag_by_tracker"] = {
     t.name: (_pose_to_dict(t.body_T_base_tag) if t.body_T_base_tag else None)
     for t in cameras
@@ -926,10 +916,9 @@ def _build_tracker_viz_data(
   args: Args,
   tag_size_by_id: dict[int, float],
   cross_obs_for_t: list[_CrossSighting],
-  anchor_tag_id: int,
   anchor_corners_world: Float64Array,
   base_tag_corners_world: dict[str, list[Float64Array]],
-  master_offset: float,
+  audio_offset: float,
 ) -> tuple[
   CameraVizData,
   dict[str, object],
@@ -947,7 +936,7 @@ def _build_tracker_viz_data(
   rear_obs = cull_outlier_landmarks(r_pts, t.rear_tracks_tri, poses, t.rear_lens)
   f_pts = {tid: f_pts[tid] for tid in front_obs}
   r_pts = {tid: r_pts[tid] for tid in rear_obs}
-  front_rmse_per_kf = _per_keyframe_reproj_rmse_for_viz(
+  front_rmse_per_kf = _per_kf_reproj_rmse_for_viz(
     result.values,
     front_obs,
     t.front_lens,
@@ -955,7 +944,7 @@ def _build_tracker_viz_data(
     lambda i, n=t.name: keys.pose_key(n, i),
     t.n_keyframes,
   )
-  rear_rmse_per_kf = _per_keyframe_reproj_rmse_for_viz(
+  rear_rmse_per_kf = _per_kf_reproj_rmse_for_viz(
     result.values,
     rear_obs,
     t.rear_lens,
@@ -965,15 +954,16 @@ def _build_tracker_viz_data(
   )
   f_rmse = _aggregate_rmse_for_print(front_rmse_per_kf)
   r_rmse = _aggregate_rmse_for_print(rear_rmse_per_kf)
+  bbox_diagonal = _bounding_box_diagonal(poses)
   per_tracker_result: dict[str, object] = {
     "name": t.name,
     "n_keyframes": t.n_keyframes,
     "anchor_obs": len(t.anchor_obs_per_kf),
-    "bounding_box_diagonal": _bounding_box_diagonal(poses),
+    "bounding_box_diagonal": bbox_diagonal,
     "path_length": _path_length(poses),
   }
   print(
-    f"  {t.name}: kf={t.n_keyframes} bbox={_bounding_box_diagonal(poses):.3f} m "
+    f"  {t.name}: kf={t.n_keyframes} bbox={bbox_diagonal:.3f} m "
     f"front_rmse={f_rmse:.2f}px rear_rmse={r_rmse:.2f}px"
   )
   if t.body_T_base_tag is not None:
@@ -983,13 +973,13 @@ def _build_tracker_viz_data(
   biases_final = [
     result.values.atConstantBias(keys.bias_key(t.name, i)) for i in range(t.n_keyframes)
   ]
-  front_tag_axes = _project_tag_axes_per_lens(
+  front_tag_axes = _project_tag_axes_per_kf(
     t.front_tags_per_kf,
     t.front_lens,
     tag_size_by_id,
     t.n_keyframes,
   )
-  rear_tag_axes = _project_tag_axes_per_lens(
+  rear_tag_axes = _project_tag_axes_per_kf(
     t.rear_tags_per_kf,
     t.rear_lens,
     tag_size_by_id,
@@ -1019,14 +1009,14 @@ def _build_tracker_viz_data(
     t,
     poses,
     cross_obs_for_t,
-    _anchor_sightings(t, anchor_tag_id),
+    _anchor_sightings(t, int(args.anchor.tag_id)),
     anchor_corners_world,
     base_tag_corners_world,
   )
   viz_data = CameraVizData(
     name=t.name,
     body_poses=poses,
-    keyframe_times=np.asarray(t.keyframe_times, dtype=np.float64) - master_offset,
+    keyframe_times=np.asarray(t.keyframe_times, dtype=np.float64) - audio_offset,
     front_points=f_pts,
     rear_points=r_pts,
     front_frames=t.front_frames if args.log_frames_in_rrd else None,
@@ -1202,9 +1192,9 @@ def main(args: Args) -> None:
 
   keys = CameraKeys(list(names))
   anchor_tag_id = int(args.anchor.tag_id)
-  anchor_corners_world = _anchor_corners_world(ref_anchor, args.anchor.tag_size)
+  anchor_corners_world = _tag_corners_world(ref_anchor, args.anchor.tag_size)
   graph, values = _assemble_joint_graph(
-    cameras, keys, args, cross_obs, anchor_tag_id, anchor_corners_world
+    cameras, keys, args, cross_obs, anchor_corners_world
   )
 
   result, landmark_keep = _solve_with_cull_reoptimize(
@@ -1218,7 +1208,7 @@ def main(args: Args) -> None:
   rrd_path = args.output_dir / f"track_{stamp}.rrd"
 
   tag_size_by_id: dict[int, float] = {
-    int(args.anchor.tag_id): float(args.anchor.tag_size),
+    anchor_tag_id: float(args.anchor.tag_size),
     **{int(tid): float(args.gripper.tag_size) for tid in args.base_tag_ids},
     **{
       int(tid): float(args.gripper.tag_size)
@@ -1235,24 +1225,17 @@ def main(args: Args) -> None:
   }
 
   # Each tracker's base-tag corners in the world frame per keyframe, for cross rays.
-  base_tag_corner_local = tag_corners_local(args.gripper.tag_size)
   base_tag_corners_world: dict[str, list[Float64Array]] = {}
   for t in cameras:
     if t.body_T_base_tag is None:
       continue
     base_tag_corners_world[t.name] = [
-      np.array(
-        [
-          pose.compose(t.body_T_base_tag).transformFrom(gtsam.Point3(*c))
-          for c in base_tag_corner_local
-        ],
-        dtype=np.float64,
-      )
+      _tag_corners_world(pose.compose(t.body_T_base_tag), args.gripper.tag_size)
       for pose in optimized_body_poses[t.name]
     ]
 
   # Per-tracker audio offset to convert local keyframe_times → master clock.
-  master_offset_by_name: dict[str, float] = {
+  audio_offset_by_name: dict[str, float] = {
     t.name: offsets[i] for i, t in enumerate(cameras)
   }
   cross_obs_by_observer: dict[str, list[_CrossSighting]] = {t.name: [] for t in cameras}
@@ -1272,10 +1255,9 @@ def main(args: Args) -> None:
       args,
       tag_size_by_id,
       cross_obs_by_observer[t.name],
-      anchor_tag_id,
       anchor_corners_world,
       base_tag_corners_world,
-      master_offset_by_name[t.name],
+      audio_offset_by_name[t.name],
     )
     viz_trackers.append(viz_data)
     per_tracker_results.append(per_tracker_result)
@@ -1305,7 +1287,7 @@ def main(args: Args) -> None:
     optimized_body_poses,
     culled_points,
     ref_anchor,
-    master_offset_by_name,
+    audio_offset_by_name,
     args,
   )
 

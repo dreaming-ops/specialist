@@ -32,25 +32,22 @@ def cull_outlier_landmarks(
   kept: dict[int, dict[int, Float64Array]] = {}
   for tid, p in points.items():
     point = np.asarray(p, dtype=np.float64)
-    landmark = gtsam.Point3(float(point[0]), float(point[1]), float(point[2]))
     survivors: dict[int, Float64Array] = {}
     centers: list[Float64Array] = []
     for kf, pixel in tracks.get(tid, {}).items():
       if not (0 <= kf < len(body_poses)):
         continue
       world_T_lens = body_poses[kf].compose(lens.body_T_lens)
-      p_lens = np.asarray(world_T_lens.transformTo(landmark), dtype=np.float64)
+      p_lens = np.asarray(world_T_lens.transformTo(point), dtype=np.float64)
       if p_lens[2] <= MIN_DEPTH:
         continue
       pred = mei_project(p_lens[None, :], lens.params)[0]
       if not np.all(np.isfinite(pred)):
         continue
-      if (
-        float(np.linalg.norm(pred - np.asarray(pixel, dtype=np.float64)))
-        > MAX_RESIDUAL_PX
-      ):
+      pixel_arr = np.asarray(pixel, dtype=np.float64)
+      if float(np.linalg.norm(pred - pixel_arr)) > MAX_RESIDUAL_PX:
         continue
-      survivors[kf] = np.asarray(pixel, dtype=np.float64)
+      survivors[kf] = pixel_arr
       centers.append(np.asarray(world_T_lens.translation(), dtype=np.float64))
     if len(survivors) < MIN_OBSERVATIONS:
       continue

@@ -429,10 +429,10 @@ def _log_tracker(
 
   n = len(data.body_poses)
   if data.keyframe_times is not None:
-    times = rr.TimeColumn(
-      _TIMELINE, duration=np.asarray(data.keyframe_times, dtype=np.float64)
-    )
+    trail_times = np.asarray(data.keyframe_times, dtype=np.float64)
+    times = rr.TimeColumn(_TIMELINE, duration=trail_times)
   else:
+    trail_times = np.arange(n, dtype=np.float64)
     times = rr.TimeColumn(_TIMELINE, sequence=np.arange(n, dtype=np.int64))
 
   quats = np.stack([_pose_quaternion_xyzw(p) for p in data.body_poses])
@@ -460,7 +460,7 @@ def _log_tracker(
       ),
     )
     if data.joint_angles is not None:
-      assert tree is not None  # set above whenever urdf_path is not None
+      assert tree is not None  # non-None whenever urdf_path is set
       for joint_name, raw_values in data.joint_angles.items():
         joint = tree.get_joint_by_name(joint_name)
         if joint is None:
@@ -480,11 +480,6 @@ def _log_tracker(
           indexes=[times],
           columns=joint.compute_transform_columns(clean),
         )
-  trail_times = (
-    np.asarray(data.keyframe_times, dtype=np.float64)
-    if data.keyframe_times is not None
-    else np.arange(n, dtype=np.float64)
-  )
   rr.send_columns(
     f"{spatial_root}/trajectory",
     indexes=[times],

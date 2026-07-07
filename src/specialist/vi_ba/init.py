@@ -171,13 +171,6 @@ def _reproj_bearing(
   return float(np.hypot(p[0] / p[2] - b[0] / b[2], p[1] / p[2] - b[1] / b[2]))
 
 
-def _max_parallax(
-  views: list[tuple[Float64Array, Float64Array, Float64Array]], x: Float64Array
-) -> float:
-  centers = [-r.T @ t for r, t, _ in views]
-  return max_parallax(centers, x)
-
-
 def _pnp_bearings(
   pts: Float64Array, bears: Float64Array, min_points: int
 ) -> tuple[Float64Array, Float64Array] | None:
@@ -220,7 +213,7 @@ def incremental_sfm(
   poses: dict[int, tuple[Float64Array, Float64Array]] = {}
   landmark_map: dict[int, Float64Array] = {}
 
-  def tri(tid: int) -> None:
+  def triangulate(tid: int) -> None:
     views = [
       (poses[k][0], poses[k][1], bearings[tid][k]) for k in bearings[tid] if k in poses
     ]
@@ -231,7 +224,8 @@ def incremental_sfm(
       return
     if sum(1 for r, t, _ in views if (r @ x + t)[2] > 0.05) < 2:
       return
-    if _max_parallax(views, x) < SFM_MIN_PARALLAX:
+    centers = [-r.T @ t for r, t, _ in views]
+    if max_parallax(centers, x) < SFM_MIN_PARALLAX:
       return
     if np.median([_reproj_bearing(r, t, x, b) for r, t, b in views]) > SFM_MAX_REPROJ:
       return
@@ -266,7 +260,7 @@ def incremental_sfm(
   poses[first] = (np.eye(3), np.zeros(3))
   poses[last] = (r_cw, t_cw)
   for tid in shared:
-    tri(tid)
+    triangulate(tid)
 
   for _pass in range(SFM_PASSES):
     progress = False
@@ -287,7 +281,7 @@ def incremental_sfm(
       progress = True
       for tid in bearings:
         if k in bearings[tid]:
-          tri(tid)
+          triangulate(tid)
     if not progress:
       break
 
@@ -336,22 +330,17 @@ def triangulate_track_multiview(
   if not np.all(np.isfinite(xyz)):
     return None
   depths: list[float] = []
-  n_good_cheirality = 0
   for t_world_lens in t_world_lenses:
     p_lens = t_world_lens.transformTo(xyz)
-    z = float(np.asarray(p_lens)[2])
-    depths.append(z)
-    if z >= min_cheirality_z:
-      n_good_cheirality += 1
+    depths.append(float(np.asarray(p_lens)[2]))
+  good_depths = [z for z in depths if z >= min_cheirality_z]
   # Two views in front suffice; a fisheye landmark can sit near one frame's 90° horizon.
-  if n_good_cheirality < 2:
+  if len(good_depths) < 2:
     return None
-  median_depth = float(np.median([z for z in depths if z >= min_cheirality_z]))
-  if median_depth < min_landmark_depth:
+  median_depth = float(np.median(good_depths))
+  if not min_landmark_depth <= median_depth <= max_landmark_depth:
     return None
-  if median_depth > max_landmark_depth:
-    return None
-  return np.asarray(xyz, dtype=np.float64)
+  return xyz
 
 
 def visual_inertial_align(
@@ -449,8 +438,7 @@ def gravity_alignment_rotation(gravity_world: Float64Array) -> gtsam.Rot3:
     axis = axis / np.linalg.norm(axis)
     return gtsam.Rot3.AxisAngle(gtsam.Point3(*axis), np.pi)
   axis = np.cross(src, target)
-  axis_norm = np.linalg.norm(axis)
-  axis = axis / axis_norm
+  axis = axis / np.linalg.norm(axis)
   angle = float(np.arccos(dot))
   return gtsam.Rot3.AxisAngle(gtsam.Point3(*axis), angle)
 

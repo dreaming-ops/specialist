@@ -13,8 +13,6 @@ from specialist.loader.mei_model import MeiParams, mei_project
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.landmark_cull import cull_outlier_landmarks
 
-Float64Array = np.ndarray
-
 
 def _lens() -> LensSetup:
   return LensSetup(
@@ -34,9 +32,12 @@ def _lens() -> LensSetup:
   )
 
 
-def _project(lens: LensSetup, pose: gtsam.Pose3, point) -> Float64Array:
-  p_lens = np.asarray(pose.compose(lens.body_T_lens).transformTo(gtsam.Point3(*point)))
-  return mei_project(p_lens[None, :], lens.params)[0]
+def _in_lens(pose: gtsam.Pose3, lens: LensSetup, point) -> np.ndarray:
+  return np.asarray(pose.compose(lens.body_T_lens).transformTo(gtsam.Point3(*point)))
+
+
+def _project(lens: LensSetup, pose: gtsam.Pose3, point) -> np.ndarray:
+  return mei_project(_in_lens(pose, lens, point)[None, :], lens.params)[0]
 
 
 def _baseline_poses() -> list[gtsam.Pose3]:
@@ -92,7 +93,7 @@ def test_drops_behind_camera() -> None:
 
 
 def _load_front(path: str):
-  d = json.load(open(path))
+  d = json.loads(Path(path).read_text())
   name = d["slots"][0]
   lf = d["lens_by_tracker"][name]["front"]
   lens = LensSetup(
@@ -122,9 +123,7 @@ def _rmse(ids, tracks, points, poses, lens) -> float:
   for tid in ids:
     for kf, xy in tracks[tid].items():
       if 0 <= kf < len(poses):
-        pl = np.asarray(
-          poses[kf].compose(lens.body_T_lens).transformTo(gtsam.Point3(*points[tid]))
-        )
+        pl = _in_lens(poses[kf], lens, points[tid])
         if pl[2] > 1e-3:
           errs.append(
             float(np.linalg.norm(mei_project(pl[None, :], lens.params)[0] - xy))
@@ -137,9 +136,7 @@ def _max_view_depth(ids, tracks, points, poses, lens) -> float:
   for tid in ids:
     for kf in tracks[tid]:
       if 0 <= kf < len(poses):
-        pl = np.asarray(
-          poses[kf].compose(lens.body_T_lens).transformTo(gtsam.Point3(*points[tid]))
-        )
+        pl = _in_lens(poses[kf], lens, points[tid])
         d = max(d, abs(float(pl[2])))
   return d
 

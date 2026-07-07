@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from specialist.vi_ba.compose import CameraKeys
 
 
@@ -27,8 +29,5 @@ def test_camera_keys_no_collision_across_cameras() -> None:
 
 
 def test_camera_keys_duplicate_slots_raises() -> None:
-  try:
+  with pytest.raises(ValueError):
     CameraKeys(["alice", "alice"])
-  except ValueError:
-    return
-  raise AssertionError("expected ValueError for duplicate tracker names")
