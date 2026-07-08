@@ -295,18 +295,24 @@ def triangulate_lens(
   max_landmark_depth: float = 5.0,
 ) -> dict[int, Float64Array]:
   """Triangulate tracks; skip any under ``min_track_length`` or out of depth bounds."""
+  if not tracks:
+    return {}
+  # World → lens poses depend only on the keyframe, so build them once for all tracks.
+  lens_poses = [pose.compose(body_T_lens) for pose in body_poses]
+  lens_rotations = np.stack([pose.rotation().matrix() for pose in lens_poses])
+  lens_centers = np.stack(
+    [np.asarray(pose.translation(), dtype=np.float64) for pose in lens_poses]
+  )
   out: dict[int, Float64Array] = {}
   for tid, obs in tracks.items():
     if len(obs) < min_track_length:
       continue
     kfs = sorted(obs)
     pixels = np.stack([obs[k] for k in kfs])
-    bearings = list(mei_unproject(pixels, params))
-    poses = [body_poses[k] for k in kfs]
     xyz = triangulate_track_multiview(
-      bearings,
-      poses,
-      body_T_lens,
+      mei_unproject(pixels, params),
+      lens_rotations[kfs],
+      lens_centers[kfs],
       min_landmark_depth=min_landmark_depth,
       max_landmark_depth=max_landmark_depth,
     )

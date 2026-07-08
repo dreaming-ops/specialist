@@ -97,6 +97,11 @@ def test_pipeline_recovers_ground_truth_from_two_view_init() -> None:
   body_poses_init = body_poses_from_lens_poses(lens_poses, body_T_lens)
 
   # Triangulate from earliest + latest observation per track.
+  lens_poses = [pose.compose(body_T_lens) for pose in body_poses_init]
+  lens_rotations = np.stack([pose.rotation().matrix() for pose in lens_poses])
+  lens_centers = np.stack(
+    [np.asarray(pose.translation(), dtype=np.float64) for pose in lens_poses]
+  )
   points_init: dict[int, Float64Array] = {}
   for tid, obs in tracks.items():
     frames_sorted = sorted(obs.keys())
@@ -105,9 +110,9 @@ def test_pipeline_recovers_ground_truth_from_two_view_init() -> None:
     b1 = mei_unproject(obs[f1][None, :], params)[0]
     # The two-view init's scale is arbitrary, so the depth gate is cheirality alone.
     xyz = triangulate_track_multiview(
-      [b0, b1],
-      [body_poses_init[f0], body_poses_init[f1]],
-      body_T_lens,
+      np.stack([b0, b1]),
+      lens_rotations[[f0, f1]],
+      lens_centers[[f0, f1]],
       min_landmark_depth=1e-6,
       max_landmark_depth=1e9,
     )

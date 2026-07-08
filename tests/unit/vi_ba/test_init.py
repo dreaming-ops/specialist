@@ -223,9 +223,17 @@ def test_apply_alignment_rescales_and_rotates() -> None:
   )
 
 
+def _lens_arrays(poses: list[gtsam.Pose3]) -> tuple[Float64Array, Float64Array]:
+  """Each pose's world_R_lens and lens center, as ``triangulate_lens`` builds them."""
+  rotations = np.stack([pose.rotation().matrix() for pose in poses])
+  centers = np.stack(
+    [np.asarray(pose.translation(), dtype=np.float64) for pose in poses]
+  )
+  return rotations, centers
+
+
 def test_triangulate_track_multiview_recovers_short_baseline() -> None:
   """A short-baseline, ten-view landmark at 1.2 m triangulates to within 1 mm."""
-  body_T_lens = gtsam.Pose3()
   xyz_truth = np.array([0.05, 0.02, 1.2])
   # 10 poses with small translations (bbox ~10 cm).
   ts = np.linspace(-0.05, 0.05, 10)
@@ -237,18 +245,16 @@ def test_triangulate_track_multiview_recovers_short_baseline() -> None:
   for pose in poses:
     p_cam = np.asarray(pose.transformTo(gtsam.Point3(*xyz_truth)))
     bearings.append(p_cam / np.linalg.norm(p_cam))
-  xyz_rec = triangulate_track_multiview(bearings, poses, body_T_lens)
+  xyz_rec = triangulate_track_multiview(np.asarray(bearings), *_lens_arrays(poses))
   assert xyz_rec is not None
   assert np.allclose(xyz_rec, xyz_truth, atol=1e-3)
 
 
 def test_triangulate_track_multiview_returns_none_for_single_view() -> None:
-  body_T_lens = gtsam.Pose3()
   assert (
     triangulate_track_multiview(
-      [np.array([0.0, 0.0, 1.0])],
-      [gtsam.Pose3()],
-      body_T_lens,
+      np.array([[0.0, 0.0, 1.0]]),
+      *_lens_arrays([gtsam.Pose3()]),
     )
     is None
   )
@@ -256,7 +262,6 @@ def test_triangulate_track_multiview_returns_none_for_single_view() -> None:
 
 def test_triangulate_track_multiview_skips_bad_bearings_but_succeeds() -> None:
   """A bad-z bearing drops out; the three good views recover the point within 1 mm."""
-  body_T_lens = gtsam.Pose3()
   xyz_truth = np.array([0.1, 0.0, 1.5])
   good_poses = [
     gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(t, 0.0, 0.0)) for t in (0.0, 0.1, 0.2)
@@ -268,14 +273,13 @@ def test_triangulate_track_multiview_skips_bad_bearings_but_succeeds() -> None:
   # Add one garbage bearing (z near 0).
   bearings = good_bearings + [np.array([1.0, 0.0, 0.001])]
   poses = good_poses + [gtsam.Pose3()]
-  xyz_rec = triangulate_track_multiview(bearings, poses, body_T_lens)
+  xyz_rec = triangulate_track_multiview(np.asarray(bearings), *_lens_arrays(poses))
   assert xyz_rec is not None
   assert np.allclose(xyz_rec, xyz_truth, atol=1e-3)
 
 
 def test_triangulate_track_multiview_is_geometric_closest_point() -> None:
   """For skew rays the summed (I - ddᵀ)(X - C) gradient vanishes at the estimate."""
-  body_T_lens = gtsam.Pose3()
   truth = np.array([0.1, -0.05, 1.5])
   poses = [
     gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(t, 0.0, 0.0)) for t in (-0.2, 0.0, 0.25)
@@ -286,7 +290,7 @@ def test_triangulate_track_multiview_is_geometric_closest_point() -> None:
     p_cam = np.asarray(pose.transformTo(gtsam.Point3(*truth)))
     b = p_cam / np.linalg.norm(p_cam) + 0.01 * rng.standard_normal(3)  # skew
     bearings.append(b / np.linalg.norm(b))
-  xyz = triangulate_track_multiview(bearings, poses, body_T_lens)
+  xyz = triangulate_track_multiview(np.asarray(bearings), *_lens_arrays(poses))
   assert xyz is not None
   grad = np.zeros(3)
   for bearing, pose in zip(bearings, poses, strict=True):

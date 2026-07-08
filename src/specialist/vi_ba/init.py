@@ -291,49 +291,42 @@ def incremental_sfm(
   return lens_poses, landmark_map
 
 
+# Cheirality bound on a unit bearing's z and on a view depth (m).
+_MIN_CHEIRALITY_Z = 0.05
+
+
 def triangulate_track_multiview(
-  bearings: list[Float64Array],
-  body_poses: list[gtsam.Pose3],
-  body_T_lens: gtsam.Pose3,
-  min_cheirality_z: float = 0.05,
+  bearings: Float64Array,
+  lens_rotations: Float64Array,
+  lens_centers: Float64Array,
   min_landmark_depth: float = 0.15,
   max_landmark_depth: float = 5.0,
 ) -> Float64Array | None:
-  """Closest point to one track's forward rays; ``None`` if cheirality or depth fails."""
-  if len(bearings) != len(body_poses):
+  """Least-squares point of one track's rays, or None when its depth checks fail."""
+  if not (len(bearings) == len(lens_rotations) == len(lens_centers)):
     raise ValueError(
-      f"bearings/poses length mismatch: {len(bearings)} vs {len(body_poses)}"
+      "bearings/rotations/centers length mismatch: "
+      f"{len(bearings)}/{len(lens_rotations)}/{len(lens_centers)}"
     )
-
-  valid = [
-    (b, p) for b, p in zip(bearings, body_poses, strict=True) if b[2] > min_cheirality_z
-  ]
-  if len(valid) < 2:
+  valid = bearings[:, 2] > _MIN_CHEIRALITY_Z
+  if valid.sum() < 2:
     return None
+  valid_rotations = lens_rotations[valid]
+  valid_centers = lens_centers[valid]
+  rays = np.einsum("nij,nj->ni", valid_rotations, bearings[valid])
+  rays /= np.linalg.norm(rays, axis=1, keepdims=True)
   # Normal equations (Σ I - dᵢdᵢᵀ) X = Σ (I - dᵢdᵢᵀ) Cᵢ over centers Cᵢ, unit rays dᵢ.
-  normal_matrix = np.zeros((3, 3))
-  rhs = np.zeros(3)
-  t_world_lenses: list[gtsam.Pose3] = []
-  for bearing, pose in valid:
-    t_world_lens = pose.compose(body_T_lens)
-    t_world_lenses.append(t_world_lens)
-    center = np.asarray(t_world_lens.translation(), dtype=np.float64)
-    ray = t_world_lens.rotation().matrix() @ np.asarray(bearing, dtype=np.float64)
-    ray = ray / float(np.linalg.norm(ray))
-    perp = np.eye(3) - np.outer(ray, ray)
-    normal_matrix += perp
-    rhs += perp @ center
+  normal_matrix = len(rays) * np.eye(3) - rays.T @ rays
+  rhs = valid_centers.sum(axis=0) - rays.T @ np.einsum("ni,ni->n", rays, valid_centers)
   try:
     xyz = np.linalg.solve(normal_matrix, rhs).astype(np.float64)
   except np.linalg.LinAlgError:
     return None
   if not np.all(np.isfinite(xyz)):
     return None
-  depths: list[float] = []
-  for t_world_lens in t_world_lenses:
-    p_lens = t_world_lens.transformTo(xyz)
-    depths.append(float(np.asarray(p_lens)[2]))
-  good_depths = [z for z in depths if z >= min_cheirality_z]
+  # Per-view depth: the point's z in each lens frame.
+  depths = np.einsum("ni,ni->n", valid_rotations[:, :, 2], xyz - valid_centers)
+  good_depths = depths[depths >= _MIN_CHEIRALITY_Z]
   # Two views in front suffice; a fisheye landmark can sit near one frame's 90° horizon.
   if len(good_depths) < 2:
     return None
