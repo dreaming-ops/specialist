@@ -73,6 +73,11 @@ def _bilinear_sample_flow(
 
 _PRECOMPUTE_CONCURRENCY = 1
 
+# DIS variational-refinement iterations: the subpixel polish and most of DIS runtime.
+_DIS_VARIATIONAL_ITERS = 10
+# The backward flow feeds only the forward-backward gate, never a track coordinate.
+_DIS_BACKWARD_VARIATIONAL_ITERS = 2
+
 
 def set_precompute_concurrency(n: int) -> None:
   """Set how many cameras prepare at once so the flow precompute shrinks its pool."""
@@ -108,10 +113,13 @@ def _precompute_dis_flows(
     k: int,
   ) -> tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]:
     dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)  # type: ignore[attr-defined]
-    dis.setVariationalRefinementIterations(25)
     prev = np.ascontiguousarray(frames[k - 1])
     cur = np.ascontiguousarray(frames[k])
-    return dis.calc(prev, cur, None), dis.calc(cur, prev, None)
+    dis.setVariationalRefinementIterations(_DIS_VARIATIONAL_ITERS)
+    forward = dis.calc(prev, cur, None)
+    dis.setVariationalRefinementIterations(_DIS_BACKWARD_VARIATIONAL_ITERS)
+    backward = dis.calc(cur, prev, None)
+    return forward, backward
 
   # Concurrent DIS calls help only with spare cores; counts never change the output.
   n_cpu = os.cpu_count() or 32

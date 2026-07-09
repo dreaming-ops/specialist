@@ -5,7 +5,11 @@ from __future__ import annotations
 import cv2
 import numpy as np
 
-from specialist.vi_ba.features import _precompute_dis_flows
+from specialist.vi_ba.features import (
+  _DIS_BACKWARD_VARIATIONAL_ITERS,
+  _DIS_VARIATIONAL_ITERS,
+  _precompute_dis_flows,
+)
 
 
 def _translating_frames(n: int, shift: int, seed: int) -> list[np.ndarray]:
@@ -22,12 +26,14 @@ def test_precompute_matches_shared_serial_dis() -> None:
 
   # Serial reference: one DISOpticalFlow reused across pairs (the original path).
   dis = cv2.DISOpticalFlow_create(cv2.DISOPTICAL_FLOW_PRESET_MEDIUM)
-  dis.setVariationalRefinementIterations(25)
   ref: dict[int, tuple[np.ndarray, np.ndarray]] = {}
   for k in range(1, len(frames)):
     a = np.ascontiguousarray(frames[k - 1])
     b = np.ascontiguousarray(frames[k])
-    ref[k] = (dis.calc(a, b, None), dis.calc(b, a, None))
+    dis.setVariationalRefinementIterations(_DIS_VARIATIONAL_ITERS)
+    fwd = dis.calc(a, b, None)
+    dis.setVariationalRefinementIterations(_DIS_BACKWARD_VARIATIONAL_ITERS)
+    ref[k] = (fwd, dis.calc(b, a, None))
 
   par = _precompute_dis_flows(frames)
 
