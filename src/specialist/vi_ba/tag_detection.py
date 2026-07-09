@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -12,6 +13,7 @@ import numpy.typing as npt
 from pupil_apriltags import Detector
 
 from specialist.loader.mei_model import MeiParams, mei_unproject
+from specialist.vi_ba.features import parallel_map
 
 Float64Array = npt.NDArray[np.float64]
 
@@ -133,19 +135,21 @@ def rotate_prior(
 
 
 def detect_all_tags(frames: Sequence[np.ndarray]) -> list[list[TagDetection]]:
-  """Per-keyframe AprilTag list: every detected tag id + center + corners."""
-  detector = Detector(families=_TAG_FAMILY)
-  out: list[list[TagDetection]] = []
-  for frame in frames:
+  """Per-keyframe AprilTag detections, with a thread-local detector per worker."""
+  local = threading.local()
+
+  def detect_frame(frame: np.ndarray) -> list[TagDetection]:
+    detector = getattr(local, "detector", None)
+    if detector is None:
+      detector = local.detector = Detector(families=_TAG_FAMILY)
     img = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    out.append(
-      [
-        TagDetection(
-          tag_id=int(t.tag_id),
-          center=np.asarray(t.center, dtype=np.float64),
-          corners=np.asarray(t.corners, dtype=np.float64),
-        )
-        for t in detector.detect(img)
-      ]
-    )
-  return out
+    return [
+      TagDetection(
+        tag_id=int(t.tag_id),
+        center=np.asarray(t.center, dtype=np.float64),
+        corners=np.asarray(t.corners, dtype=np.float64),
+      )
+      for t in detector.detect(img)
+    ]
+
+  return parallel_map(detect_frame, frames)

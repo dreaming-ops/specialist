@@ -23,7 +23,7 @@ from specialist.vi_ba.configs import (
   GripperCfg,
   ImuCfg,
 )
-from specialist.vi_ba.features import detect_orb, match_pair
+from specialist.vi_ba.features import detect_orb, match_pair, parallel_map
 from specialist.vi_ba.finger_kinematics import FingerReproj, build_finger_reproj
 from specialist.vi_ba.imu import (
   ImuSamples,
@@ -275,7 +275,7 @@ def _revisit_tracks(
   min_kf_gap: int,
 ) -> dict[int, dict[int, Float64Array]]:
   """Recover tracks broken by fast lifts via ORB loop closure."""
-  orb = [detect_orb(f, n_features, 20, m) for f, m in zip(frames, masks, strict=True)]
+  orb = parallel_map(lambda f, m: detect_orb(f, n_features, 20, m), frames, masks)
   centers = np.asarray([_translation(p.compose(lens.body_T_lens)) for p in body_poses])
   n = len(frames)
   parent: dict[tuple[int, int], tuple[int, int]] = {}
