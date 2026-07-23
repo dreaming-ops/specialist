@@ -51,6 +51,28 @@ _GRAVITY = np.array([0.0, 0.0, -9.81])
 _LENS = LensSetup(body_T_lens=gtsam.Pose3(), params=_params())
 
 
+def _front_only_graph(
+  body_poses: list[gtsam.Pose3],
+  front: LensSetup,
+  front_tracks: dict,
+  front_points: dict,
+) -> tuple[gtsam.NonlinearFactorGraph, gtsam.Values]:
+  """Visual-only graph (no IMU, no rear lens), gauge-pinned at both ends."""
+  return build_vi_graph(
+    body_poses=body_poses,
+    preintegrated=None,
+    front=front,
+    front_tracks=front_tracks,
+    front_points=front_points,
+    rear=None,
+    rear_tracks=None,
+    rear_points=None,
+    sigma=1.0,
+    weak_pose_sigmas=(0.3,) * 6,
+    anchor_last_pose=True,
+  )
+
+
 def _imu_only_graph(
   body_poses: list[gtsam.Pose3],
   velocities: list[np.ndarray],

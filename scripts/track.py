@@ -899,6 +899,7 @@ def _solve_with_cull_reoptimize(
   cameras: list[PreparedCamera],
   keys: CameraKeys,
   max_iterations: int,
+  gpu: bool,
 ) -> tuple[OptimizeResult, dict[str, tuple[dict[int, dict[int, Float64Array]], ...]]]:
   """Re-solved result and each tracker's kept tracks after an outlier-landmark cull."""
   initial_error = float(graph.error(values))
@@ -907,7 +908,10 @@ def _solve_with_cull_reoptimize(
     f"initial error={initial_error:.1f}"
   )
   result = optimize_graph(
-    graph, values, max_iterations=min(max_iterations, _PRECULL_MAX_ITERATIONS)
+    graph,
+    values,
+    max_iterations=min(max_iterations, _PRECULL_MAX_ITERATIONS),
+    gpu=gpu,
   )
   print(
     f"  solve 1: error {result.initial_error:.1f} → {result.final_error:.1f} "
@@ -944,7 +948,9 @@ def _solve_with_cull_reoptimize(
   first = result
   if not outlier_keys and result.iterations >= _PRECULL_MAX_ITERATIONS:
     # Nothing to cull; finish the short ranking solve on the full budget.
-    result = optimize_graph(graph, result.values, max_iterations=max_iterations)
+    result = optimize_graph(
+      graph, result.values, max_iterations=max_iterations, gpu=gpu
+    )
   if outlier_keys:
     pruned = gtsam.NonlinearFactorGraph()
     for i in range(graph.size()):
@@ -954,7 +960,7 @@ def _solve_with_cull_reoptimize(
     kept_values = gtsam.Values(result.values)
     for key in outlier_keys:
       kept_values.erase(key)
-    result = optimize_graph(pruned, kept_values, max_iterations=max_iterations)
+    result = optimize_graph(pruned, kept_values, max_iterations=max_iterations, gpu=gpu)
     result = replace(
       result,
       initial_error=first.initial_error,
@@ -999,7 +1005,7 @@ def _solve_joint_graph(
     cameras, keys, args, cross_obs, anchor_corners_world, secondary_world
   )
   result, landmark_keep = _solve_with_cull_reoptimize(
-    graph, values, cameras, keys, args.solver.max_iterations
+    graph, values, cameras, keys, args.solver.max_iterations, args.solver.gpu
   )
   solved_poses = {
     t.name: [
