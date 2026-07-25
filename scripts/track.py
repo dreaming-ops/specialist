@@ -2,11 +2,8 @@
 
 from __future__ import annotations
 
-import copy
-import hashlib
 import itertools
 import json
-import pickle
 import time
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -84,8 +81,6 @@ class Args:
   urdf_path: Path | None = None
   log_frames_in_rrd: bool = False
   open_viewer: bool = True
-  # Cache the per-tracker prep by its args; incompatible with --log-frames-in-rrd.
-  prep_cache: bool = False
   # One id per tracker; cross-tracker disambiguation needs distinct ids.
   base_tag_ids: tuple[int, ...] = ()
   # Per-tracker finger tag ids; 0 disables that tracker's finger.
@@ -603,33 +598,6 @@ def _pose_to_dict(p: gtsam.Pose3) -> dict:
 
 def _mei_to_dict(p: MeiParams) -> dict:
   return {k: float(v) for k, v in asdict(p).items()}
-
-
-def _prepare_cached(name: str, targs: "CameraArgs", enabled: bool) -> "PreparedCamera":
-  """prepare_camera cached on disk; a cached run cannot use --log-frames-in-rrd."""
-  if not enabled:
-    return prepare_camera(name, targs)
-  cache_dir = Path("/tmp/specialist_prep_cache")
-  try:
-    mtime = targs.insv_path.stat().st_mtime
-  except OSError:
-    mtime = 0.0
-  key = hashlib.sha256(f"{targs!r}|{mtime}".encode()).hexdigest()[:16]
-  cache_path = cache_dir / f"{name}_{key}.pkl"
-  if cache_path.exists():
-    print(f"  [prep cache HIT] {cache_path.name} — skipping decode+frontend")
-    return pickle.loads(cache_path.read_bytes())
-  tracker = prepare_camera(name, targs)
-  cache_dir.mkdir(parents=True, exist_ok=True)
-  slim = copy.copy(tracker)
-  slim.front_frames = []
-  slim.rear_frames = []
-  try:
-    cache_path.write_bytes(pickle.dumps(slim))
-    print(f"  [prep cache saved] {cache_path.name}")
-  except Exception as exc:  # noqa: BLE001 - caching is best-effort
-    print(f"  [prep cache save failed: {exc}]")
-  return tracker
 
 
 def _bounding_box_diagonal(poses: list[gtsam.Pose3]) -> float:
@@ -1399,7 +1367,7 @@ def main(args: Args) -> None:
   def _prep_one(spec: tuple[str, Path, float, int, int, int]) -> PreparedCamera:
     name, path, start, base_tag_id, left_id, right_id = spec
     print(f"\n=== prep tracker {name!r} ({path.name}, start={start:.3f}s) ===")
-    tracker = _prepare_cached(
+    tracker = prepare_camera(
       name,
       CameraArgs(
         insv_path=path,
@@ -1416,7 +1384,6 @@ def main(args: Args) -> None:
         gripper=args.gripper,
         urdf_path=urdf_path,
       ),
-      args.prep_cache,
     )
     print(
       f"  kf={tracker.n_keyframes}  anchor_obs={len(_anchored_keyframes(tracker))}  "
