@@ -142,19 +142,13 @@ def test_lens_offset_to_pose3_identity_rpy() -> None:
   assert np.allclose(pose.translation(), (-0.1, 0.2, -0.3), atol=1e-12)
 
 
-def test_lens_offset_to_pose3_90deg_roll_matches_rx() -> None:
+@pytest.mark.parametrize("ypr_deg", [(0.0, 0.0, 90.0), (10.0, 20.0, 30.0)])
+def test_lens_offset_to_pose3_matches_ypr_zyx_intrinsic(
+  ypr_deg: tuple[float, float, float],
+) -> None:
+  yaw, pitch, roll = ypr_deg
   arr = _make_offset_v3(
-    front=_block(ypr_deg=(0.0, 0.0, 90.0)),
-  )
-  front = parse_offset_v3(arr).front
-  expected = gtsam.Rot3.Ypr(0.0, 0.0, math.pi / 2).matrix()
-  assert np.allclose(front.to_pose3().rotation().matrix(), expected, atol=1e-12)
-
-
-def test_lens_offset_to_pose3_ypr_order_is_zyx_intrinsic() -> None:
-  yaw, pitch, roll = 10.0, 20.0, 30.0
-  arr = _make_offset_v3(
-    front=_block(ypr_deg=(yaw, pitch, roll)),
+    front=_block(ypr_deg=ypr_deg),
   )
   front = parse_offset_v3(arr).front
   expected = gtsam.Rot3.Ypr(

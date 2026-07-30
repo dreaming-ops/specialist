@@ -1,1 +1,1 @@
-"""Insta360 capture parsing and projection utilities the probes share."""
+"""Insta360 capture loading: ``.insv`` telemetry, the MEI camera model, audio sync."""

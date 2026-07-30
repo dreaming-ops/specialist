@@ -21,23 +21,9 @@ from specialist.vi_ba.init import (
   two_view_essential,
 )
 from specialist.vi_ba.optimize import optimize_graph
+from tests.mei_fixtures import pinhole_mei_params
 
 Float64Array = npt.NDArray[np.float64]
-
-
-def _pinhole_mei() -> MeiParams:
-  return MeiParams(
-    fx=500.0,
-    fy=500.0,
-    cx=320.0,
-    cy=240.0,
-    k1=0.0,
-    k2=0.0,
-    k3=0.0,
-    p1=0.0,
-    p2=0.0,
-    xi=0.0,
-  )
 
 
 def _project(
@@ -52,7 +38,7 @@ def _project(
 def test_pipeline_recovers_ground_truth_from_two_view_init() -> None:
   """Front lens, pinhole MEI: landmarks converge to truth up to the init-pair scale."""
   rng = np.random.default_rng(11)
-  params = _pinhole_mei()
+  params = pinhole_mei_params()
   body_T_lens = gtsam.Pose3()
 
   # Ground-truth body poses: pure +x translation.
@@ -121,15 +107,16 @@ def test_pipeline_recovers_ground_truth_from_two_view_init() -> None:
 
   assert len(points_init) >= int(0.9 * n_lm)
 
+  lens = LensSetup(body_T_lens=body_T_lens, params=params)
   graph, values = build_vi_graph(
     body_poses=body_poses_init,
     preintegrated=None,
-    front=LensSetup(body_T_lens=body_T_lens, params=params),
+    front=lens,
     front_tracks={tid: tracks[tid] for tid in points_init},
     front_points=points_init,
-    rear=None,
-    rear_tracks=None,
-    rear_points=None,
+    rear=lens,
+    rear_tracks={},
+    rear_points={},
     sigma=0.5,
     weak_pose_sigmas=(0.3, 0.3, 0.3, 0.3, 0.3, 0.3),
     anchor_last_pose=True,

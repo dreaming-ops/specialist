@@ -24,7 +24,8 @@ __all__ = [
   "lens_T_tag_per_kf",
   "detect_all_tags",
   "estimate_lens_T_tag",
-  "rotate_prior",
+  "tag_center_bearing",
+  "tag_corners_in_frame",
   "tag_corners_local",
 ]
 
@@ -50,6 +51,22 @@ class TagDetection:
   tag_id: int
   center: Float64Array  # (2,)
   corners: Float64Array  # (4, 2)
+
+
+def tag_corners_in_frame(frame_T_tag: gtsam.Pose3, tag_size: float) -> Float64Array:
+  """A tag's ``(4, 3)`` corners in the frame of ``frame_T_tag``."""
+  return np.array(
+    [frame_T_tag.transformFrom(gtsam.Point3(*c)) for c in tag_corners_local(tag_size)],
+    dtype=np.float64,
+  )
+
+
+def tag_center_bearing(det: TagDetection, params: MeiParams) -> Float64Array:
+  """Lens-frame bearing of a tag's center, the cheirality ray for MEI factors."""
+  bearing = mei_unproject(
+    np.asarray(det.center, dtype=np.float64).reshape(1, 2), params
+  )[0]
+  return np.asarray(bearing, dtype=np.float64)
 
 
 def estimate_lens_T_tag(
@@ -106,12 +123,10 @@ def lens_T_tag_per_kf(
   prev: gtsam.Pose3 | None = None
   prev_kf = 0
   for kf, tags in enumerate(tags_per_kf):
+    prior = _rotate_prior(prev, kf_rotations, prev_kf, kf) if prev is not None else None
     for det in tags:
       if det.tag_id != tag_id:
         continue
-      prior = (
-        rotate_prior(prev, kf_rotations, prev_kf, kf) if prev is not None else None
-      )
       pose = estimate_lens_T_tag(det.corners, tag_size, params, prev_cam_T_tag=prior)
       if pose is not None:
         out[kf] = pose
@@ -121,7 +136,7 @@ def lens_T_tag_per_kf(
   return out
 
 
-def rotate_prior(
+def _rotate_prior(
   prev: gtsam.Pose3,
   kf_rotations: list[Float64Array],
   prev_kf: int,

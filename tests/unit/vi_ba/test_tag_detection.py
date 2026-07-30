@@ -14,6 +14,7 @@ from specialist.vi_ba.tag_detection import (
   TagDetection,
   estimate_lens_T_tag,
   lens_T_tag_per_kf,
+  tag_corners_in_frame,
   tag_corners_local,
 )
 
@@ -38,14 +39,7 @@ def _project_tag(
   lens_T_tag: gtsam.Pose3, tag_size: float, params: MeiParams
 ) -> np.ndarray:
   """Project the four tag corners in pupil_apriltags's order (BL, BR, TR, TL)."""
-  corners_cam = np.stack(
-    [
-      np.asarray(lens_T_tag.transformFrom(gtsam.Point3(*c)))
-      for c in tag_corners_local(tag_size)
-    ],
-    axis=0,
-  )
-  return mei_project(corners_cam, params)
+  return mei_project(tag_corners_in_frame(lens_T_tag, tag_size), params)
 
 
 def _ippe_solutions(
@@ -131,10 +125,11 @@ def _flip_scenario() -> tuple[
 def test_stale_prior_flips_under_fast_rotation() -> None:
   """With the stale frame-1 pose as prior, fast rotation picks the reflected twin."""
   params, tag_size, cam1_T_tag, cam2_T_tag, _, corners2, _ = _flip_scenario()
+  if len(_ippe_solutions(corners2, tag_size, params)) < 2:
+    pytest.skip("IPPE returned a single solution for this geometry")
   naive = estimate_lens_T_tag(corners2, tag_size, params, prev_cam_T_tag=cam1_T_tag)
   assert naive is not None
-  if _rot_geodesic(naive, cam2_T_tag) < 0.3:
-    pytest.skip("geometry did not produce a two-solution flip on this platform")
+  assert _rot_geodesic(naive, cam2_T_tag) > 0.3
 
 
 def test_rotated_prior_keeps_true_twin_under_fast_rotation() -> None:

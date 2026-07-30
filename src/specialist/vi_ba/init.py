@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 
 import cv2
@@ -16,12 +17,12 @@ from specialist.vi_ba.geometry import max_parallax
 Float64Array = npt.NDArray[np.float64]
 
 # Incremental-SfM tuning: parallax, PnP inliers, triangulation residual, passes.
-SFM_MIN_PARALLAX = float(np.deg2rad(0.6))
+_SFM_MIN_PARALLAX = float(np.deg2rad(0.6))
 # Minimum parallax the two-view init pair (0, K) must span.
-SFM_INIT_PAIR_MIN_PARALLAX = float(np.deg2rad(2.0))
-SFM_MIN_PNP_POINTS = 6
-SFM_MAX_REPROJ = 0.01
-SFM_PASSES = 8
+_SFM_INIT_PAIR_MIN_PARALLAX = float(np.deg2rad(2.0))
+_SFM_MIN_PNP_POINTS = 6
+_SFM_MAX_REPROJ = 0.01
+_SFM_PASSES = 8
 
 
 @dataclass(frozen=True)
@@ -83,23 +84,22 @@ def pick_init_pair(
   tracks: dict[int, dict[int, Float64Array]],
   n_keyframes: int,
   min_shared: int,
-) -> tuple[int, int, int]:
-  """Widest ``(0, K)`` pair keeping ``min_shared`` tracks, else the most-shared pair."""
-  first = 0
-
-  def shared_count(last: int) -> int:
-    return sum(1 for obs in tracks.values() if first in obs and last in obs)
+) -> tuple[int, int]:
+  """``(K, n_shared)``: widest ``(0, K)`` with ``min_shared``, else the most shared."""
+  # Keyframe-0 tracks surviving to each keyframe: every pair's shared count at once.
+  shared_by_last: Counter[int] = Counter()
+  for obs in tracks.values():
+    if 0 in obs:
+      shared_by_last.update(kf for kf in obs if kf != 0)
 
   for last in range(n_keyframes - 1, 0, -1):
-    shared = shared_count(last)
-    if shared >= min_shared:
-      return first, last, shared
+    if shared_by_last[last] >= min_shared:
+      return last, shared_by_last[last]
   best_last, best_shared = 1, 0
   for last in range(1, n_keyframes):
-    shared = shared_count(last)
-    if shared > best_shared:
-      best_last, best_shared = last, shared
-  return first, best_last, best_shared
+    if shared_by_last[last] > best_shared:
+      best_last, best_shared = last, shared_by_last[last]
+  return best_last, best_shared
 
 
 def interpolate_camera_poses(
@@ -142,11 +142,11 @@ def body_poses_from_lens_poses(
 
 
 def _pnp_bearings(
-  pts: Float64Array, bears: Float64Array, min_points: int
+  pts: Float64Array, bears: Float64Array
 ) -> tuple[Float64Array, Float64Array] | None:
   """Robust PnP from 3D points + unit bearings → (R, t) world→cam."""
   front = bears[:, 2] > 1e-6
-  if int(front.sum()) < min_points:
+  if int(front.sum()) < _SFM_MIN_PNP_POINTS:
     return None
   pts, bears = pts[front], bears[front]
   norm = (bears[:, :2] / bears[:, 2:3]).astype(np.float64).reshape(-1, 1, 2)
@@ -161,7 +161,7 @@ def _pnp_bearings(
     confidence=0.999,
     flags=cv2.SOLVEPNP_EPNP,
   )
-  if not ok or inl is None or len(inl) < min_points:
+  if not ok or inl is None or len(inl) < _SFM_MIN_PNP_POINTS:
     return None
   inl = inl.ravel()
   rvec, tvec = cv2.solvePnPRefineLM(
@@ -226,7 +226,8 @@ def incremental_sfm(
     rows = np.empty((2 * len(x_n), 4))
     rows[0::2] = x_n[:, None] * p[:, 2, :] - p[:, 0, :]
     rows[1::2] = y_n[:, None] * p[:, 2, :] - p[:, 1, :]
-    _, _, vh = np.linalg.svd(rows)
+    # Only the last right-singular vector is used; skip the full U factor.
+    _, _, vh = np.linalg.svd(rows, full_matrices=False)
     x_h = vh[-1]
     if abs(x_h[3]) < 1e-12:
       return
@@ -235,7 +236,7 @@ def incremental_sfm(
     if int((p_cam[:, 2] > 0.05).sum()) < 2:
       return
     centers = -np.einsum("vji,vj->vi", r_cw, t_cw)
-    if max_parallax(list(centers), x) < SFM_MIN_PARALLAX:
+    if max_parallax(centers, x) < _SFM_MIN_PARALLAX:
       return
     residual = np.full(len(p_cam), 1.0e9)
     front = p_cam[:, 2] > 1e-6
@@ -243,7 +244,7 @@ def incremental_sfm(
       p_cam[front, 0] / p_cam[front, 2] - b[front, 0] / b[front, 2],
       p_cam[front, 1] / p_cam[front, 2] - b[front, 1] / b[front, 2],
     )
-    if float(np.median(residual)) > SFM_MAX_REPROJ:
+    if float(np.median(residual)) > _SFM_MAX_REPROJ:
       return
     landmark_map[tid] = x
 
@@ -262,7 +263,7 @@ def incremental_sfm(
       )
     )
     last = candidate
-    if parallax >= SFM_INIT_PAIR_MIN_PARALLAX:
+    if parallax >= _SFM_INIT_PAIR_MIN_PARALLAX:
       break
   if last is None:
     return {}, {}
@@ -276,18 +277,17 @@ def incremental_sfm(
   for tid in shared:
     triangulate(tid)
 
-  for _pass in range(SFM_PASSES):
+  for _pass in range(_SFM_PASSES):
     progress = False
     for k in frames:
       if k in poses:
         continue
       tids = [tid for tid in tracks_by_kf[k] if tid in landmark_map]
-      if len(tids) < SFM_MIN_PNP_POINTS:
+      if len(tids) < _SFM_MIN_PNP_POINTS:
         continue
       pnp_pose = _pnp_bearings(
         np.array([landmark_map[tid] for tid in tids]),
         np.array([bearings[tid][k] for tid in tids]),
-        SFM_MIN_PNP_POINTS,
       )
       if pnp_pose is None:
         continue

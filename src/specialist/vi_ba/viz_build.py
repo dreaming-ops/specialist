@@ -1,0 +1,350 @@
+"""Turn one solved run into the payloads that leave the pipeline."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import gtsam
+import numpy as np
+import numpy.typing as npt
+
+from specialist.loader.mei_model import mei_project
+from specialist.vi_ba.build import LensSetup
+from specialist.vi_ba.compose import (
+  CameraKeys,
+  CrossSighting,
+  CulledPoints,
+  LandmarkKeep,
+  LandmarkPoints,
+  LandmarkTracks,
+  anchor_sightings,
+  anchored_keyframes,
+  points_from_values,
+)
+from specialist.vi_ba.configs import Args
+from specialist.vi_ba.export import CameraSummary
+from specialist.vi_ba.geometry import bounding_box_diagonal, path_length
+from specialist.vi_ba.landmark_cull import cull_and_reproject
+from specialist.vi_ba.optimize import OptimizeResult
+from specialist.vi_ba.single_camera import PreparedCamera
+from specialist.vi_ba.tag_detection import (
+  TagDetection,
+  estimate_lens_T_tag,
+  tag_corners_in_frame,
+)
+from specialist.vi_ba.viz import CameraVizData
+
+Float64Array = npt.NDArray[np.float64]
+
+__all__ = ["RunOutputs", "build_run_outputs"]
+
+
+def _rays(
+  poses: list[gtsam.Pose3], by_kf: dict[int, list[tuple[LensSetup, Float64Array]]]
+) -> list[Float64Array]:
+  """Per keyframe, ``(n, 2, 3)`` segments from each sighting lens to each corner it saw."""
+  return [
+    np.asarray(
+      [
+        (np.asarray(world_T_body.compose(lens.body_T_lens).translation()), corner)
+        for lens, corners in by_kf.get(kf, ())
+        for corner in corners
+      ],
+      dtype=np.float64,
+    ).reshape(-1, 2, 3)
+    for kf, world_T_body in enumerate(poses)
+  ]
+
+
+def _factor_observation_lines(
+  observer: PreparedCamera,
+  observer_poses: list[gtsam.Pose3],
+  cross_obs_for_observer: list[CrossSighting],
+  anchor_corners_by_tag: dict[int, Float64Array],
+  base_tag_corners_world: dict[str, list[Float64Array]],
+) -> tuple[list[Float64Array], list[Float64Array]]:
+  """Per-keyframe ``(n, 2, 3)`` lens-to-corner lines to anchors and base tags."""
+  anchor_by_kf: dict[int, list[tuple[LensSetup, Float64Array]]] = {}
+  for tag_id, corners_world in anchor_corners_by_tag.items():
+    for lens, kf, _det in anchor_sightings(observer, tag_id):
+      anchor_by_kf.setdefault(kf, []).append((lens, corners_world))
+  cross_by_kf: dict[int, list[tuple[LensSetup, Float64Array]]] = {}
+  for s in cross_obs_for_observer:
+    owner_corners = base_tag_corners_world.get(s.owner, [])
+    if s.finger is None and s.keyframe < len(owner_corners):
+      cross_by_kf.setdefault(s.keyframe, []).append(
+        (s.setup, owner_corners[s.keyframe])
+      )
+  poses = observer_poses[: observer.n_keyframes]
+  return _rays(poses, anchor_by_kf), _rays(poses, cross_by_kf)
+
+
+def _per_kf_rejected_keypoints(
+  rejected_tracks: LandmarkTracks, n_keyframes: int
+) -> list[Float64Array]:
+  buckets: list[list[Float64Array]] = [[] for _ in range(n_keyframes)]
+  for obs in rejected_tracks.values():
+    for kf, pix in obs.items():
+      if 0 <= kf < n_keyframes:
+        buckets[kf].append(np.asarray(pix, dtype=np.float64))
+  return [np.stack(b) if b else np.empty((0, 2)) for b in buckets]
+
+
+def _rms(values: list[float]) -> float:
+  """Root-mean-square of ``values``; NaN when empty."""
+  return float(np.sqrt(np.mean(np.square(values)))) if values else float("nan")
+
+
+def _aggregate_rmse_for_print(per_kf: list[float]) -> float:
+  return _rms([v for v in per_kf if np.isfinite(v)])
+
+
+def _project_tag_axes_per_kf(
+  tags_per_kf: list[list[TagDetection]],
+  lens: LensSetup,
+  tag_size_by_id: dict[int, float],
+) -> list[Float64Array]:
+  out: list[Float64Array] = []
+  for tags in tags_per_kf:
+    strips: list[Float64Array] = []
+    for det in tags:
+      size = tag_size_by_id.get(int(det.tag_id))
+      if size is None:
+        continue
+      pose = estimate_lens_T_tag(det.corners, size, lens.params)
+      if pose is None:
+        continue
+      # The tag frame's origin-to-tip segments along x, y and z.
+      lens_tips = (
+        np.stack([np.zeros((3, 3)), size * np.eye(3)], axis=1).reshape(6, 3)
+        @ pose.rotation().matrix().T
+        + pose.translation()
+      )
+      if np.any(lens_tips[:, 2] <= 1e-3):
+        continue
+      pix = mei_project(lens_tips, lens.params)
+      if not np.all(np.isfinite(pix)):
+        continue
+      strips.append(pix.reshape(3, 2, 2))
+    out.append(np.concatenate(strips) if strips else np.empty((0, 2, 2)))
+  return out
+
+
+def _build_tracker_outputs(
+  camera: PreparedCamera,
+  poses: list[gtsam.Pose3],
+  result: OptimizeResult,
+  keys: CameraKeys,
+  landmark_keep: tuple[LandmarkTracks, LandmarkTracks],
+  args: Args,
+  tag_size_by_id: dict[int, float],
+  cross_obs: list[CrossSighting],
+  anchor_corners_by_tag: dict[int, Float64Array],
+  base_tag_corners_world: dict[str, list[Float64Array]],
+  audio_offset: float,
+) -> tuple[
+  CameraVizData,
+  CameraSummary,
+  tuple[LandmarkPoints, LandmarkPoints],
+]:
+  """``CameraVizData``, ``CameraSummary`` and culled ``(front, rear)`` landmarks."""
+  front_points = points_from_values(
+    result.values, keys.front_landmark_key, camera.name, landmark_keep[0]
+  )
+  rear_points = points_from_values(
+    result.values, keys.rear_landmark_key, camera.name, landmark_keep[1]
+  )
+  # Post-bundle map cull: it cleans the map, RMSE and overlay, never the poses.
+  front_points, front_reproj_per_kf, front_rmse_per_kf = cull_and_reproject(
+    front_points, camera.front_tracks_tri, poses, camera.front_lens
+  )
+  rear_points, rear_reproj_per_kf, rear_rmse_per_kf = cull_and_reproject(
+    rear_points, camera.rear_tracks_tri, poses, camera.rear_lens
+  )
+  front_rmse = _aggregate_rmse_for_print(front_rmse_per_kf)
+  rear_rmse = _aggregate_rmse_for_print(rear_rmse_per_kf)
+  bbox_diagonal = bounding_box_diagonal(poses)
+  summary = CameraSummary(
+    name=camera.name,
+    n_keyframes=camera.n_keyframes,
+    anchor_obs=len(anchored_keyframes(camera)),
+    bounding_box_diagonal=bbox_diagonal,
+    path_length=path_length(poses),
+  )
+  rear_note = f" rear_rmse={rear_rmse:.2f}px" if np.isfinite(rear_rmse) else ""
+  print(
+    f"  {camera.name}: kf={camera.n_keyframes} bbox={bbox_diagonal:.3f} m "
+    f"front_rmse={front_rmse:.2f}px{rear_note}"
+  )
+  if camera.body_T_base_tag is not None:
+    base_tag_poses = [p.compose(camera.body_T_base_tag) for p in poses]
+  else:
+    base_tag_poses = poses
+  biases_final = [
+    result.values.atConstantBias(keys.bias_key(camera.name, i))
+    for i in range(camera.n_keyframes)
+  ]
+  # Tag axes cost one PnP solve per detection; only frame-logging runs show them.
+  front_tag_axes = (
+    _project_tag_axes_per_kf(
+      camera.front_tags_per_kf, camera.front_lens, tag_size_by_id
+    )
+    if args.log_frames_in_rrd
+    else None
+  )
+  rear_tag_axes = (
+    _project_tag_axes_per_kf(camera.rear_tags_per_kf, camera.rear_lens, tag_size_by_id)
+    if args.log_frames_in_rrd
+    else None
+  )
+  front_reproj = front_reproj_per_kf if args.log_frames_in_rrd else None
+  rear_reproj = rear_reproj_per_kf if args.log_frames_in_rrd else None
+  front_rejected_kp = (
+    _per_kf_rejected_keypoints(camera.front_rejected, camera.n_keyframes)
+    if args.log_frames_in_rrd
+    else None
+  )
+  rear_rejected_kp = (
+    _per_kf_rejected_keypoints(camera.rear_rejected, camera.n_keyframes)
+    if args.log_frames_in_rrd
+    else None
+  )
+  anchor_lines, cross_lines = _factor_observation_lines(
+    camera,
+    poses,
+    cross_obs,
+    anchor_corners_by_tag,
+    base_tag_corners_world,
+  )
+  viz_data = CameraVizData(
+    name=camera.name,
+    body_poses=poses,
+    keyframe_times=np.asarray(camera.keyframe_times, dtype=np.float64) - audio_offset,
+    front_points=front_points,
+    rear_points=rear_points,
+    front_frames=camera.front_frames if args.log_frames_in_rrd else None,
+    rear_frames=camera.rear_frames if args.log_frames_in_rrd else None,
+    front_keypoints=camera.front_keypoints if args.log_frames_in_rrd else None,
+    rear_keypoints=camera.rear_keypoints if args.log_frames_in_rrd else None,
+    front_tag_detections=camera.front_tags_per_kf,
+    rear_tag_detections=camera.rear_tags_per_kf,
+    velocities=[
+      np.asarray(result.values.atVector(keys.velocity_key(camera.name, i)))
+      for i in range(camera.n_keyframes)
+    ],
+    gyro_biases=[np.asarray(b.gyroscope(), dtype=np.float64) for b in biases_final],
+    accel_biases=[
+      np.asarray(b.accelerometer(), dtype=np.float64) for b in biases_final
+    ],
+    front_rmse_per_kf=front_rmse_per_kf,
+    rear_rmse_per_kf=rear_rmse_per_kf,
+    front_tag_axes=front_tag_axes,
+    rear_tag_axes=rear_tag_axes,
+    front_landmark_reprojections=front_reproj,
+    rear_landmark_reprojections=rear_reproj,
+    front_rejected_keypoints=front_rejected_kp,
+    rear_rejected_keypoints=rear_rejected_kp,
+    rear_static_mask_rects=camera.rear_static_mask_rects,
+    anchor_obs_lines=anchor_lines,
+    cross_tracker_lines=cross_lines,
+    urdf_root_poses=base_tag_poses,
+    joint_angles=camera.joint_angles or None,
+    tcp_in_base_tag=args.gripper.tcp_in_base_tag,
+    front_lens_extrinsic=camera.front_lens.body_T_lens,
+    rear_lens_extrinsic=camera.rear_lens.body_T_lens,
+  )
+  return viz_data, summary, (front_points, rear_points)
+
+
+def _tag_size_by_id(args: Args) -> dict[int, float]:
+  """Metric side length per tag id, across anchors, base tags, and fingers."""
+  finger_ids = (*args.left_finger_tag_ids, *args.right_finger_tag_ids)
+  return {
+    **{tid: float(args.anchor.tag_size) for tid in args.anchor.tag_ids},
+    **{int(tid): float(args.gripper.tag_size) for tid in args.base_tag_ids},
+    **{int(tid): float(args.gripper.tag_size) for tid in finger_ids if int(tid) > 0},
+  }
+
+
+def _base_tag_corners_world(
+  cameras: list[PreparedCamera],
+  optimized_body_poses: dict[str, list[gtsam.Pose3]],
+  tag_size: float,
+) -> dict[str, list[Float64Array]]:
+  """Each camera's base-tag corners in the world, per keyframe."""
+  return {
+    t.name: [
+      tag_corners_in_frame(pose.compose(t.body_T_base_tag), tag_size)
+      for pose in optimized_body_poses[t.name]
+    ]
+    for t in cameras
+    if t.body_T_base_tag is not None
+  }
+
+
+@dataclass(frozen=True)
+class RunOutputs:
+  """A solved run's per-camera payloads and summaries, and its JSON export geometry."""
+
+  viz_trackers: list[CameraVizData]
+  per_tracker: list[CameraSummary]
+  culled_points: CulledPoints
+  world_T_anchor: dict[int, gtsam.Pose3]
+  audio_offset_by_tracker: dict[str, float]
+
+
+def build_run_outputs(
+  cameras: list[PreparedCamera],
+  optimized_body_poses: dict[str, list[gtsam.Pose3]],
+  result: OptimizeResult,
+  keys: CameraKeys,
+  landmark_keep: LandmarkKeep,
+  args: Args,
+  cross_obs: list[CrossSighting],
+  audio_offsets: list[float],
+  reference_anchor: gtsam.Pose3,
+  reference_tag_id: int,
+  secondary_anchor_world: dict[int, gtsam.Pose3],
+) -> RunOutputs:
+  """Each camera's payload from one solved joint graph."""
+  world_T_anchor = {reference_tag_id: reference_anchor, **secondary_anchor_world}
+  anchor_corners_by_tag = {
+    tag_id: tag_corners_in_frame(pose, args.anchor.tag_size)
+    for tag_id, pose in world_T_anchor.items()
+  }
+  base_tag_corners = _base_tag_corners_world(
+    cameras, optimized_body_poses, args.gripper.tag_size
+  )
+  tag_sizes = _tag_size_by_id(args)
+  audio_offset_by_tracker = {t.name: audio_offsets[i] for i, t in enumerate(cameras)}
+  by_observer: dict[str, list[CrossSighting]] = {t.name: [] for t in cameras}
+  for sighting in cross_obs:
+    by_observer[sighting.observer].append(sighting)
+
+  viz_trackers: list[CameraVizData] = []
+  per_tracker: list[CameraSummary] = []
+  culled_points: CulledPoints = {}
+  for t in cameras:
+    viz_data, summary, culled_pair = _build_tracker_outputs(
+      t,
+      poses=optimized_body_poses[t.name],
+      result=result,
+      keys=keys,
+      landmark_keep=landmark_keep[t.name],
+      args=args,
+      tag_size_by_id=tag_sizes,
+      cross_obs=by_observer[t.name],
+      anchor_corners_by_tag=anchor_corners_by_tag,
+      base_tag_corners_world=base_tag_corners,
+      audio_offset=audio_offset_by_tracker[t.name],
+    )
+    viz_trackers.append(viz_data)
+    per_tracker.append(summary)
+    culled_points[t.name] = culled_pair
+  return RunOutputs(
+    viz_trackers,
+    per_tracker,
+    culled_points,
+    world_T_anchor,
+    audio_offset_by_tracker,
+  )

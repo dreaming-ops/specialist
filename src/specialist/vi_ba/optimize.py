@@ -55,15 +55,6 @@ def optimize_graph(
   gpu: bool = False,
 ) -> OptimizeResult:
   """LM values and run stats; ``gpu`` tries the Schur/cuDSS path before gtsam."""
-  if max_iterations <= 0:
-    # Return the init untouched, to evaluate it without bundle adjustment.
-    initial_error = float(graph.error(initial_values))
-    return OptimizeResult(
-      values=initial_values,
-      iterations=0,
-      initial_error=initial_error,
-      final_error=initial_error,
-    )
   begin = time.perf_counter()
   values: gtsam.Values | None = None
   note = ""

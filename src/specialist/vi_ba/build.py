@@ -87,10 +87,8 @@ def add_mei_factor(
   pixel: Float64Array,
   noise: gtsam.noiseModel.Base,
   lens: LensSetup,
-  obs_bearing: Float64Array | None = None,
 ) -> None:
-  """Push one MEI reprojection factor; ``obs_bearing`` arms the cheirality guard."""
-  bearing = np.zeros(3) if obs_bearing is None else _as_vec3(obs_bearing)
+  """Push one MEI reprojection factor tying ``pose_key`` to ``point_key``."""
   graph.push_back(
     make_mei_factor_cpp(
       pose_key,
@@ -99,7 +97,7 @@ def add_mei_factor(
       noise,
       lens.body_T_lens,
       np.array(astuple(lens.params)),
-      bearing,
+      np.zeros(3),
     )
   )
 
@@ -158,9 +156,9 @@ def build_vi_graph(
   front: LensSetup,
   front_tracks: Mapping[int, Mapping[int, Float64Array]],
   front_points: Mapping[int, Float64Array],
-  rear: LensSetup | None,
-  rear_tracks: Mapping[int, Mapping[int, Float64Array]] | None,
-  rear_points: Mapping[int, Float64Array] | None,
+  rear: LensSetup,
+  rear_tracks: Mapping[int, Mapping[int, Float64Array]],
+  rear_points: Mapping[int, Float64Array],
   sigma: float,
   velocity_prior_sigma: float = 0.1,
   anchor_last_pose: bool = False,
@@ -196,9 +194,8 @@ def build_vi_graph(
     graph.push_back(gtsam.PriorFactorPose3(pose_key(0), body_poses[0], gauge))
     if anchor_last_pose and n > 1:
       graph.push_back(gtsam.PriorFactorPose3(pose_key(n - 1), body_poses[-1], gauge))
-    for i in range(1, n):
-      if anchor_last_pose and i == n - 1:
-        continue
+    weak_end = n - 1 if anchor_last_pose else n
+    for i in range(1, weak_end):
       graph.push_back(gtsam.PriorFactorPose3(pose_key(i), body_poses[i], weak))
   else:
     # Visual-inertial: CombinedImuFactor between keyframes, priors on X0, V0 and B0.
@@ -217,8 +214,6 @@ def build_vi_graph(
       values.insert(vel_key(i), np.asarray(velocities[i], dtype=np.float64))
       values.insert(bias_key(i), biases[i])
     graph.push_back(gtsam.PriorFactorPose3(pose_key(0), body_poses[0], gauge))
-    if anchor_last_pose:
-      graph.push_back(gtsam.PriorFactorPose3(pose_key(n - 1), body_poses[-1], gauge))
     graph.push_back(
       gtsam.PriorFactorVector(
         vel_key(0), np.asarray(velocities[0], dtype=np.float64), vel_noise
@@ -241,8 +236,7 @@ def build_vi_graph(
   _add_projection_factors(
     graph, values, front_tracks, front_points, front, front_lm, pixel_noise, pose_key
   )
-  if rear is not None and rear_tracks is not None and rear_points is not None:
-    _add_projection_factors(
-      graph, values, rear_tracks, rear_points, rear, rear_lm, pixel_noise, pose_key
-    )
+  _add_projection_factors(
+    graph, values, rear_tracks, rear_points, rear, rear_lm, pixel_noise, pose_key
+  )
   return graph, values

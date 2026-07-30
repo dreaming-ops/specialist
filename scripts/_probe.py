@@ -18,8 +18,6 @@ def finalize_probe(
   output_dir: Path,
   summary: Any,
   log_fn: Callable[[], None],
-  *,
-  extra_lines: list[str] | None = None,
 ) -> None:
   """Save a probe's ``.rrd``, logged by ``log_fn``, and its JSON summary."""
   stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -34,6 +32,4 @@ def finalize_probe(
   json_path.write_text(payload)
   print(payload)
   print(f"\nWrote {rrd_path} and {json_path}")
-  for line in extra_lines or []:
-    print(line)
   print(f"Verdict: {summary.verdict}")

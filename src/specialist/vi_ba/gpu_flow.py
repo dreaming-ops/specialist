@@ -1,4 +1,4 @@
-"""GPU DIS flow: the ``features._iter_dis_flows`` stream, each lens on its own GPU."""
+"""GPU (PyTorch) DIS flow: the same stream ``features._iter_dis_flows`` yields."""
 
 from __future__ import annotations
 
@@ -98,14 +98,11 @@ def _claim_device() -> tuple[int, int]:
       for i in free
       if i not in _claimed and free[i] >= _MIN_FREE and _device_batch(free[i]) >= 1
     ]
-    if unclaimed and len(_claimed) < _MAX_GPUS:
-      idx = max(unclaimed, key=lambda i: free[i])
-      _claimed[idx] = 1
-      return idx, _device_batch(free[idx])
     shareable = [i for i in free if _device_batch(free[i]) >= 1]
     if not shareable:
       raise RuntimeError("no GPU has enough free memory for the flow backend")
-    idx = max(shareable, key=lambda i: free[i])
+    pool = unclaimed if unclaimed and len(_claimed) < _MAX_GPUS else shareable
+    idx = max(pool, key=lambda i: free[i])
     _claimed[idx] = _claimed.get(idx, 0) + 1
     return idx, _device_batch(free[idx])
 
@@ -306,7 +303,7 @@ def prime(frames: list[np.ndarray], fwd_vr: int, bwd_vr: int) -> _Engine:
   torch = _import_backend()[0]
   tries = torch.cuda.device_count() if torch.cuda.is_available() else 1
   last_exc: Exception | None = None
-  for _ in range(max(1, tries)):
+  for _ in range(tries):
     engine = _Engine(fwd_vr, bwd_vr)  # raises when no GPU is claimable
     try:
       engine.prime(frames)

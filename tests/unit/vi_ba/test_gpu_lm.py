@@ -9,7 +9,7 @@ import scipy.sparse.linalg as spl
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.gpu_lm import SparseSystem, _lm
 from specialist.vi_ba.optimize import optimize_graph
-from tests.unit.vi_ba.test_build import _front_only_graph, _params, _project_point
+from tests.mei_fixtures import front_only_graph, pinhole_mei_params, project_point
 
 
 def _scene(
@@ -17,7 +17,7 @@ def _scene(
 ) -> tuple[gtsam.NonlinearFactorGraph, gtsam.Values]:
   """A visual-only graph of exact projections with perturbed landmark initials."""
   rng = np.random.default_rng(7)
-  params = _params()
+  params = pinhole_mei_params()
   body_T_lens = gtsam.Pose3()
   poses = [
     gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(0.25 * i, 0.0, 0.0)) for i in range(n_poses)
@@ -27,11 +27,11 @@ def _scene(
     for tid in range(n_points)
   }
   tracks = {
-    tid: {i: _project_point(poses[i], body_T_lens, xyz, params) for i in range(n_poses)}
+    tid: {i: project_point(poses[i], body_T_lens, xyz, params) for i in range(n_poses)}
     for tid, xyz in points.items()
   }
   noisy_points = {tid: xyz + rng.normal(0.0, 0.02, 3) for tid, xyz in points.items()}
-  return _front_only_graph(
+  return front_only_graph(
     poses, LensSetup(body_T_lens=body_T_lens, params=params), tracks, noisy_points
   )
 

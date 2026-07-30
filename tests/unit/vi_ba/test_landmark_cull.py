@@ -2,42 +2,26 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
-
 import gtsam
 import numpy as np
-import pytest
 
-from specialist.loader.mei_model import MeiParams, mei_project
+from specialist.loader.mei_model import mei_project
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.landmark_cull import cull_outlier_landmarks
+from tests.mei_fixtures import pinhole_mei_params
 
 
 def _lens() -> LensSetup:
-  return LensSetup(
-    body_T_lens=gtsam.Pose3(),
-    params=MeiParams(
-      fx=500.0,
-      fy=500.0,
-      cx=320.0,
-      cy=240.0,
-      k1=0.0,
-      k2=0.0,
-      k3=0.0,
-      p1=0.0,
-      p2=0.0,
-      xi=0.0,
-    ),
-  )
-
-
-def _in_lens(pose: gtsam.Pose3, lens: LensSetup, point) -> np.ndarray:
-  return np.asarray(pose.compose(lens.body_T_lens).transformTo(gtsam.Point3(*point)))
+  return LensSetup(body_T_lens=gtsam.Pose3(), params=pinhole_mei_params())
 
 
 def _project(lens: LensSetup, pose: gtsam.Pose3, point) -> np.ndarray:
-  return mei_project(_in_lens(pose, lens, point)[None, :], lens.params)[0]
+  return mei_project(
+    np.asarray(pose.compose(lens.body_T_lens).transformTo(gtsam.Point3(*point)))[
+      None, :
+    ],
+    lens.params,
+  )[0]
 
 
 def _baseline_poses() -> list[gtsam.Pose3]:
@@ -90,66 +74,3 @@ def test_drops_behind_camera() -> None:
   tracks = {1: {kf: np.array([320.0, 240.0]) for kf in (0, 1)}}
   kept = cull_outlier_landmarks({1: pt}, tracks, poses, lens)
   assert not kept
-
-
-def _load_front(path: str):
-  d = json.loads(Path(path).read_text())
-  name = d["slots"][0]
-  lf = d["lens_by_tracker"][name]["front"]
-  lens = LensSetup(
-    body_T_lens=gtsam.Pose3(
-      gtsam.Rot3(np.array(lf["body_T_lens"]["R"])),
-      gtsam.Point3(*lf["body_T_lens"]["t"]),
-    ),
-    params=MeiParams(**lf["params"]),
-  )
-  poses = [
-    gtsam.Pose3(gtsam.Rot3(np.array(p["R"])), gtsam.Point3(*p["t"]))
-    for p in d["body_poses_by_tracker"][name]
-  ]
-  tracks = {
-    int(tid): {int(kf): np.array(xy, float) for kf, xy in obs.items()}
-    for tid, obs in d["tracks_by_tracker"][name]["front"].items()
-  }
-  points = {
-    int(tid): np.array(p, float)
-    for tid, p in d["landmarks_by_tracker"][name]["front"].items()
-  }
-  return lens, poses, tracks, points
-
-
-def _rmse(ids, tracks, points, poses, lens) -> float:
-  errs = []
-  for tid in ids:
-    for kf, xy in tracks[tid].items():
-      if 0 <= kf < len(poses):
-        pl = _in_lens(poses[kf], lens, points[tid])
-        if pl[2] > 1e-3:
-          errs.append(
-            float(np.linalg.norm(mei_project(pl[None, :], lens.params)[0] - xy))
-          )
-  return float(np.sqrt(np.mean(np.square(errs)))) if errs else 0.0
-
-
-def _max_view_depth(ids, tracks, points, poses, lens) -> float:
-  d = 0.0
-  for tid in ids:
-    for kf in tracks[tid]:
-      if 0 <= kf < len(poses):
-        pl = _in_lens(poses[kf], lens, points[tid])
-        d = max(d, abs(float(pl[2])))
-  return d
-
-
-@pytest.mark.skipif(not Path("qdata/03.json").exists(), reason="needs local run data")
-def test_qdata_cull_cuts_rmse_and_runaways_keeps_bulk() -> None:
-  lens, poses, tracks, points = _load_front("qdata/03.json")
-  kept = cull_outlier_landmarks(points, tracks, poses, lens)
-  # Bulk survives (cm-noisy landmarks are geometrically consistent).
-  assert len(kept) > 0.9 * len(points)
-  # RMSE collapses to ~1px once the mismatch tail (and bad obs) is gone.
-  assert _rmse(points.keys(), tracks, points, poses, lens) > 5.0
-  assert _rmse(kept.keys(), kept, points, poses, lens) < 1.5
-  # Runaway-depth landmarks are removed.
-  assert _max_view_depth(points.keys(), tracks, points, poses, lens) > 50.0
-  assert _max_view_depth(kept.keys(), kept, points, poses, lens) < 10.0

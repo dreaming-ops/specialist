@@ -9,6 +9,8 @@ from pathlib import Path
 import gtsam
 import numpy as np
 
+__all__ = ["RevoluteJoint", "read_revolute_joints"]
+
 
 @dataclass(frozen=True)
 class RevoluteJoint:

@@ -80,20 +80,14 @@ def _build_stationary(
   quiet = mag_smooth < threshold
   if not quiet.any():
     return None
-  best_start, best_len, run_start = -1, 0, -1
-  for i, q in enumerate(quiet):
-    if q and run_start == -1:
-      run_start = i
-    elif not q and run_start != -1:
-      length = i - run_start
-      if length > best_len:
-        best_start, best_len = run_start, length
-      run_start = -1
-  if run_start != -1:
-    length = quiet.size - run_start
-    if length > best_len:
-      best_start, best_len = run_start, length
-  if best_start == -1 or best_len < win * 4:
+  # The False padding turns a run touching either end into a normal edge pair.
+  padded = np.concatenate(([False], quiet, [False])).astype(np.int8)
+  edges = np.flatnonzero(np.diff(padded))
+  starts, ends = edges[::2], edges[1::2]
+  longest = int(np.argmax(ends - starts))
+  best_start = int(starts[longest])
+  best_len = int(ends[longest] - starts[longest])
+  if best_len < win * 4:
     return None
   i0 = best_start + win // 2
   i1 = min(best_start + best_len + win // 2, ts.size)
@@ -118,7 +112,7 @@ def _allan_for_axis(
   taus = np.asarray(taus, dtype=np.float64)
   adev = np.asarray(adev, dtype=np.float64)
 
-  # White-noise density N = ADEV * sqrt(tau) on the -1/2 slope, in signal/sqrt(Hz).
+  # At slope -1/2, ADEV(tau) = N / sqrt(tau), so N is in rad/s/sqrt(Hz).
   short_mask = taus < 1.0
   white_noise_density = (
     float(np.median(adev[short_mask] * np.sqrt(taus[short_mask])))

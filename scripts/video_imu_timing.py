@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 import cv2
 import numpy as np
@@ -13,7 +14,7 @@ import rerun as rr
 import tyro
 from _probe import finalize_probe
 
-from specialist.loader.parse_insv import InsvData, load_insv
+from specialist.loader.parse_insv import load_insv
 from specialist.vi_ba.pipeline import probe_capture
 
 Float64Array = npt.NDArray[np.float64]
@@ -26,7 +27,7 @@ class TimingArgs:
 
   input_insv: Path
   output_dir: Path = Path("logs")
-  lens: str = "front"  # 'front' (the _00_ file) or 'rear' (the _10_ sibling)
+  lens: Literal["front", "rear"] = "front"  # _00_ file / _10_ sibling
   max_frames: int = 600
   flow_max_corners: int = 200
   flow_quality_level: float = 0.01
@@ -56,11 +57,9 @@ class TimingSummary:
 
 
 def read_lens_grays(
-  video_path: Path, lens: str, *, max_frames: int | None = None
+  video_path: Path, lens: Literal["front", "rear"], *, max_frames: int
 ) -> tuple[list[UInt8Array], Float64Array]:
   """Gray frames and their container times of ``video_path`` or, for ``rear``, its ``_10_`` sibling."""
-  if lens not in ("front", "rear"):
-    raise ValueError(f"lens must be 'front' or 'rear', got {lens!r}")
   rear_path, _, _ = probe_capture(video_path)
   path = video_path if lens == "front" else rear_path
   cap = cv2.VideoCapture(str(path))
@@ -69,7 +68,7 @@ def read_lens_grays(
   try:
     grays: list[UInt8Array] = []
     times: list[float] = []
-    while max_frames is None or len(grays) < max_frames:
+    while len(grays) < max_frames:
       ok, frame = cap.read()
       if not ok:
         break
@@ -80,7 +79,7 @@ def read_lens_grays(
   return grays, np.asarray(times, dtype=np.float64)
 
 
-def _flow_magnitudes(grays: list[Float64Array], args: TimingArgs) -> Float64Array:
+def _flow_magnitudes(grays: list[UInt8Array], args: TimingArgs) -> Float64Array:
   """Median Lucas-Kanade flow magnitude per frame transition."""
 
   def corners(img: np.ndarray) -> np.ndarray | None:
@@ -92,10 +91,10 @@ def _flow_magnitudes(grays: list[Float64Array], args: TimingArgs) -> Float64Arra
     )
 
   mags: list[float] = []
-  prev = grays[0].astype(np.uint8)
+  prev = grays[0]
   prev_pts = corners(prev)
   for k in range(1, len(grays)):
-    curr = grays[k].astype(np.uint8)
+    curr = grays[k]
     if prev_pts is None or len(prev_pts) < 10:
       mags.append(0.0)
       prev_pts = corners(curr)
@@ -138,9 +137,9 @@ def _estimate_offset(
   return best_off, best_corr
 
 
-def _vertical_line_shear(gray: np.ndarray, threshold: int) -> float | None:
+def _vertical_line_shear(gray: UInt8Array, threshold: int) -> float | None:
   """Median per-pixel horizontal shift along near-vertical Hough line segments."""
-  edges = cv2.Canny(gray.astype(np.uint8), 60, 180)
+  edges = cv2.Canny(gray, 60, 180)
   segments = cv2.HoughLinesP(
     edges, 1, np.pi / 360.0, threshold, minLineLength=80, maxLineGap=10
   )
@@ -157,7 +156,7 @@ def _vertical_line_shear(gray: np.ndarray, threshold: int) -> float | None:
 
 
 def _estimate_rolling_shutter(
-  grays: list[Float64Array],
+  grays: list[UInt8Array],
   video_t: Float64Array,
   imu_t: Float64Array,
   gyro: Float64Array,
@@ -186,7 +185,7 @@ def _estimate_rolling_shutter(
     image_rate = yaw_rate / pixel_angle
     if abs(image_rate) < 1.0:
       continue
-    # shear (dx/dy) = image_rate * readout / height -> readout = ...
+    # shear (dx/dy) = image_rate * readout / height.
     readout = shear * height / image_rate
     if 0.0 < readout < 0.05:
       readouts.append(readout)
@@ -208,10 +207,7 @@ def _verdict(summary: TimingSummary) -> str:
     parts.append(f"large video<->IMU offset {summary.offset * 1e3:.1f} ms")
   if summary.shear is None:
     parts.append("RS shear unmeasured (need yaw motion + vertical edges)")
-  elif (
-    summary.shear is not None
-    and abs(summary.shear.measured_readout - summary.shear.factory_readout) > 5e-3
-  ):
+  elif abs(summary.shear.measured_readout - summary.shear.factory_readout) > 5e-3:
     parts.append(
       f"RS readout mismatch: {summary.shear.measured_readout * 1e3:.2f} ms vs "
       f"{summary.shear.factory_readout * 1e3:.2f} ms factory"
@@ -236,7 +232,7 @@ def _log_to_rerun(
 
 def main(args: TimingArgs) -> None:
   args.output_dir.mkdir(parents=True, exist_ok=True)
-  data: InsvData = load_insv(args.input_insv)
+  data = load_insv(args.input_insv)
 
   grays, video_t = read_lens_grays(
     args.input_insv, args.lens, max_frames=args.max_frames

@@ -66,7 +66,7 @@ def _decode_mono_pcm(
     "-ac",
     "1",
     "-ar",
-    str(int(target_rate)),
+    str(target_rate),
     "-f",
     "f32le",
     "-",
@@ -75,7 +75,7 @@ def _decode_mono_pcm(
   if result.returncode != 0:
     raise RuntimeError(f"ffmpeg failed for {src}:\n{result.stderr.decode()}")
   pcm = np.frombuffer(result.stdout, dtype=np.float32).astype(np.float64)
-  return pcm, int(target_rate)
+  return pcm, target_rate
 
 
 def _detect_clap_times(
@@ -90,17 +90,18 @@ def _detect_clap_times(
     return np.zeros(0)
   sos = butter(4, envelope_cutoff, btype="low", fs=rate, output="sos")
   envelope = sosfiltfilt(sos, np.abs(samples))
-  threshold = float(envelope.mean()) + float(threshold_sigmas) * float(envelope.std())
+  threshold = float(envelope.mean()) + threshold_sigmas * float(envelope.std())
   min_distance = max(1, int(round(min_separation * rate)))
   peak_indices, _ = find_peaks(envelope, height=threshold, distance=min_distance)
-  return np.asarray(peak_indices / float(rate), dtype=np.float64)
+  return np.asarray(peak_indices / rate, dtype=np.float64)
 
 
 def _best_lag(
   times_a: Float64Array,
   times_b: Float64Array,
+  *,
+  match_tolerance: float,
   max_search: float = 30.0,
-  match_tolerance: float = 0.05,
 ) -> tuple[float, int]:
   """Lag (B − A) that the most clap pairs agree on, and that pair count."""
   if times_a.size == 0 or times_b.size == 0:

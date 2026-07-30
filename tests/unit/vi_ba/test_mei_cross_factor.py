@@ -13,27 +13,14 @@ from specialist.vi_ba._mei_factor_cpp import (
 )
 
 from specialist.loader.mei_model import MeiParams, mei_project
+from tests.mei_fixtures import distorted_mei_params, fd_pose_columns, unit_pixel_noise
 
 _OBS, _OWN, _BT, _THETA = 0, 1, 2, 3
 
 
 def _params() -> MeiParams:
-  return MeiParams(
-    fx=800.0,
-    fy=800.0,
-    cx=960.0,
-    cy=960.0,
-    k1=0.02,
-    k2=-0.01,
-    k3=0.003,
-    p1=0.001,
-    p2=-0.002,
-    xi=1.6,
-  )
-
-
-def _noise() -> gtsam.noiseModel.Base:
-  return gtsam.noiseModel.Isotropic.Sigma(2, 1.0)
+  # Light distortion with a moderate super-fisheye xi.
+  return distorted_mei_params(xi=1.6)
 
 
 def _ext() -> gtsam.Pose3:
@@ -87,7 +74,7 @@ def _factor(
     _OWN,
     _BT,
     np.asarray(pixel, dtype=np.float64).reshape(2),
-    _noise(),
+    unit_pixel_noise(),
     ext,
     np.asarray(c, dtype=np.float64).reshape(3),
     np.array(astuple(params)),
@@ -101,17 +88,6 @@ def _values(x_o: gtsam.Pose3, x_w: gtsam.Pose3, bt: gtsam.Pose3) -> gtsam.Values
   v.insert(_OWN, x_w)
   v.insert(_BT, bt)
   return v
-
-
-def _fd(residual_at, pose: gtsam.Pose3, h: float = 1e-6) -> npt.NDArray[np.float64]:
-  cols = []
-  for i in range(6):
-    xi = np.zeros(6)
-    xi[i] = h
-    cols.append(
-      (residual_at(pose.retract(xi)) - residual_at(pose.retract(-xi))) / (2 * h)
-    )
-  return np.column_stack(cols)
 
 
 def test_cross_zero_residual_at_reprojecting_config() -> None:
@@ -134,9 +110,9 @@ def test_cross_jacobians_match_finite_difference() -> None:
   a, _ = f.linearize(_values(x_o, x_w, bt)).jacobian()
   assert a.shape == (2, 18), a.shape
   h1, h2, h3 = a[:, 0:6], a[:, 6:12], a[:, 12:18]
-  fd1 = _fd(lambda p: f.unwhitenedError(_values(p, x_w, bt)), x_o)
-  fd2 = _fd(lambda p: f.unwhitenedError(_values(x_o, p, bt)), x_w)
-  fd3 = _fd(lambda p: f.unwhitenedError(_values(x_o, x_w, p)), bt)
+  fd1 = fd_pose_columns(lambda p: f.unwhitenedError(_values(p, x_w, bt)), x_o)
+  fd2 = fd_pose_columns(lambda p: f.unwhitenedError(_values(x_o, p, bt)), x_w)
+  fd3 = fd_pose_columns(lambda p: f.unwhitenedError(_values(x_o, x_w, p)), bt)
   assert np.allclose(h1, fd1, atol=1e-4), (h1, fd1)
   assert np.allclose(h2, fd2, atol=1e-4), (h2, fd2)
   assert np.allclose(h3, fd3, atol=1e-4), (h3, fd3)
@@ -200,7 +176,7 @@ def _cross_finger_factor(
     _BT,
     _THETA,
     np.asarray(pixel, dtype=np.float64).reshape(2),
-    _noise(),
+    unit_pixel_noise(),
     ext,
     btj,
     np.asarray(c, dtype=np.float64).reshape(3),
@@ -240,9 +216,9 @@ def test_cross_finger_jacobians_match_finite_difference() -> None:
   a, _ = f.linearize(_values4(x_o, x_w, bt, theta)).jacobian()
   assert a.shape == (2, 19), a.shape
   h1, h2, h3, h4 = a[:, 0:6], a[:, 6:12], a[:, 12:18], a[:, 18:19]
-  fd1 = _fd(lambda p: f.unwhitenedError(_values4(p, x_w, bt, theta)), x_o)
-  fd2 = _fd(lambda p: f.unwhitenedError(_values4(x_o, p, bt, theta)), x_w)
-  fd3 = _fd(lambda p: f.unwhitenedError(_values4(x_o, x_w, p, theta)), bt)
+  fd1 = fd_pose_columns(lambda p: f.unwhitenedError(_values4(p, x_w, bt, theta)), x_o)
+  fd2 = fd_pose_columns(lambda p: f.unwhitenedError(_values4(x_o, p, bt, theta)), x_w)
+  fd3 = fd_pose_columns(lambda p: f.unwhitenedError(_values4(x_o, x_w, p, theta)), bt)
   hh = 1e-6
   fd4 = (
     (

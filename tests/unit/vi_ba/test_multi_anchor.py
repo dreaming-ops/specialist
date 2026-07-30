@@ -5,50 +5,43 @@ from pathlib import Path
 import gtsam
 import numpy as np
 import pytest
-from scripts.track import (
-  Args,
-  _align_to_shared_world,
-  _anchored_keyframes,
-  _bfs_world_alignments,
-  _lens_bearing,
-  _secondary_anchor_seed,
-  _sighting_bearing,
-  _solve_joint_graph,
-  _tag_corners_world,
-  _validate_tag_id_disjointness,
-)
 
 from specialist.loader.mei_model import MeiParams, mei_project
 from specialist.vi_ba.build import LensSetup
-from specialist.vi_ba.compose import CameraKeys
-from specialist.vi_ba.configs import AnchorCfg, SolverCfg, WindowCfg
+from specialist.vi_ba.compose import (
+  CameraKeys,
+  _bfs_world_alignments,
+  _sighting_bearing,
+  align_to_shared_world,
+  anchored_keyframes,
+)
+from specialist.vi_ba.configs import (
+  AnchorCfg,
+  Args,
+  SolverCfg,
+  WindowCfg,
+)
 from specialist.vi_ba.imu import make_preintegration_params
+from specialist.vi_ba.reference_solve import (
+  _secondary_anchor_seed,
+  _solve_joint_graph,
+)
 from specialist.vi_ba.single_camera import (
   PreparedCamera,
   _build_non_anchor_tag_masks,
   _choose_prep_anchor,
   _print_anchor_geometry,
 )
-from specialist.vi_ba.tag_detection import TagDetection, tag_corners_local
+from specialist.vi_ba.tag_detection import (
+  TagDetection,
+  tag_center_bearing,
+  tag_corners_in_frame,
+)
+from tests.mei_fixtures import narrow_mei_params
 
 
 def _pose(rx: float, ry: float, rz: float, x: float, y: float, z: float) -> gtsam.Pose3:
   return gtsam.Pose3(gtsam.Rot3.Rodrigues(rx, ry, rz), gtsam.Point3(x, y, z))
-
-
-def _mei() -> MeiParams:
-  return MeiParams(
-    fx=160.0,
-    fy=160.0,
-    cx=120.0,
-    cy=120.0,
-    k1=0.0,
-    k2=0.0,
-    k3=0.0,
-    p1=0.0,
-    p2=0.0,
-    xi=0.8,
-  )
 
 
 def _tag(tag_id: int, cx: float, cy: float) -> TagDetection:
@@ -68,7 +61,8 @@ def _tag(tag_id: int, cx: float, cy: float) -> TagDetection:
 
 
 @pytest.mark.parametrize(
-  ("anchor_ids", "expected"), [({1, 0}, (255, 255, 0)), ({1}, (255, 0, 0))]
+  ("anchor_ids", "expected"),
+  [({1, 0}, (255, 255, 0)), ({1}, (255, 0, 0)), (set(), (0, 0, 0))],
 )
 def test_masks_unmask_exactly_the_configured_anchor_ids(
   anchor_ids: set[int], expected: tuple[int, int, int]
@@ -79,13 +73,6 @@ def test_masks_unmask_exactly_the_configured_anchor_ids(
   masks = _build_non_anchor_tag_masks(frames, tags, anchor_ids, 2)
   for x, value in zip((15, 45, 75), expected, strict=True):
     assert masks[0][30, x] == value
-
-
-def test_masks_no_anchor_ids_mask_every_tag() -> None:
-  frames = [np.zeros((30, 30), dtype=np.uint8)]
-  tags = [[_tag(3, 15.0, 15.0)]]
-  masks = _build_non_anchor_tag_masks(frames, tags, set(), 1)
-  assert masks[0][15, 15] == 0
 
 
 def _two_anchor_scene() -> tuple[gtsam.Pose3, gtsam.Pose3, gtsam.Pose3]:
@@ -149,14 +136,13 @@ def _dummy_camera(
     ),
     biases=biases or [],
     preintegrated=preintegrated or [],
-    front_lens=LensSetup(body_T_lens=front_ext, params=_mei()),
-    rear_lens=LensSetup(body_T_lens=rear_ext, params=_mei()),
+    front_lens=LensSetup(body_T_lens=front_ext, params=narrow_mei_params()),
+    rear_lens=LensSetup(body_T_lens=rear_ext, params=narrow_mei_params()),
     front_tracks_tri={},
     rear_tracks_tri={},
     front_points={},
     rear_points={},
     decoded_width=2880,
-    prep_anchor_tag_id=prep_anchor_tag_id,
     anchor_obs_by_tag=(
       {prep_anchor_tag_id: anchor_obs_per_kf} if anchor_obs_per_kf else {}
     )
@@ -181,7 +167,6 @@ def _dummy_camera(
     finger_reproj={},
     left_finger_tag_id=0,
     right_finger_tag_id=0,
-    n_keyframes=n,
   )
 
 
@@ -278,7 +263,7 @@ def test_alignment_grounds_camera_via_its_prep_anchor() -> None:
     prep_anchor_tag_id=0,
     anchor_local=shared_T_b_local.inverse().compose(anchor_0),
   )
-  ref = _align_to_shared_world([a, b], (1, 0))
+  ref = align_to_shared_world([a, b], (1, 0))
   assert np.allclose(ref.matrix(), anchor_1.matrix())
   assert np.allclose(a.body_poses[0].matrix(), np.eye(4), atol=1e-12)
   assert np.allclose(b.body_poses[0].matrix(), shared_T_b_local.matrix(), atol=1e-9)
@@ -322,24 +307,15 @@ def _project_tag(
   tag_id: int,
   tag_size: float,
 ) -> TagDetection:
-  world_T_lens = body
-  corners_px = [
-    mei_project(
-      np.asarray(
-        world_T_lens.transformTo(world_T_tag.transformFrom(gtsam.Point3(*corner))),
-        dtype=np.float64,
-      )[None, :],
-      params,
-    )[0]
-    for corner in tag_corners_local(tag_size)
-  ]
-  center_px = mei_project(
-    np.asarray(world_T_lens.transformTo(world_T_tag.translation()), dtype=np.float64)[
-      None, :
-    ],
-    params,
-  )[0]
-  return TagDetection(tag_id=tag_id, center=center_px, corners=np.stack(corners_px))
+  corners_lens = np.array(
+    [body.transformTo(c) for c in tag_corners_in_frame(world_T_tag, tag_size)]
+  )
+  center_lens = np.asarray(body.transformTo(world_T_tag.translation()))
+  return TagDetection(
+    tag_id=tag_id,
+    center=mei_project(center_lens[None, :], params)[0],
+    corners=mei_project(corners_lens, params),
+  )
 
 
 def _pim_chain(
@@ -381,9 +357,11 @@ def _pinned_solve_fixture(
   tag_size = 0.1
   tags_per_kf = []
   for k in range(n):
-    dets = [_project_tag(true_poses[k], _mei(), world_T_ref, 1, tag_size)]
+    dets = [_project_tag(true_poses[k], narrow_mei_params(), world_T_ref, 1, tag_size)]
     if with_secondary and k == 1:
-      dets.append(_project_tag(true_poses[k], _mei(), world_T_sec, 5, tag_size))
+      dets.append(
+        _project_tag(true_poses[k], narrow_mei_params(), world_T_sec, 5, tag_size)
+      )
     tags_per_kf.append(dets)
   anchor_obs = _front_obs(true_poses, ext, world_T_ref)
   extra = (
@@ -430,16 +408,15 @@ def test_pinned_solve_reestimates_secondary_pose(
   true_t = np.asarray(world_T_sec.translation(), dtype=np.float64)
   seed_err = float(np.linalg.norm(np.asarray(seed.translation()) - true_t))
   assert seed_err > 0.02
-  _result, _keep, world, _poses = _solve_joint_graph(
-    cameras, keys, args, [], _tag_corners_world(world_T_ref, args.anchor.tag_size)
-  )
+  solve = _solve_joint_graph(cameras, keys, args, [], world_T_ref)
+  world = solve.secondary_world
   assert 5 in world
   final_err = float(np.linalg.norm(np.asarray(world[5].translation()) - true_t))
   assert final_err < 0.01
   assert final_err < seed_err / 3
   out = capsys.readouterr().out
   assert "secondary anchor 5: post-solve re-estimate moved" in out
-  _assert_no_corner_point_variables(_result.values)
+  _assert_no_corner_point_variables(solve.result.values)
 
 
 def test_single_anchor_takes_single_solve_branch(
@@ -447,24 +424,22 @@ def test_single_anchor_takes_single_solve_branch(
 ) -> None:
   """Without a sighted secondary anchor, one cull-reoptimize pass is the whole solve."""
   cameras, keys, args, world_T_ref, _sec = _pinned_solve_fixture(False)
-  _result, _keep, world, _poses = _solve_joint_graph(
-    cameras, keys, args, [], _tag_corners_world(world_T_ref, args.anchor.tag_size)
-  )
+  solve = _solve_joint_graph(cameras, keys, args, [], world_T_ref)
   out = capsys.readouterr().out
-  assert world == {}
+  assert solve.secondary_world == {}
   assert out.count("solve 1:") == 1
-  _assert_no_corner_point_variables(_result.values)
+  _assert_no_corner_point_variables(solve.result.values)
 
 
 def test_sighting_bearing_falls_back_to_detection_ray() -> None:
   """Without PnP, the detection-center ray keeps the behind-camera guard active."""
-  lens = LensSetup(body_T_lens=gtsam.Pose3(), params=_mei())
+  lens = LensSetup(body_T_lens=gtsam.Pose3(), params=narrow_mei_params())
   lens_T_tag = _pose(0.0, 0.0, 0.0, 0.1, 0.0, 0.9)
-  det = _project_tag(gtsam.Pose3(), _mei(), lens_T_tag, 1, 0.1)
+  det = _project_tag(gtsam.Pose3(), narrow_mei_params(), lens_T_tag, 1, 0.1)
   with_obs = _sighting_bearing({0: {"front": lens_T_tag}}, 0, "front", det, lens)
   assert np.allclose(with_obs, np.asarray(lens_T_tag.translation()))
   fallback = _sighting_bearing({}, 0, "front", det, lens)
-  assert np.allclose(fallback, _lens_bearing(det, lens))
+  assert np.allclose(fallback, tag_center_bearing(det, lens.params))
 
 
 def test_anchored_keyframes_union_over_all_anchors() -> None:
@@ -476,34 +451,7 @@ def test_anchored_keyframes_union_over_all_anchors() -> None:
     gtsam.Pose3(),
     anchor_obs_per_kf={0: {"front": gtsam.Pose3()}, 1: {"front": gtsam.Pose3()}},
   )
-  assert _anchored_keyframes(camera) == {0, 1, 2}
-
-
-def test_tag_id_disjointness_validated() -> None:
-  """Anchor, base and nonzero finger ids are disjoint; a zero finger id is disabled."""
-
-  def make(
-    anchor_ids: tuple[int, ...],
-    left: tuple[int, ...] = (),
-    right: tuple[int, ...] = (),
-  ) -> Args:
-    return Args(
-      input_insvs=(Path("a.insv"),),
-      window=WindowCfg(duration=None),
-      anchor=AnchorCfg(tag_ids=anchor_ids),
-      base_tag_ids=(2,),
-      left_finger_tag_ids=left,
-      right_finger_tag_ids=right,
-    )
-
-  _validate_tag_id_disjointness(make((1, 0)))
-  _validate_tag_id_disjointness(make((1, 0), left=(0,)))
-  with pytest.raises(ValueError, match="2"):
-    _validate_tag_id_disjointness(make((1, 2)))
-  with pytest.raises(ValueError, match="1"):
-    _validate_tag_id_disjointness(make((1, 0), left=(1,)))
-  with pytest.raises(ValueError, match="2"):
-    _validate_tag_id_disjointness(make((1, 0), right=(2,)))
+  assert anchored_keyframes(camera) == {0, 1, 2}
 
 
 def test_anchor_geometry_print_is_observational(
@@ -512,8 +460,8 @@ def test_anchor_geometry_print_is_observational(
   """The geometry line keeps inputs, returns nothing and skips unsighted anchors."""
   ext = gtsam.Pose3()
   world_T_tag = _pose(0.0, 0.0, 0.0, 0.1, 0.0, 0.9)
-  det = _project_tag(ext, _mei(), world_T_tag, 5, 0.1)
-  lens = LensSetup(body_T_lens=ext, params=_mei())
+  det = _project_tag(ext, narrow_mei_params(), world_T_tag, 5, 0.1)
+  lens = LensSetup(body_T_lens=ext, params=narrow_mei_params())
   lens_sides = (("front", lens, [[det]], [np.eye(3)]),)
   obs = {0: {"front": world_T_tag}}
   before = {kf: dict(sides) for kf, sides in obs.items()}

@@ -39,7 +39,7 @@ jobs:
       - name: Install dependencies
         run: uv sync --extra dev --no-install-project --no-install-package specialist-description
       - name: Run mypy
-        run: uv run --no-sync mypy src/specialist
+        run: uv run --no-sync mypy
 
   tests:
     runs-on: ubuntu-latest

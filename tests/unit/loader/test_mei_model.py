@@ -79,10 +79,3 @@ def test_mei_rejects_bad_shape() -> None:
     mei_project(np.zeros((3,)), _PINHOLE)
   with pytest.raises(ValueError):
     mei_unproject(np.zeros((3,)), _PINHOLE)
-
-
-def test_mei_from_camera_matrix_validates_shapes() -> None:
-  with pytest.raises(ValueError):
-    MeiParams.from_camera_matrix(np.zeros((2, 2)), np.zeros((6,)))
-  with pytest.raises(ValueError):
-    MeiParams.from_camera_matrix(np.eye(3), np.zeros((5,)))

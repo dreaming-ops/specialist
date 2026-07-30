@@ -9,6 +9,8 @@ import numpy as np
 import numpy.typing as npt
 import telemetry_parser
 
+__all__ = ["InsvData", "LensIntrinsics", "load_insv"]
+
 
 @dataclass(frozen=True)
 class LensIntrinsics:
@@ -27,7 +29,7 @@ class LensIntrinsics:
 
 @dataclass(frozen=True)
 class InsvData:
-  """Parsed ``.insv`` data; times in video-clock seconds, ``gyro`` in rad/s."""
+  """Parsed ``.insv`` data in SI units on the video clock."""
 
   imu_timestamps: npt.NDArray[np.float64]
   gyro: npt.NDArray[np.float64]
@@ -39,7 +41,6 @@ class InsvData:
 
 
 def load_insv(path: Path) -> InsvData:
-  """Parse a ``.insv`` file and return the typed view used by the probes."""
   if not path.is_file():
     raise FileNotFoundError(f"insv not found: {path}")
 
@@ -50,16 +51,11 @@ def load_insv(path: Path) -> InsvData:
   meta = raw[0]
 
   imu_samples = parser.normalized_imu()
-  n = len(imu_samples)
-  if n == 0:
+  if not imu_samples:
     raise ValueError(f"no IMU samples in {path}")
-  ts = np.empty(n)
-  gyro = np.empty((n, 3))
-  accel = np.empty((n, 3))
-  for i, s in enumerate(imu_samples):
-    ts[i] = float(s["timestamp_ms"]) * 1e-3
-    gyro[i] = s["gyro"]
-    accel[i] = s["accl"]
+  ts = np.array([s["timestamp_ms"] for s in imu_samples], dtype=np.float64) * 1e-3
+  gyro = np.array([s["gyro"] for s in imu_samples], dtype=np.float64)
+  accel = np.array([s["accl"] for s in imu_samples], dtype=np.float64)
 
   lens = meta["Lens"]["Data"]
   fisheye = lens["fisheye_params"]

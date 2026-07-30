@@ -14,30 +14,15 @@ from specialist.vi_ba._mei_factor_cpp import (
 )
 
 from specialist.loader.mei_model import MeiParams, mei_project
+from tests.mei_fixtures import distorted_mei_params, fd_pose_columns, unit_pixel_noise
 
 _THETA_KEY = 0
 _BASE_TAG_KEY = 1
 
 
 def _params() -> MeiParams:
-  # MEI with light distortion + a super-fisheye xi.
-  return MeiParams(
-    fx=800.0,
-    fy=800.0,
-    cx=960.0,
-    cy=960.0,
-    k1=0.02,
-    k2=-0.01,
-    k3=0.003,
-    p1=0.001,
-    p2=-0.002,
-    xi=1.95,
-  )
-
-
-def _noise() -> gtsam.noiseModel.Base:
-  # Isotropic σ=1 px → whitened == unwhitened; makes Jacobian introspection easy.
-  return gtsam.noiseModel.Isotropic.Sigma(2, 1.0)
+  # A super-fisheye xi, near the model's limit, stresses the analytic Jacobians.
+  return distorted_mei_params(xi=1.95)
 
 
 def _body_T_lens() -> gtsam.Pose3:
@@ -92,7 +77,7 @@ def _finger_factor(
     _THETA_KEY,
     _BASE_TAG_KEY,
     np.asarray(pixel, dtype=np.float64).reshape(2),
-    _noise(),
+    unit_pixel_noise(),
     body_T_lens,
     base_T_joint,
     np.asarray(c, dtype=np.float64).reshape(3),
@@ -112,7 +97,7 @@ def _base_tag_factor(
   return make_mei_base_tag_factor_cpp(
     _BASE_TAG_KEY,
     np.asarray(pixel, dtype=np.float64).reshape(2),
-    _noise(),
+    unit_pixel_noise(),
     body_T_lens,
     np.asarray(c, dtype=np.float64).reshape(3),
     np.array(astuple(params)),
@@ -131,20 +116,6 @@ def _pose_values(pose: gtsam.Pose3) -> gtsam.Values:
   v = gtsam.Values()
   v.insert(_BASE_TAG_KEY, pose)
   return v
-
-
-def _fd_pose_columns(
-  residual_at, pose: gtsam.Pose3, h: float = 1e-6
-) -> npt.NDArray[np.float64]:
-  """Central finite difference of a residual w.r.t. the Pose3 retract tangent."""
-  cols = []
-  for i in range(6):
-    xi = np.zeros(6)
-    xi[i] = h
-    r_plus = residual_at(pose.retract(xi))
-    r_minus = residual_at(pose.retract(-xi))
-    cols.append((r_plus - r_minus) / (2.0 * h))
-  return np.column_stack(cols)  # 2x6
 
 
 # --- binary finger factor -------------------------------------------------
@@ -194,7 +165,7 @@ def test_finger_jacobians_match_finite_difference() -> None:
       f"theta={theta}: H1={h1[:, 0]}, fd={fd_theta}"
     )
 
-    fd_pose = _fd_pose_columns(
+    fd_pose = fd_pose_columns(
       lambda p, th=theta: factor.unwhitenedError(_finger_values(th, p)), btag
     )
     assert np.allclose(h2, fd_pose, atol=1e-4), f"theta={theta}: H2={h2}, fd={fd_pose}"
@@ -237,5 +208,5 @@ def test_base_tag_zero_residual_and_jacobian() -> None:
   factor = _base_tag_factor(pixel + np.array([2.5, -1.5]), ext, c, params)
   a, _ = factor.linearize(_pose_values(btag)).jacobian()
   assert a.shape == (2, 6)
-  fd = _fd_pose_columns(lambda p: factor.unwhitenedError(_pose_values(p)), btag)
+  fd = fd_pose_columns(lambda p: factor.unwhitenedError(_pose_values(p)), btag)
   assert np.allclose(a, fd, atol=1e-4), f"H1={a}, fd={fd}"

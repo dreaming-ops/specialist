@@ -6,7 +6,6 @@ import gtsam
 import numpy as np
 from gtsam.symbol_shorthand import B, V, X
 
-from specialist.loader.mei_model import MeiParams, mei_project
 from specialist.vi_ba.build import (
   LensSetup,
   build_vi_graph,
@@ -19,58 +18,10 @@ from specialist.vi_ba.imu import (
   make_preintegration_params,
 )
 from specialist.vi_ba.optimize import optimize_graph
-
-
-def _params() -> MeiParams:
-  return MeiParams(
-    fx=500.0,
-    fy=500.0,
-    cx=320.0,
-    cy=240.0,
-    k1=0.0,
-    k2=0.0,
-    k3=0.0,
-    p1=0.0,
-    p2=0.0,
-    xi=0.0,  # pinhole-like
-  )
-
-
-def _project_point(
-  pose_wb: gtsam.Pose3,
-  body_T_lens: gtsam.Pose3,
-  world_xyz: np.ndarray,
-  params: MeiParams,
-) -> np.ndarray:
-  t_wl = pose_wb.compose(body_T_lens)
-  p_lens = t_wl.transformTo(gtsam.Point3(*world_xyz))
-  return mei_project(np.asarray(p_lens)[None, :], params)[0]
-
+from tests.mei_fixtures import pinhole_mei_params, project_point
 
 _GRAVITY = np.array([0.0, 0.0, -9.81])
-_LENS = LensSetup(body_T_lens=gtsam.Pose3(), params=_params())
-
-
-def _front_only_graph(
-  body_poses: list[gtsam.Pose3],
-  front: LensSetup,
-  front_tracks: dict,
-  front_points: dict,
-) -> tuple[gtsam.NonlinearFactorGraph, gtsam.Values]:
-  """Visual-only graph (no IMU, no rear lens), gauge-pinned at both ends."""
-  return build_vi_graph(
-    body_poses=body_poses,
-    preintegrated=None,
-    front=front,
-    front_tracks=front_tracks,
-    front_points=front_points,
-    rear=None,
-    rear_tracks=None,
-    rear_points=None,
-    sigma=1.0,
-    weak_pose_sigmas=(0.3,) * 6,
-    anchor_last_pose=True,
-  )
+_LENS = LensSetup(body_T_lens=gtsam.Pose3(), params=pinhole_mei_params())
 
 
 def _imu_only_graph(
@@ -88,15 +39,15 @@ def _imu_only_graph(
     front=_LENS,
     front_tracks={},
     front_points={},
-    rear=None,
-    rear_tracks=None,
-    rear_points=None,
+    rear=_LENS,
+    rear_tracks={},
+    rear_points={},
     sigma=1.0,
   )
 
 
 def test_build_graph_dual_lens_uses_disjoint_landmark_keys() -> None:
-  params = _params()
+  params = pinhole_mei_params()
   poses = [gtsam.Pose3(), gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(0.3, 0.0, 0.0))]
   body_T_lens = gtsam.Pose3()
 
@@ -105,14 +56,14 @@ def test_build_graph_dual_lens_uses_disjoint_landmark_keys() -> None:
 
   front_tracks = {
     0: {
-      0: _project_point(poses[0], body_T_lens, xyz_front, params),
-      1: _project_point(poses[1], body_T_lens, xyz_front, params),
+      0: project_point(poses[0], body_T_lens, xyz_front, params),
+      1: project_point(poses[1], body_T_lens, xyz_front, params),
     }
   }
   rear_tracks = {
     0: {
-      0: _project_point(poses[0], body_T_lens, xyz_rear, params),
-      1: _project_point(poses[1], body_T_lens, xyz_rear, params),
+      0: project_point(poses[0], body_T_lens, xyz_rear, params),
+      1: project_point(poses[1], body_T_lens, xyz_rear, params),
     }
   }
 
