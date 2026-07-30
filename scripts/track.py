@@ -28,6 +28,7 @@ from specialist.vi_ba._mei_factor_cpp import (
 
 from specialist.loader.audio_sync import sync_two_claps
 from specialist.loader.mei_model import MeiParams, mei_project, mei_unproject
+from specialist.vi_ba import gpu_flow
 from specialist.vi_ba.build import (
   LensSetup,
   add_mei_tag_factor,
@@ -1428,6 +1429,8 @@ def main(args: Args) -> None:
   set_precompute_concurrency(len(specs))
   with ThreadPoolExecutor(max_workers=len(specs)) as prep_pool:
     cameras = list(prep_pool.map(_prep_one, specs))
+  # Free the GPU flow workers' device memory for the joint bundle adjustment.
+  gpu_flow.shutdown()
   mark("cameras prepared")
 
   ref_anchor = _align_to_shared_world(cameras, args.anchor.tag_ids)

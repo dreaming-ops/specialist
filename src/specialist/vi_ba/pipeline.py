@@ -45,6 +45,8 @@ class FrontendConfig:
   n_features: int = 2000
   ransac_threshold: float = 3.0
   max_half_angle: float = float(np.deg2rad(70.0))
+  # cv2 flow by default keeps the frontend primitives GPU-free for tests.
+  gpu_flow: bool = False
 
 
 def scaled_mei(offset: LensOffset, decoded_full_width: int, lens_idx: int) -> MeiParams:
@@ -231,6 +233,7 @@ def run_lens_frontend(
     frames,
     max_corners=cfg.n_features,
     masks=masks,
+    gpu_flow=cfg.gpu_flow,
   )
 
   def ransac_pair(k: int) -> npt.NDArray[np.int64]:

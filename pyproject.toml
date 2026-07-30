@@ -21,15 +21,19 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# CUDA backend for the Schur LM solver (`solver.gpu`); the tracker falls back
-# to the gtsam optimizer when these are absent. The markers keep the extra empty
-# where no CUDA wheels exist, so `uv sync --extra gpu` is a no-op there rather
-# than a resolution failure.
+# CUDA backends: the Schur LM solver (`solver.gpu`) and the DIS optical-flow
+# frontend (`frontend.gpu_flow`). The tracker falls back to the gtsam optimizer
+# and the cv2 flow when these are absent. The markers keep the extra empty where
+# no CUDA wheels exist, so `uv sync --extra gpu` is a no-op there rather than a
+# resolution failure.
 gpu = [
   # The [ctk] and [cu12] extras carry the CUDA 12 runtime these wheels load at import.
   "cupy-cuda12x[ctk]>=14.1; sys_platform == 'linux'",
   "nvmath-python[cu12]>=1.0; sys_platform == 'linux'",
   "nvidia-cudss-cu12>=0.8; sys_platform == 'linux'",
+  "torch>=2.11; sys_platform == 'linux'",
+  # The vendored DIS kernels call triton directly.
+  "triton>=3.4; sys_platform == 'linux'",
 ]
 dev = [
   "pytest>=8.0",
@@ -49,6 +53,14 @@ build-mei-factor = "specialist.vi_ba._buildext:main"
 
 [tool.uv.sources]
 specialist-description = { git = "ssh://git@github.com/specialist-ai/specialist_description.git", branch = "main" }
+# CUDA 12.9 builds: Blackwell (sm_120) kernels on the CUDA 12 toolkit cuDSS pins.
+torch = [{ index = "pytorch-cu129", marker = "sys_platform == 'linux'" }]
+triton = [{ index = "pytorch-cu129", marker = "sys_platform == 'linux'" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
 
 [tool.hatch.build.hooks.custom]
 path = "hatch_build.py"
@@ -65,12 +77,21 @@ testpaths = ["tests"]
 src = ["src"]
 indent-width = 2
 
+[tool.ruff.format]
+# Vendored DIS optical-flow kernels, kept in their upstream style.
+exclude = ["src/specialist/vi_ba/gpu_dis/*.py"]
+
 [tool.ruff.lint]
 select = ["E4", "E7", "E9", "F", "I", "B"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/specialist/vi_ba/gpu_dis/*" = ["E702", "E741", "I001", "B905"]
 
 [tool.mypy]
 strict = true
 files = ["src/specialist"]
+# The vendored DIS kernels are untyped research code.
+exclude = ["src/specialist/vi_ba/gpu_dis/"]
 
 [[tool.mypy.overrides]]
 module = [
@@ -84,5 +105,11 @@ module = [
   "pupil_apriltags", "pupil_apriltags.*",
   "allantools", "allantools.*",
   "imageio_ffmpeg", "imageio_ffmpeg.*",
+  "torch", "torch.*", "triton", "triton.*",
 ]
 ignore_missing_imports = true
+
+# `exclude` only stops directory discovery; mypy still follows the import.
+[[tool.mypy.overrides]]
+module = ["specialist.vi_ba.gpu_dis.*"]
+follow_imports = "skip"

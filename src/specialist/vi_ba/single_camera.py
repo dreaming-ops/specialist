@@ -850,6 +850,7 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     n_features=args.frontend.orb_n_features,
     ransac_threshold=args.frontend.ransac_threshold,
     max_half_angle=args.frontend.max_half_angle,
+    gpu_flow=args.frontend.gpu_flow,
   )
   (front_feature_frames, front_tracks), (rear_feature_frames, rear_tracks) = (
     run_two_concurrently(
