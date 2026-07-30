@@ -50,8 +50,10 @@ class ImuCfg:
 
 @dataclass
 class AnchorCfg:
-  tag_id: int
+  # Static wall-tag ids; the first is the reference anchor that pins the world gauge.
+  tag_ids: tuple[int, ...]
   tag_size: float = 0.1
+
   # The anchor's four metric corners reproject into the bundle and pin absolute scale.
   corner_reproj_sigma: float = 1.5
 

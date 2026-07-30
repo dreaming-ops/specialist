@@ -75,7 +75,7 @@ def _send_lens_tag_columns(
   entity_prefix: str,
   tags_per_kf: list[list[TagDetection]],
   times: rr.TimeColumn,
-  anchor_tag_id: int | None,
+  anchor_tag_ids: set[int],
   mask_pad_px: int,
 ) -> None:
   """Per-keyframe AprilTag quads and ids; anchor gold, others cyan with mask boxes."""
@@ -84,7 +84,7 @@ def _send_lens_tag_columns(
     return
   partition = [len(dets) for dets in tags_per_kf]
   ids = np.asarray([int(det.tag_id) for det in tags], dtype=np.int32)
-  is_anchor = ids == anchor_tag_id
+  is_anchor = np.isin(ids, list(anchor_tag_ids))
   colors = np.where(is_anchor[:, None], _ANCHOR, _GRIPPER_TAG).astype(np.uint8)
   strips = [np.vstack([d.corners, d.corners[:1]]).astype(np.float32) for d in tags]
   rr.send_columns(
@@ -318,13 +318,14 @@ def _log_anchor(
   spatial_root: str,
   world_T_anchor: gtsam.Pose3 | None,
   anchor_tag_size: float | None,
+  entity: str,
 ) -> None:
   if anchor_tag_size is None:
     return
   half = float(anchor_tag_size) / 2.0
   if world_T_anchor is not None:
     rr.log(
-      f"{spatial_root}/anchor_tag",
+      f"{spatial_root}/{entity}",
       _pose_transform3d(world_T_anchor),
       static=True,
     )
@@ -339,12 +340,12 @@ def _log_anchor(
     dtype=np.float64,
   )
   rr.log(
-    f"{spatial_root}/anchor_tag",
+    f"{spatial_root}/{entity}",
     rr.LineStrips3D([square], colors=_ANCHOR, radii=0.003),
     static=True,
   )
   rr.log(
-    f"{spatial_root}/anchor_tag/frame",
+    f"{spatial_root}/{entity}/frame",
     rr.TransformAxes3D(axis_length=half),
     static=True,
   )
@@ -357,7 +358,7 @@ def _log_tracker(
   metrics_suffix: str,
   frame_prefix: str | None,
   urdf_path: Path | None,
-  anchor_tag_id: int | None,
+  anchor_tag_ids: set[int],
   mask_pad_px: int,
   color: tuple[int, int, int],
 ) -> None:
@@ -531,7 +532,7 @@ def _log_tracker(
     if tags is None:
       continue
     _send_lens_tag_columns(
-      f"{image_root}/{lens_name}", tags, times, anchor_tag_id, mask_pad_px
+      f"{image_root}/{lens_name}", tags, times, anchor_tag_ids, mask_pad_px
     )
   for lens_name, rejected in (
     ("front", data.front_rejected_keypoints),
@@ -640,9 +641,9 @@ def _multi_blueprint(slots: list[str], floor_z: float | None) -> rrb.Blueprint:
 def log_multi_ba_run(
   rrd_path: Path,
   cameras: list[CameraVizData],
-  world_T_anchor: gtsam.Pose3 | None = None,
+  world_T_anchor: dict[int, gtsam.Pose3],
+  reference_tag_id: int,
   anchor_tag_size: float | None = None,
-  anchor_tag_id: int | None = None,
   mask_pad_px: int = 0,
   urdf_path: Path | None = None,
   open_viewer: bool = True,
@@ -667,7 +668,9 @@ def log_multi_ba_run(
     rr.save(str(rrd_path))
   rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
   rr.log("world", rr.Transform3D(child_frame="world"), static=True)
-  _log_anchor("world", world_T_anchor, anchor_tag_size)
+  for tag_id, pose in world_T_anchor.items():
+    entity = "anchor_tag" if tag_id == reference_tag_id else f"anchor_tag_{tag_id}"
+    _log_anchor("world", pose, anchor_tag_size, entity=entity)
   for i, t in enumerate(cameras):
     _log_tracker(
       t,
@@ -676,7 +679,7 @@ def log_multi_ba_run(
       metrics_suffix=f"/{t.name}",
       frame_prefix=f"{t.name}_",
       urdf_path=urdf_path,
-      anchor_tag_id=anchor_tag_id,
+      anchor_tag_ids=set(world_T_anchor),
       mask_pad_px=mask_pad_px,
       color=_SLOT_COLORS[i % len(_SLOT_COLORS)],
     )

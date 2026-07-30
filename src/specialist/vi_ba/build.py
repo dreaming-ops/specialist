@@ -23,11 +23,14 @@ except ImportError as _exc:  # pragma: no cover - extension is built by uv sync
 
 Float64Array = npt.NDArray[np.float64]
 
+# Prior sigmas on the first bias state, in gtsam's (accel, gyro) tangent order.
+_BIAS_PRIOR_SIGMA_ACCEL = 1.0e-2
+_BIAS_PRIOR_SIGMA_GYRO = 1.0e-3
+
 _REAR_LANDMARK_OFFSET = 1_000_000
 
 __all__ = [
   "LensSetup",
-  "add_mei_factor",
   "add_mei_tag_factor",
   "build_vi_graph",
   "front_landmark_key",
@@ -204,7 +207,10 @@ def build_vi_graph(
     bias_key = bias_key_fn or (lambda i: int(B(i)))
     vel_noise = gtsam.noiseModel.Isotropic.Sigma(3, velocity_prior_sigma)
     bias_noise = gtsam.noiseModel.Diagonal.Sigmas(
-      np.asarray([1.0e-2] * 3 + [1.0e-3] * 3, dtype=np.float64)
+      np.asarray(
+        [_BIAS_PRIOR_SIGMA_ACCEL] * 3 + [_BIAS_PRIOR_SIGMA_GYRO] * 3,
+        dtype=np.float64,
+      )
     )
     for i in range(n):
       values.insert(pose_key(i), body_poses[i])

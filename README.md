@@ -57,7 +57,7 @@ Single tracker against a wall anchor:
 ```
 uv run python scripts/track.py \
   --input-insvs path/to/clip.insv \
-  --base-tag-ids <base-tag-id> --anchor.tag-id <anchor-tag-id> \
+  --base-tag-ids <base-tag-id> --anchor.tag-ids <anchor-tag-id> \
   --window.duration None --output-dir logs/run
 ```
 
@@ -66,7 +66,7 @@ Two grippers (cross-tag multi-tracker):
 ```
 uv run python scripts/track.py \
   --input-insvs path/to/g0.insv path/to/g1.insv \
-  --base-tag-ids <g0-base-tag-id> <g1-base-tag-id> --anchor.tag-id <anchor-tag-id> \
+  --base-tag-ids <g0-base-tag-id> <g1-base-tag-id> --anchor.tag-ids <anchor-tag-id> \
   --left-finger-tag-ids <g0-left-finger-tag-id> <g1-left-finger-tag-id> --right-finger-tag-ids <g0-right-finger-tag-id> <g1-right-finger-tag-id> \
   --window.duration None --output-dir logs/run
 ```
