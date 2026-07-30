@@ -141,36 +141,6 @@ def body_poses_from_lens_poses(
   return [p.compose(inv) for p in lens_poses]
 
 
-def _triangulate_bearings(
-  views: list[tuple[Float64Array, Float64Array, Float64Array]],
-) -> Float64Array | None:
-  """Multi-view DLT for (R, t world→cam, unit bearing) views → world point."""
-  rows: list[Float64Array] = []
-  for r, t, b in views:
-    if b[2] <= 1e-6:
-      continue
-    x, y = b[0] / b[2], b[1] / b[2]
-    p = np.hstack([r, t.reshape(3, 1)])
-    rows.append(x * p[2] - p[0])
-    rows.append(y * p[2] - p[1])
-  if len(rows) < 4:
-    return None
-  _, _, vh = np.linalg.svd(np.array(rows))
-  x_h = vh[-1]
-  if abs(x_h[3]) < 1e-12:
-    return None
-  return np.asarray(x_h[:3] / x_h[3], dtype=np.float64)
-
-
-def _reproj_bearing(
-  r: Float64Array, t: Float64Array, x: Float64Array, b: Float64Array
-) -> float:
-  p = r @ x + t
-  if p[2] <= 1e-6:
-    return 1e9
-  return float(np.hypot(p[0] / p[2] - b[0] / b[2], p[1] / p[2] - b[1] / b[2]))
-
-
 def _pnp_bearings(
   pts: Float64Array, bears: Float64Array, min_points: int
 ) -> tuple[Float64Array, Float64Array] | None:
@@ -210,33 +180,77 @@ def incremental_sfm(
   frames = sorted({k for tr in bearings.values() for k in tr})
   if len(frames) < 2:
     return {}, {}
+  # Inverted index: keyframe -> track ids, in ``bearings`` iteration order.
+  tracks_by_kf: dict[int, list[int]] = {k: [] for k in frames}
+  for tid, obs in bearings.items():
+    for k in obs:
+      tracks_by_kf[k].append(tid)
+  # Array mirrors of the pose state plus per-track observation arrays.
+  frame_index = {k: i for i, k in enumerate(frames)}
+  rotations = np.zeros((len(frames), 3, 3))
+  translations = np.zeros((len(frames), 3))
+  registered = np.zeros(len(frames), dtype=bool)
+  track_frame_rows = {
+    tid: np.asarray([frame_index[k] for k in obs], dtype=np.int64)
+    for tid, obs in bearings.items()
+  }
+  track_bearing_rows = {
+    tid: np.asarray(list(obs.values()), dtype=np.float64)
+    for tid, obs in bearings.items()
+  }
   poses: dict[int, tuple[Float64Array, Float64Array]] = {}
   landmark_map: dict[int, Float64Array] = {}
 
+  def register(k: int, r_cw: Float64Array, t_cw: Float64Array) -> None:
+    poses[k] = (r_cw, t_cw)
+    i = frame_index[k]
+    rotations[i] = r_cw
+    translations[i] = t_cw
+    registered[i] = True
+
   def triangulate(tid: int) -> None:
-    views = [
-      (poses[k][0], poses[k][1], bearings[tid][k]) for k in bearings[tid] if k in poses
-    ]
-    if len(views) < 2:
+    rows_idx = track_frame_rows[tid]
+    in_map = registered[rows_idx]
+    if int(in_map.sum()) < 2:
       return
-    x = _triangulate_bearings(views)
-    if x is None:
+    r_cw = rotations[rows_idx[in_map]]
+    t_cw = translations[rows_idx[in_map]]
+    b = track_bearing_rows[tid][in_map]
+    # Multi-view DLT over the views whose bearing is safely in front.
+    z_ok = b[:, 2] > 1e-6
+    if int(z_ok.sum()) < 2:
       return
-    if sum(1 for r, t, _ in views if (r @ x + t)[2] > 0.05) < 2:
+    x_n = b[z_ok, 0] / b[z_ok, 2]
+    y_n = b[z_ok, 1] / b[z_ok, 2]
+    p = np.concatenate([r_cw[z_ok], t_cw[z_ok, :, None]], axis=2)
+    rows = np.empty((2 * len(x_n), 4))
+    rows[0::2] = x_n[:, None] * p[:, 2, :] - p[:, 0, :]
+    rows[1::2] = y_n[:, None] * p[:, 2, :] - p[:, 1, :]
+    _, _, vh = np.linalg.svd(rows)
+    x_h = vh[-1]
+    if abs(x_h[3]) < 1e-12:
       return
-    centers = [-r.T @ t for r, t, _ in views]
-    if max_parallax(centers, x) < SFM_MIN_PARALLAX:
+    x = np.asarray(x_h[:3] / x_h[3], dtype=np.float64)
+    p_cam = np.einsum("vij,j->vi", r_cw, x) + t_cw
+    if int((p_cam[:, 2] > 0.05).sum()) < 2:
       return
-    if np.median([_reproj_bearing(r, t, x, b) for r, t, b in views]) > SFM_MAX_REPROJ:
+    centers = -np.einsum("vji,vj->vi", r_cw, t_cw)
+    if max_parallax(list(centers), x) < SFM_MIN_PARALLAX:
+      return
+    residual = np.full(len(p_cam), 1.0e9)
+    front = p_cam[:, 2] > 1e-6
+    residual[front] = np.hypot(
+      p_cam[front, 0] / p_cam[front, 2] - b[front, 0] / b[front, 2],
+      p_cam[front, 1] / p_cam[front, 2] - b[front, 1] / b[front, 2],
+    )
+    if float(np.median(residual)) > SFM_MAX_REPROJ:
       return
     landmark_map[tid] = x
 
   first = frames[0]
   last: int | None = None
   for candidate in frames[1:]:
-    shared = [
-      tid for tid in bearings if first in bearings[tid] and candidate in bearings[tid]
-    ]
+    shared = [tid for tid in tracks_by_kf[first] if candidate in bearings[tid]]
     if len(shared) < min_shared:
       continue
     parallax = float(
@@ -252,13 +266,13 @@ def incremental_sfm(
       break
   if last is None:
     return {}, {}
-  shared = [tid for tid in bearings if first in bearings[tid] and last in bearings[tid]]
+  shared = [tid for tid in tracks_by_kf[first] if last in bearings[tid]]
   r_cw, t_cw, _ = two_view_essential(
     np.array([bearings[tid][first] for tid in shared]),
     np.array([bearings[tid][last] for tid in shared]),
   )
-  poses[first] = (np.eye(3), np.zeros(3))
-  poses[last] = (r_cw, t_cw)
+  register(first, np.eye(3), np.zeros(3))
+  register(last, r_cw, t_cw)
   for tid in shared:
     triangulate(tid)
 
@@ -267,7 +281,7 @@ def incremental_sfm(
     for k in frames:
       if k in poses:
         continue
-      tids = [tid for tid in bearings if k in bearings[tid] and tid in landmark_map]
+      tids = [tid for tid in tracks_by_kf[k] if tid in landmark_map]
       if len(tids) < SFM_MIN_PNP_POINTS:
         continue
       pnp_pose = _pnp_bearings(
@@ -277,11 +291,10 @@ def incremental_sfm(
       )
       if pnp_pose is None:
         continue
-      poses[k] = pnp_pose
+      register(k, *pnp_pose)
       progress = True
-      for tid in bearings:
-        if k in bearings[tid]:
-          triangulate(tid)
+      for tid in tracks_by_kf[k]:
+        triangulate(tid)
     if not progress:
       break
 

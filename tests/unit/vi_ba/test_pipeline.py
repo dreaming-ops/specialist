@@ -8,12 +8,13 @@ import cv2
 import numpy as np
 import pytest
 
-from specialist.loader.mei_model import MeiParams, mei_project
+from specialist.loader.mei_model import MeiParams, mei_project, mei_unproject
 from specialist.vi_ba.pipeline import (
   capture_duration,
   decode_dual_keyframes,
   filter_tracks_by_parallax,
   probe_capture,
+  unproject_tracks,
 )
 
 
@@ -52,6 +53,31 @@ def test_static_camera_track_kept_only_if_parallax_above_threshold() -> None:
   )
   assert 1 not in kept and 1 in rejected, "static-bearing track must be rejected"
   assert 2 in kept and 2 not in rejected, "wide-bearing-sweep track must be kept"
+
+
+def test_unproject_tracks_batched_slices_match_per_track_scalar() -> None:
+  """Bearing rows match exactly, kfs come back sorted and tracks below min_obs drop."""
+  params = _params()
+  tracks = {
+    7: {
+      2: np.array([120.0, 90.0]),
+      0: np.array([300.0, 310.0]),
+      1: np.array([50.0, 470.0]),
+    },
+    3: {5: np.array([460.0, 12.0]), 4: np.array([470.0, 495.0])},
+    9: {0: np.array([240.0, 240.0])},  # single obs -> below min_obs
+  }
+  out = {
+    tid: (kfs, bearings)
+    for tid, kfs, bearings in unproject_tracks(tracks, params, min_obs=2)
+  }
+  assert set(out) == {7, 3}  # the single-observation track is filtered out
+  for tid, (kfs, bearings) in out.items():
+    assert kfs == sorted(tracks[tid])
+    expected = mei_unproject(
+      np.asarray([tracks[tid][k] for k in kfs], dtype=np.float64), params
+    )
+    assert np.array_equal(bearings, expected)
 
 
 def _write_video(path: Path, n_frames: int, width: int, height: int) -> None:

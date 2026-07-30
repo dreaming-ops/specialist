@@ -53,6 +53,7 @@ from specialist.vi_ba.pipeline import (
   resolve_keyframe_every,
   run_lens_frontend,
   triangulate_lens,
+  unproject_tracks,
 )
 from specialist.vi_ba.tag_detection import (
   TagDetection,
@@ -233,12 +234,10 @@ def _bearings_by_track(
   tracks: dict[int, dict[int, Float64Array]], params: MeiParams
 ) -> dict[int, dict[int, Float64Array]]:
   """``{tid: {kf: unit bearing}}`` for the visual-odometry front-end."""
-  out: dict[int, dict[int, Float64Array]] = {}
-  for tid, obs in tracks.items():
-    kfs = sorted(obs)
-    b = mei_unproject(np.asarray([obs[k] for k in kfs], dtype=np.float64), params)
-    out[tid] = {k: b[i] for i, k in enumerate(kfs)}
-  return out
+  return {
+    tid: dict(zip(kfs, bearings, strict=True))
+    for tid, kfs, bearings in unproject_tracks(tracks, params, min_obs=1)
+  }
 
 
 def _subsample_obs(
@@ -289,6 +288,7 @@ def _revisit_tracks(
       parent[x], x = root, parent[x]
     return root
 
+  pairs: list[tuple[int, int]] = []
   for i in range(n):
     if len(orb[i].keypoints) == 0:
       continue
@@ -298,24 +298,33 @@ def _revisit_tracks(
       for j in np.argsort(dist)
       if j > i and (j - i) > min_kf_gap and dist[j] <= max_center_dist
     ][:_REVISIT_N_NEIGHBORS]
-    for j in cand:
-      m = match_pair(orb[i], orb[j], _REVISIT_MATCH_RATIO)
-      if len(m) < _REVISIT_MIN_INLIERS:
-        continue
-      pa = orb[i].keypoints[m[:, 0]]
-      pb = orb[j].keypoints[m[:, 1]]
-      # Small-baseline revisits degenerate the essential matrix, so fit a homography.
-      _, mask = cv2.findHomography(pa, pb, cv2.RANSAC, _REVISIT_RANSAC_THRESHOLD)
-      if mask is None:
-        continue
-      inl = mask.ravel().astype(bool)
-      if int(inl.sum()) < _REVISIT_MIN_INLIERS:
-        continue
-      for k in np.where(inl)[0]:
-        ra = find((i, int(m[k, 0])))
-        rb = find((j, int(m[k, 1])))
-        if ra != rb:
-          parent[ra] = rb
+    pairs.extend((i, j) for j in cand)
+
+  def verify_pair(i: int, j: int) -> npt.NDArray[np.int64] | None:
+    m = match_pair(orb[i], orb[j], _REVISIT_MATCH_RATIO)
+    if len(m) < _REVISIT_MIN_INLIERS:
+      return None
+    pa = orb[i].keypoints[m[:, 0]]
+    pb = orb[j].keypoints[m[:, 1]]
+    # The cv2 RNG is thread-local, so a per-pair seed keeps RANSAC deterministic.
+    cv2.setRNGSeed(i * n + j)
+    _, mask = cv2.findHomography(pa, pb, cv2.RANSAC, _REVISIT_RANSAC_THRESHOLD)
+    if mask is None:
+      return None
+    inl = mask.ravel().astype(bool)
+    if int(inl.sum()) < _REVISIT_MIN_INLIERS:
+      return None
+    return np.asarray(m[inl], dtype=np.int64)
+
+  verified = parallel_map(verify_pair, [i for i, _ in pairs], [j for _, j in pairs])
+  for (i, j), matches in zip(pairs, verified, strict=True):
+    if matches is None:
+      continue
+    for a_idx, b_idx in matches:
+      ra = find((i, int(a_idx)))
+      rb = find((j, int(b_idx)))
+      if ra != rb:
+        parent[ra] = rb
 
   comps: dict[tuple[int, int], dict[int, int]] = {}
   for node in list(parent):
