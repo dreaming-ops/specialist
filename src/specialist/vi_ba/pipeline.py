@@ -7,6 +7,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import cv2
 import gtsam
@@ -98,6 +99,9 @@ _DECODE_MAX_CONCURRENT_CAPTURES = _DECODE_MAX_SEGMENTS * 2
 _decode_capture_slots = threading.BoundedSemaphore(_DECODE_MAX_CONCURRENT_CAPTURES)
 
 
+_DECODE_RETRIES = 2
+
+
 @contextmanager
 def _decode_slot() -> Iterator[None]:
   """Hold one capture slot for the life of a decode."""
@@ -106,6 +110,20 @@ def _decode_slot() -> Iterator[None]:
     yield
   finally:
     _decode_capture_slots.release()
+
+
+def _short_segments(
+  per_file: list[list[tuple[list[Any], list[bytes]]]],
+  bounds: list[int],
+  keyframe_every: int,
+) -> list[tuple[int, int]]:
+  """``(file, segment)`` of each non-final segment that stopped before its end."""
+  return [
+    (file_index, segment)
+    for file_index, file_parts in enumerate(per_file)
+    for segment, part in enumerate(file_parts[:-1])
+    if len(part[0]) != (bounds[segment + 1] - bounds[segment]) // keyframe_every
+  ]
 
 
 def _video_props(path: Path, *props: int) -> list[float]:
@@ -208,12 +226,22 @@ def decode_dual_keyframes(
     for begin, end in zip(bounds, bounds[1:], strict=False)
   ]
   parts = parallel_map(decode_span, spans)
+  # The backend can end a stream mid-segment; a fresh capture over the span reads it.
+  for _ in range(_DECODE_RETRIES):
+    per_file = [parts[f * n_segments : (f + 1) * n_segments] for f in range(len(paths))]
+    short = _short_segments(per_file, bounds, keyframe_every)
+    if not short:
+      break
+    flat = [f * n_segments + s for f, s in short]
+    redone = parallel_map(decode_span, [spans[i] for i in flat])
+    for index, part in zip(flat, redone, strict=True):
+      parts[index] = part
   per_file = [parts[f * n_segments : (f + 1) * n_segments] for f in range(len(paths))]
-  # Only a file's last segment may stop early; elsewhere later timestamps misalign.
-  for file_parts in per_file:
-    for begin, end, part in zip(bounds, bounds[1:], file_parts[:-1], strict=False):
-      if len(part[0]) != (end - begin) // keyframe_every:
-        raise RuntimeError(f"decode stopped early inside segment [{begin}, {end})")
+  for file_index, segment in _short_segments(per_file, bounds, keyframe_every):
+    begin, end = bounds[segment], bounds[segment + 1]
+    raise RuntimeError(
+      f"decode stopped early inside segment [{begin}, {end}) of {paths[file_index]}"
+    )
   gray = [
     [frame for part in file_parts for frame in part[0]] for file_parts in per_file
   ]

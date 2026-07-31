@@ -207,3 +207,26 @@ def test_decode_captures_are_bounded_across_the_whole_process() -> None:
     thread.join()
   assert peak <= pipeline._DECODE_MAX_CONCURRENT_CAPTURES
   assert peak > 0
+
+
+def test_a_short_middle_segment_is_flagged() -> None:
+  """A middle segment that stops early misaligns every later keyframe."""
+  from specialist.vi_ba import pipeline
+
+  per_file = [[([0] * 10, []), ([0] * 9, []), ([0] * 10, [])]]
+  assert pipeline._short_segments(per_file, [0, 100, 200, 300], 10) == [(0, 1)]
+
+
+def test_a_short_final_segment_is_legitimate() -> None:
+  """Only the last segment may run out: that is the end of the stream."""
+  from specialist.vi_ba import pipeline
+
+  per_file = [[([0] * 10, []), ([0] * 3, [])]]
+  assert pipeline._short_segments(per_file, [0, 100, 200], 10) == []
+
+
+def test_full_segments_flag_nothing() -> None:
+  from specialist.vi_ba import pipeline
+
+  per_file = [[([0] * 10, []), ([0] * 10, [])], [([0] * 10, []), ([0] * 10, [])]]
+  assert pipeline._short_segments(per_file, [0, 100, 200], 10) == []
