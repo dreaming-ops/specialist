@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import threading
-from collections.abc import Sequence
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import cv2
@@ -13,11 +14,14 @@ import numpy.typing as npt
 from pupil_apriltags import Detector
 
 from specialist.loader.mei_model import MeiParams, mei_unproject
-from specialist.vi_ba.features import parallel_map
 
 Float64Array = npt.NDArray[np.float64]
 
 _TAG_FAMILY = "tagStandard41h12"
+# Size of the shared detector's own worker pool, the only detection parallelism.
+_DETECT_THREADS = 48
+_detect_lock = threading.Lock()
+_detector: Detector | None = None
 
 __all__ = [
   "TagDetection",
@@ -28,6 +32,40 @@ __all__ = [
   "tag_corners_in_frame",
   "tag_corners_local",
 ]
+
+
+@contextmanager
+def _detect_slot() -> Iterator[None]:
+  """Hold the shared detector's lock unless detectors are per-thread."""
+  with _detect_lock:
+    yield
+
+
+class _OrderedTeardownDetector(Detector):  # type: ignore[misc]
+  """Free the detector before its families, fixing the binding's use-after-free."""
+
+  def __del__(self) -> None:
+    detector = getattr(self, "tag_detector_ptr", None)
+    if detector is None:
+      return
+    self.libc.apriltag_detector_destroy.restype = None
+    self.libc.apriltag_detector_destroy(detector)
+    for family, tf in self.tag_families.items():
+      destroy = getattr(self.libc, f"{family}_destroy")
+      destroy.restype = None
+      destroy(tf)
+    self.tag_detector_ptr = None
+
+
+def _shared_detector() -> Detector:
+  """This thread's detector when parallel, else the process-wide one."""
+  global _detector
+  with _detect_lock:
+    if _detector is None:
+      _detector = _OrderedTeardownDetector(
+        families=_TAG_FAMILY, nthreads=_DETECT_THREADS
+      )
+    return _detector
 
 
 def tag_corners_local(tag_size: float) -> Float64Array:
@@ -150,21 +188,19 @@ def _rotate_prior(
 
 
 def detect_all_tags(frames: Sequence[np.ndarray]) -> list[list[TagDetection]]:
-  """Per-keyframe AprilTag detections, with a thread-local detector per worker."""
-  local = threading.local()
-
-  def detect_frame(frame: np.ndarray) -> list[TagDetection]:
-    detector = getattr(local, "detector", None)
-    if detector is None:
-      detector = local.detector = Detector(families=_TAG_FAMILY)
-    img = frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+  """Per-keyframe AprilTag detections, one detector call at a time."""
+  detector = _shared_detector()
+  with _detect_slot():
     return [
-      TagDetection(
-        tag_id=int(t.tag_id),
-        center=np.asarray(t.center, dtype=np.float64),
-        corners=np.asarray(t.corners, dtype=np.float64),
-      )
-      for t in detector.detect(img)
+      [
+        TagDetection(
+          tag_id=int(t.tag_id),
+          center=np.asarray(t.center, dtype=np.float64),
+          corners=np.asarray(t.corners, dtype=np.float64),
+        )
+        for t in detector.detect(
+          frame if frame.ndim == 2 else cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+        )
+      ]
+      for frame in frames
     ]
-
-  return parallel_map(detect_frame, frames)

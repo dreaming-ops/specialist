@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import gc
 import math
+import resource
+import threading
+import time
 
 import cv2
 import gtsam
@@ -10,6 +14,7 @@ import numpy as np
 import pytest
 
 from specialist.loader.mei_model import MeiParams, mei_project, mei_unproject
+from specialist.vi_ba import tag_detection
 from specialist.vi_ba.tag_detection import (
   TagDetection,
   estimate_lens_T_tag,
@@ -157,3 +162,47 @@ def test_anchor_chain_propagates_prior_through_kf_rotations() -> None:
   )
   assert set(out) == {0, 2}
   assert _rot_geodesic(out[2], cam2_T_tag) < 0.05
+
+
+def test_tag_detection_never_runs_concurrently() -> None:
+  """Two threads inside the native detect at once segfault."""
+  peak = 0
+  live = 0
+  guard = threading.Lock()
+
+  def hold() -> None:
+    nonlocal peak, live
+    with tag_detection._detect_slot():
+      with guard:
+        live += 1
+        peak = max(peak, live)
+      time.sleep(0.005)
+      with guard:
+        live -= 1
+
+  threads = [threading.Thread(target=hold) for _ in range(16)]
+  for thread in threads:
+    thread.start()
+  for thread in threads:
+    thread.join()
+  assert peak == 1
+
+
+def test_the_detector_is_built_once_and_never_dropped() -> None:
+  """Native teardown corrupts the heap beside another detector."""
+  assert tag_detection._shared_detector() is tag_detection._shared_detector()
+
+
+def test_detector_teardown_reclaims_its_memory() -> None:
+  def rss_mb() -> float:
+    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return peak / (1024 * 1024) if peak > 10**7 else peak / 1024
+
+  tag_detection._shared_detector()  # warm any one-off allocation
+  gc.collect()
+  before = rss_mb()
+  for _ in range(3):
+    detector = tag_detection._OrderedTeardownDetector(families="tagStandard41h12")
+    del detector
+    gc.collect()
+  assert rss_mb() - before < 200.0
