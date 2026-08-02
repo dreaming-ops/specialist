@@ -173,7 +173,7 @@ def _select_flow_iter(frames: Sequence[np.ndarray], gpu: bool) -> _FlowIter:
     )
     print(
       f"  [flow] GPU DIS backend: cuda:{engine.device_index}, "
-      f"{engine.batch} pairs/window, kernels warmed in "
+      f"{engine.batch} pairs/window, ready in "
       f"{time.perf_counter() - begin:.1f}s",
       flush=True,
     )
@@ -268,7 +268,16 @@ def dis_flow_track(
       if k >= chunk_end:
         chunk_end = min(k + chunk_size, len(frames))
         flow_stream = flow_iter(frames, range(k, chunk_end))
-      flow_fwd, flow_bwd = next(flow_stream)
+      try:
+        flow_fwd, flow_bwd = next(flow_stream)
+      except Exception as exc:
+        if flow_iter is _iter_dis_flows:
+          raise
+        # The GPU can be lost after priming; finish the lens on the cv2 path.
+        print(f"  [flow] GPU DIS lost ({exc}); using cv2 DIS", flush=True)
+        flow_iter, backend = _iter_dis_flows, "cv2"
+        flow_stream = flow_iter(frames, range(k, chunk_end))
+        flow_fwd, flow_bwd = next(flow_stream)
       prev_xy = per_frame_pts[k - 1]
       disp_fwd = _bilinear_sample_flow(flow_fwd, prev_xy)
       nxt_xy = prev_xy + disp_fwd

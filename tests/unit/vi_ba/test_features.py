@@ -7,6 +7,7 @@ from collections.abc import Sequence
 
 import numpy as np
 import numpy.typing as npt
+import pytest
 
 from specialist.vi_ba.features import (
   Frame,
@@ -250,6 +251,37 @@ def test_cpu_budget_follows_the_cores_the_process_may_run_on() -> None:
   assert 0 < budget <= (os.cpu_count() or budget)
   if (affinity := getattr(os, "sched_getaffinity", None)) is not None:
     assert budget == len(affinity(0))
+
+
+def test_flow_falls_back_to_cv2_when_the_gpu_stream_fails_mid_lens(
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  """Losing the GPU part-way through a lens costs accuracy, not the run."""
+  from specialist.vi_ba import features
+
+  rng = np.random.default_rng(0)
+  base = _textured_image(rng, 120, 160)
+  frames = [np.roll(base, shift, axis=1) for shift in range(6)]
+
+  def dies_on_the_third_pair(
+    frames_in: object, ks: range
+  ) -> object:  # matches _FlowIter
+    for k in ks:
+      if k >= 3:
+        raise RuntimeError("CUDA out of memory")
+      yield from features._iter_dis_flows(frames_in, range(k, k + 1))
+
+  expected, _ = features.dis_flow_track(frames, max_corners=40)
+  original = features._select_flow_iter
+  features._select_flow_iter = lambda _frames, _gpu: dies_on_the_third_pair
+  try:
+    recovered, _ = features.dis_flow_track(frames, max_corners=40, gpu_flow=True)
+  finally:
+    features._select_flow_iter = original
+
+  assert "GPU DIS lost" in capsys.readouterr().out
+  assert len(recovered) == len(expected)
+  assert sum(f.keypoints.shape[0] for f in recovered) > 0
 
 
 class _CountingFrames(Sequence[np.ndarray]):
