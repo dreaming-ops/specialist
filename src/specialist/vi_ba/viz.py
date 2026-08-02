@@ -12,6 +12,8 @@ import numpy.typing as npt
 import rerun as rr
 import rerun.blueprint as rrb
 
+from specialist.vi_ba.geometry import matrices_to_quats, quats_to_matrices
+
 if TYPE_CHECKING:
   from specialist.vi_ba.tag_detection import TagDetection
 
@@ -279,6 +281,13 @@ class CameraVizData:
   # Per-keyframe ``(n, 2, 3)`` lens-to-corner rays, one per firing reprojection factor.
   anchor_obs_lines: list[Float64Array] | None = None
   cross_tracker_lines: list[Float64Array] | None = None
+  # IMU-propagated body series at the IMU sample times; times on the shared clock.
+  highrate_times: Float64Array | None = None
+  highrate_positions: Float64Array | None = None
+  highrate_quats: Float64Array | None = None
+  highrate_vels: Float64Array | None = None
+  # Per-joint pinned finger angles at the frame rate, as (times, angles).
+  joint_frame_angles: dict[str, tuple[Float64Array, Float64Array]] | None = None
 
 
 def _gripper_points(data: CameraVizData) -> Float64Array:
@@ -407,33 +416,79 @@ def _log_tracker(
     trail_times = np.arange(n, dtype=np.float64)
     times = rr.TimeColumn(_TIMELINE, sequence=np.arange(n, dtype=np.int64))
 
-  quats = np.stack([_pose_quaternion_xyzw(p) for p in data.body_poses])
-  rr.send_columns(
-    f"{spatial_root}/body",
-    indexes=[times],
-    columns=rr.Transform3D.columns(translation=pose_translations, quaternion=quats),
-  )
+  hr: tuple[Float64Array, Float64Array, Float64Array] | None = None
+  if (
+    data.highrate_times is not None
+    and data.highrate_positions is not None
+    and data.highrate_quats is not None
+  ):
+    hr = (data.highrate_times, data.highrate_positions, data.highrate_quats)
+  if hr is not None:
+    hr_times, hr_positions, hr_quats = hr
+    rr.send_columns(
+      f"{spatial_root}/body",
+      indexes=[rr.TimeColumn(_TIMELINE, duration=hr_times)],
+      columns=rr.Transform3D.columns(translation=hr_positions, quaternion=hr_quats),
+    )
+  else:
+    quats = np.stack([_pose_quaternion_xyzw(p) for p in data.body_poses])
+    rr.send_columns(
+      f"{spatial_root}/body",
+      indexes=[times],
+      columns=rr.Transform3D.columns(translation=pose_translations, quaternion=quats),
+    )
+  world_T_base_tag: tuple[Float64Array, Float64Array] | None = None
   if urdf_root_frame is not None:
     poses = data.urdf_root_poses
-    urdf_traj = np.asarray(
-      [np.asarray(p.translation(), dtype=np.float64) for p in poses]
-    )
-    urdf_quats = np.stack([_pose_quaternion_xyzw(p) for p in poses])
-    rr.send_columns(
-      f"{spatial_root}/gripper",
-      indexes=[times],
-      columns=rr.Transform3D.columns(
-        translation=urdf_traj,
-        quaternion=urdf_quats,
-        parent_frame=["world"] * len(poses),
-        child_frame=[urdf_root_frame] * len(poses),
-      ),
-    )
+    if hr is not None and data.body_poses and poses:
+      hr_times, hr_positions, hr_quats = hr
+      body_T_base_tag = data.body_poses[0].inverse().compose(poses[0])
+      body_R_base_tag = np.asarray(body_T_base_tag.rotation().matrix())
+      body_t_base_tag = np.asarray(body_T_base_tag.translation())
+      world_R_body = quats_to_matrices(hr_quats)
+      world_t_base_tag = hr_positions + world_R_body @ body_t_base_tag
+      world_R_base_tag = world_R_body @ body_R_base_tag
+      world_T_base_tag = (world_t_base_tag, world_R_base_tag)
+      count = len(world_t_base_tag)
+      rr.send_columns(
+        f"{spatial_root}/gripper",
+        indexes=[rr.TimeColumn(_TIMELINE, duration=hr_times)],
+        columns=rr.Transform3D.columns(
+          translation=world_t_base_tag,
+          quaternion=matrices_to_quats(world_R_base_tag),
+          parent_frame=["world"] * count,
+          child_frame=[urdf_root_frame] * count,
+        ),
+      )
+    else:
+      urdf_traj = np.asarray(
+        [np.asarray(p.translation(), dtype=np.float64) for p in poses]
+      )
+      urdf_quats = np.stack([_pose_quaternion_xyzw(p) for p in poses])
+      rr.send_columns(
+        f"{spatial_root}/gripper",
+        indexes=[times],
+        columns=rr.Transform3D.columns(
+          translation=urdf_traj,
+          quaternion=urdf_quats,
+          parent_frame=["world"] * len(poses),
+          child_frame=[urdf_root_frame] * len(poses),
+        ),
+      )
     if data.joint_angles is not None:
       assert tree is not None  # reached only on the path that set urdf_root_frame
       for joint_name, raw_values in data.joint_angles.items():
         joint = tree.get_joint_by_name(joint_name)
         if joint is None:
+          continue
+        frame_series = (data.joint_frame_angles or {}).get(joint_name)
+        if frame_series is not None:
+          f_times, f_angles = frame_series
+          rr.send_columns(
+            f"{spatial_root}/{joint_name}",
+            indexes=[rr.TimeColumn(_TIMELINE, duration=f_times)],
+            columns=joint.compute_transform_columns([float(a) for a in f_angles]),
+          )
           continue
         first_finite = next((float(v) for v in raw_values if np.isfinite(v)), None)
         if first_finite is None:
@@ -450,19 +505,36 @@ def _log_tracker(
           indexes=[times],
           columns=joint.compute_transform_columns(clean),
         )
+  # Trajectory: the propagated series, or the keyframe polyline without an IMU.
+  if hr is not None:
+    hr_times, hr_positions, _ = hr
+    if world_T_base_tag is not None and data.tcp_in_base_tag is not None:
+      offset = np.asarray(data.tcp_in_base_tag, dtype=np.float64)
+      world_t_base_tag, world_R_base_tag = world_T_base_tag
+      traj_points = world_t_base_tag + world_R_base_tag @ offset
+    else:
+      traj_points = hr_positions
+    traj_times = rr.TimeColumn(_TIMELINE, duration=hr_times)
+    traj_trail_times = hr_times
+  else:
+    traj_points = traj
+    traj_times = times
+    traj_trail_times = trail_times
   rr.send_columns(
     f"{spatial_root}/trajectory",
-    indexes=[times],
+    indexes=[traj_times],
     columns=rr.LineStrips3D.columns(
-      strips=_trail_strips(traj, trail_times, _TRAJECTORY_TRAIL_DURATION),
-      radii=np.full(n, 0.002, dtype=np.float32),
-      colors=_solid_colors(color, n),
+      strips=_trail_strips(traj_points, traj_trail_times, _TRAJECTORY_TRAIL_DURATION),
+      radii=np.full(len(traj_points), 0.002, dtype=np.float32),
+      colors=_solid_colors(color, len(traj_points)),
     ),
   )
   rr.send_columns(
     f"metrics/distance_from_start{metrics_suffix}",
-    indexes=[times],
-    columns=rr.Scalars.columns(scalars=np.linalg.norm(traj - traj[0:1], axis=1)),
+    indexes=[traj_times],
+    columns=rr.Scalars.columns(
+      scalars=np.linalg.norm(traj_points - traj_points[0:1], axis=1)
+    ),
   )
 
   if data.anchor_obs_lines is not None:
@@ -531,14 +603,17 @@ def _log_tracker(
   if data.rear_static_mask_rects:
     _log_static_mask_rects(f"{image_root}/rear", data.rear_static_mask_rects)
 
-  if data.velocities is not None:
-    speeds = np.asarray(
-      [float(np.linalg.norm(v)) for v in data.velocities], dtype=np.float64
-    )
+  velocity: tuple[rr.TimeColumn, Float64Array] | None = None
+  if hr is not None and data.highrate_vels is not None:
+    velocity = (rr.TimeColumn(_TIMELINE, duration=hr[0]), data.highrate_vels)
+  elif data.velocities is not None:
+    velocity = (times, np.stack(data.velocities))
+  if velocity is not None:
+    velocity_times, velocity_values = velocity
     rr.send_columns(
       f"metrics/speed/body{metrics_suffix}",
-      indexes=[times],
-      columns=rr.Scalars.columns(scalars=speeds),
+      indexes=[velocity_times],
+      columns=rr.Scalars.columns(scalars=np.linalg.norm(velocity_values, axis=1)),
     )
   for metric_name, biases in (
     ("gyro_bias", data.gyro_biases),

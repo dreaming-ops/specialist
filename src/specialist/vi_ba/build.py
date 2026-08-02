@@ -23,7 +23,7 @@ except ImportError as _exc:  # pragma: no cover - extension is built by uv sync
 
 Float64Array = npt.NDArray[np.float64]
 
-# Prior sigmas on the first bias state, in gtsam's (accel, gyro) tangent order.
+# Prior on the first bias state, in gtsam's (accel, gyro) tangent order.
 _BIAS_PRIOR_SIGMA_ACCEL = 1.0e-2
 _BIAS_PRIOR_SIGMA_GYRO = 1.0e-3
 

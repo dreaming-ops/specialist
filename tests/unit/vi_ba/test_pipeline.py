@@ -386,3 +386,61 @@ def test_a_band_that_comes_up_short_is_named(
   )
   with pytest.raises(RuntimeError, match="band"):
     frames[0]
+
+
+def test_two_band_cache_serves_a_lookahead_walk_without_thrash(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """A lookahead walk across band edges reloads no band when two bands stay cached."""
+  from specialist.vi_ba import pipeline
+
+  video = tmp_path / "VID_x_00_001.mp4"
+  _write_video(video, n_frames=120, width=64, height=64)
+  loads: list[int] = []
+  real = pipeline.decode_lens_keyframes
+
+  def counting(*a: object, **k: object):
+    loads.append(int(a[3] * 30.0))  # start frame of the band
+    return real(*a, **k)
+
+  monkeypatch.setattr(pipeline, "decode_lens_keyframes", counting)
+  frames = pipeline.BandedKeyframes(
+    video,
+    120,
+    30.0,
+    start=0.0,
+    duration=None,
+    keyframe_every=3,
+    band=10,
+    cache_bands=2,
+  )
+  n = len(frames)
+  for k in range(n):
+    frames[k]
+    frames[min(k + 8, n - 1)]  # lookahead crossing band edges
+  assert len(loads) == len(set(loads)), f"reloaded bands: {loads}"
+
+
+def test_on_band_fires_once_per_band_in_order(tmp_path: Path) -> None:
+  from specialist.vi_ba import pipeline
+
+  video = tmp_path / "VID_x_00_001.mp4"
+  _write_video(video, n_frames=90, width=64, height=64)
+  fired: list[tuple[int, int]] = []
+  frames = pipeline.BandedKeyframes(
+    video,
+    90,
+    30.0,
+    start=0.0,
+    duration=None,
+    keyframe_every=3,
+    band=10,
+    cache_bands=2,
+    on_band=lambda first, band: fired.append((first, len(band))),
+  )
+  for k in range(len(frames)):
+    frames[k]
+  for k in range(len(frames)):  # second walk must not re-fire
+    frames[k]
+  assert [f for f, _ in fired] == [0, 10, 20]
+  assert sum(n for _, n in fired) == len(frames)

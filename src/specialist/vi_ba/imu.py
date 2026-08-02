@@ -10,9 +10,14 @@ import numpy.typing as npt
 
 Float64Array = npt.NDArray[np.float64]
 
+GRAVITY = 9.81
+GRAVITY_WORLD = (0.0, 0.0, -GRAVITY)
+
 _INITIAL_BIAS_SIGMA = 1e-3
 
 __all__ = [
+  "GRAVITY",
+  "GRAVITY_WORLD",
   "ImuSamples",
   "factory_imu_bias",
   "find_stationary_windows",
@@ -60,12 +65,20 @@ def find_stationary_windows(
   return windows
 
 
+# Continuous-time white-noise densities and bias random walks.
+_GYRO_NOISE_SIGMA = 0.0125  # rad/s/sqrt(Hz)
+_ACCEL_NOISE_SIGMA = 0.01  # m/s^2/sqrt(Hz)
+_GYRO_BIAS_RW_SIGMA = 1.0e-7  # rad/s^2/sqrt(Hz)
+_ACCEL_BIAS_RW_SIGMA = 1.0e-7  # m/s^3/sqrt(Hz)
+
+
 def make_preintegration_params(
-  gyro_noise_sigma: float,
-  accel_noise_sigma: float,
-  gyro_bias_rw_sigma: float,
-  accel_bias_rw_sigma: float,
   gravity_world: tuple[float, float, float],
+  *,
+  gyro_noise_sigma: float = _GYRO_NOISE_SIGMA,
+  accel_noise_sigma: float = _ACCEL_NOISE_SIGMA,
+  gyro_bias_rw_sigma: float = _GYRO_BIAS_RW_SIGMA,
+  accel_bias_rw_sigma: float = _ACCEL_BIAS_RW_SIGMA,
 ) -> gtsam.PreintegrationCombinedParams:
   """Combined preintegration params with isotropic noise and bias-walk covariances."""
   params = gtsam.PreintegrationCombinedParams(
@@ -110,14 +123,15 @@ def slice_samples_at_keyframes(
 ) -> list[ImuSamples]:
   """``samples`` split per keyframe pair, window ``i`` over ``(t_i, t_{i+1}]``."""
   t_kf = np.asarray(keyframe_times, dtype=np.float64)
+  bounds = np.searchsorted(samples.t, t_kf, side="right")
   out: list[ImuSamples] = []
   for i in range(len(t_kf) - 1):
-    mask = (samples.t > t_kf[i]) & (samples.t <= t_kf[i + 1])
+    window = slice(bounds[i], bounds[i + 1])
     out.append(
       ImuSamples(
-        t=samples.t[mask],
-        gyro=samples.gyro[mask],
-        accel=samples.accel[mask],
+        t=samples.t[window],
+        gyro=samples.gyro[window],
+        accel=samples.accel[window],
       )
     )
   return out

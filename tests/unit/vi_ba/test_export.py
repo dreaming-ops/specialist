@@ -30,8 +30,8 @@ def _tracker(name: str, n: int = 3) -> PreparedCamera:
   return PreparedCamera(
     name=name,
     body_poses=[_pose(0.1 * k, 0.0, 0.4) for k in range(n)],
-    velocities=[np.zeros(3) for _ in range(n)],
-    biases=[],
+    velocities=[np.full(3, 0.1 * k) for k in range(n)],
+    biases=[gtsam.imuBias.ConstantBias(np.zeros(3), np.zeros(3)) for _ in range(n)],
     preintegrated=[],
     front_lens=_lens(),
     rear_lens=_lens(),
@@ -89,8 +89,12 @@ def test_top_level_keys_are_exactly_the_documented_set() -> None:
     "body_T_base_tag_by_tracker",
     "body_poses_by_tracker",
     "gripper_keypoint_offset",
+    "highrate_by_tracker",
+    "imu_bias_by_tracker",
+    "joint_angles_highrate_by_tracker",
     "joint_angles_by_tracker",
     "kf_times_by_tracker",
+    "velocities_by_tracker",
     "landmarks_by_tracker",
     "lens_by_tracker",
     "ref_anchor_pose_world",
@@ -139,3 +143,27 @@ def test_export_is_serializable_without_a_fallback_encoder() -> None:
   """dumps() without ``default=`` proves no numpy scalar or Path leaked in."""
   text = json.dumps(_raw())
   assert json.loads(text)["anchor_tag_id"] == _REFERENCE_TAG
+
+
+def test_inertial_state_round_trips_per_keyframe() -> None:
+  """The export holds each keyframe's velocity and gyro and accel bias as 3-vectors."""
+  raw = _raw()
+  for name in ("a", "b"):
+    vels = raw["velocities_by_tracker"][name]
+    assert len(vels) == 3 and all(len(v) == 3 for v in vels)
+    biases = raw["imu_bias_by_tracker"][name]
+    assert len(biases) == 3
+    for b in biases:
+      assert set(b) == {"gyro", "accel"}
+      assert len(b["gyro"]) == 3 and len(b["accel"]) == 3
+
+
+def test_highrate_trajectory_is_absent_without_imu() -> None:
+  """A tracker without IMU has no ``highrate_by_tracker`` entry in the JSON export."""
+  raw = _raw()
+  assert raw["highrate_by_tracker"] == {}
+
+
+def test_finger_highrate_series_is_absent_without_finger_angles() -> None:
+  raw = _raw()
+  assert raw["joint_angles_highrate_by_tracker"] == {}

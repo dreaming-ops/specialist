@@ -104,3 +104,24 @@ def build_finger_reproj(
     joint_t_corners=joint_t_corners,
     observations=observations,
   )
+
+
+def pin_angles_to_keyframes(
+  frame_times: Float64Array,
+  frame_angles: Float64Array,
+  keyframe_times: Float64Array,
+  keyframe_angles: Float64Array,
+) -> Float64Array:
+  """Frame angles bent linearly onto keyframe angles; NaN-ended intervals stay raw."""
+  pinned = np.asarray(frame_angles, dtype=np.float64).copy()
+  raw_at_kf = np.interp(keyframe_times, frame_times, frame_angles)
+  offsets = keyframe_angles - raw_at_kf
+  for k in range(len(keyframe_times) - 1):
+    left, right = offsets[k], offsets[k + 1]
+    if not (np.isfinite(left) and np.isfinite(right)):
+      continue
+    span = keyframe_times[k + 1] - keyframe_times[k]
+    inside = (frame_times >= keyframe_times[k]) & (frame_times <= keyframe_times[k + 1])
+    fraction = (frame_times[inside] - keyframe_times[k]) / span
+    pinned[inside] = frame_angles[inside] + (1 - fraction) * left + fraction * right
+  return pinned

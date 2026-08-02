@@ -49,11 +49,6 @@ class FrontendCfg:
 
 @dataclass
 class ImuCfg:
-  # IMU noise sigmas (rad/s/sqrtHz, m/s2/sqrtHz), a few times the measured floor.
-  gyro_noise_sigma: float = 0.0125
-  accel_noise_sigma: float = 0.01
-  gyro_random_walk: float = 1.0e-7
-  accel_random_walk: float = 1.0e-7
   body_R_imu: tuple[tuple[float, float, float], ...] = (
     (0.0, 0.0, -1.0),
     (1.0, 0.0, 0.0),

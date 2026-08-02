@@ -5,10 +5,23 @@ from __future__ import annotations
 import gtsam
 import numpy as np
 import numpy.typing as npt
+from scipy.spatial.transform import Rotation
 
 Float64Array = npt.NDArray[np.float64]
 
 __all__ = ["bounding_box_diagonal", "max_parallax", "path_length"]
+
+
+def quats_to_matrices(quaternions: Float64Array) -> Float64Array:
+  """Batch xyzw quaternions to rotation matrices, ``(n, 4) -> (n, 3, 3)``."""
+  out: Float64Array = Rotation.from_quat(quaternions).as_matrix()
+  return out
+
+
+def matrices_to_quats(matrices: Float64Array) -> Float64Array:
+  """Batch rotation matrices to xyzw quaternions, ``(n, 3, 3) -> (n, 4)``."""
+  out: Float64Array = Rotation.from_matrix(matrices).as_quat()
+  return out
 
 
 def max_parallax(

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -200,11 +200,16 @@ class BandedKeyframes(Sequence[np.ndarray]):
     duration: float | None,
     keyframe_every: int,
     band: int = 256,
+    cache_bands: int = 1,
+    on_band: Callable[[int, list[np.ndarray]], None] | None = None,
   ) -> None:
     self._args = (path, container_frames, fps, start, duration, keyframe_every)
     self._band = band
-    self._first = -1
-    self._cache: list[np.ndarray] = []
+    self._cache_bands = cache_bands
+    self._on_band = on_band
+    self._fired: set[int] = set()
+    # LRU of ``(first, frames)``, most recently used last.
+    self._bands: list[tuple[int, list[np.ndarray]]] = []
     start_frame = int(round(start * fps))
     available = container_frames - start_frame
     total = (
@@ -235,7 +240,12 @@ class BandedKeyframes(Sequence[np.ndarray]):
         f"decode returned {len(gray)} of {expected} keyframes for band "
         f"[{first}, {first + expected}) of {path}"
       )
-    self._first, self._cache = first, gray
+    self._bands.append((first, gray))
+    if len(self._bands) > self._cache_bands:
+      self._bands.pop(0)
+    if self._on_band is not None and first not in self._fired:
+      self._fired.add(first)
+      self._on_band(first, gray)
 
   def __getitem__(self, index: int) -> np.ndarray:  # type: ignore[override]
     if index < 0:
@@ -243,9 +253,13 @@ class BandedKeyframes(Sequence[np.ndarray]):
     if not 0 <= index < self._len:
       raise IndexError(index)
     first = (index // self._band) * self._band
-    if first != self._first:
-      self._load(first)
-    return self._cache[index - first]
+    for slot, (band_first, frames) in enumerate(self._bands):
+      if band_first == first:
+        if slot != len(self._bands) - 1:
+          self._bands.append(self._bands.pop(slot))
+        return frames[index - first]
+    self._load(first)
+    return self._bands[-1][1][index - first]
 
 
 def shared_keyframe_bound(video_path: Path, rear_path: Path) -> int:

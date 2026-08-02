@@ -23,7 +23,9 @@ from specialist.vi_ba.compose import (
 )
 from specialist.vi_ba.configs import Args
 from specialist.vi_ba.export import CameraSummary
+from specialist.vi_ba.finger_kinematics import pin_angles_to_keyframes
 from specialist.vi_ba.geometry import bounding_box_diagonal, path_length
+from specialist.vi_ba.highrate import propagate_highrate
 from specialist.vi_ba.landmark_cull import cull_and_reproject
 from specialist.vi_ba.optimize import OptimizeResult
 from specialist.vi_ba.single_camera import PreparedCamera
@@ -209,6 +211,27 @@ def _build_tracker_outputs(
     if args.log_frames_in_rrd
     else None
   )
+  velocities_final = [
+    np.asarray(result.values.atVector(keys.velocity_key(camera.name, i)))
+    for i in range(camera.n_keyframes)
+  ]
+  highrate_times = highrate_positions = highrate_quats = highrate_vels = None
+  if camera.imu is not None and biases_final:
+    hr_t, hr_p, hr_q, hr_v = propagate_highrate(
+      poses, camera.keyframe_times, velocities_final, biases_final, camera.imu
+    )
+    highrate_times = hr_t - audio_offset
+    highrate_positions = hr_p
+    highrate_quats = hr_q
+    highrate_vels = hr_v
+  joint_frame_angles: dict[str, tuple[np.ndarray, np.ndarray]] = {}
+  if camera.finger_frame_angles:
+    kf_t = np.asarray(camera.keyframe_times, dtype=np.float64)
+    for joint, (f_times, f_angles) in camera.finger_frame_angles.items():
+      solved = np.asarray(camera.joint_angles[joint], dtype=np.float64)
+      n_j = min(len(kf_t), len(solved))
+      pinned = pin_angles_to_keyframes(f_times, f_angles, kf_t[:n_j], solved[:n_j])
+      joint_frame_angles[joint] = (f_times - audio_offset, pinned)
   anchor_lines, cross_lines = _factor_observation_lines(
     camera,
     poses,
@@ -228,10 +251,7 @@ def _build_tracker_outputs(
     rear_keypoints=camera.rear_keypoints if args.log_frames_in_rrd else None,
     front_tag_detections=camera.front_tags_per_kf,
     rear_tag_detections=camera.rear_tags_per_kf,
-    velocities=[
-      np.asarray(result.values.atVector(keys.velocity_key(camera.name, i)))
-      for i in range(camera.n_keyframes)
-    ],
+    velocities=velocities_final,
     gyro_biases=[np.asarray(b.gyroscope(), dtype=np.float64) for b in biases_final],
     accel_biases=[
       np.asarray(b.accelerometer(), dtype=np.float64) for b in biases_final
@@ -252,6 +272,11 @@ def _build_tracker_outputs(
     tcp_in_base_tag=args.gripper.tcp_in_base_tag,
     front_lens_extrinsic=camera.front_lens.body_T_lens,
     rear_lens_extrinsic=camera.rear_lens.body_T_lens,
+    highrate_times=highrate_times,
+    highrate_positions=highrate_positions,
+    highrate_quats=highrate_quats,
+    highrate_vels=highrate_vels,
+    joint_frame_angles=joint_frame_angles or None,
   )
   return viz_data, summary, (front_points, rear_points)
 

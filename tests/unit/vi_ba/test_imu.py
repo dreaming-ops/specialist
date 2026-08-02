@@ -75,13 +75,7 @@ def test_preintegrate_between_keyframes_partitions_the_samples() -> None:
   n = 3000
   t = np.linspace(0.0, 3.0, n, endpoint=False, dtype=np.float64)
   samples = ImuSamples(t=t, gyro=np.zeros((n, 3)), accel=np.tile(-_GRAVITY, (n, 1)))
-  params = make_preintegration_params(
-    gyro_noise_sigma=1e-4,
-    accel_noise_sigma=1e-4,
-    gyro_bias_rw_sigma=1e-5,
-    accel_bias_rw_sigma=1e-5,
-    gravity_world=tuple(_GRAVITY),
-  )
+  params = make_preintegration_params(gravity_world=tuple(_GRAVITY))
   pims = preintegrate_between_keyframes(
     params, samples, np.array([0.0, 1.0, 2.0, 3.0, 4.0]), _ZERO_BIAS
   )
