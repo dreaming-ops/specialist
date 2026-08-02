@@ -14,11 +14,12 @@ import numpy.typing as npt
 from pupil_apriltags import Detector
 
 from specialist.loader.mei_model import MeiParams, mei_unproject
+from specialist.vi_ba.features import cpu_budget
 
 Float64Array = npt.NDArray[np.float64]
 
 _TAG_FAMILY = "tagStandard41h12"
-# Size of the shared detector's own worker pool, the only detection parallelism.
+# Cap on the detector's own thread pool.
 _DETECT_THREADS = 48
 _detect_lock = threading.Lock()
 _detector: Detector | None = None
@@ -63,7 +64,7 @@ def _shared_detector() -> Detector:
   with _detect_lock:
     if _detector is None:
       _detector = _OrderedTeardownDetector(
-        families=_TAG_FAMILY, nthreads=_DETECT_THREADS
+        families=_TAG_FAMILY, nthreads=min(_DETECT_THREADS, cpu_budget())
       )
     return _detector
 

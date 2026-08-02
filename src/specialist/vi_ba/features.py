@@ -38,6 +38,14 @@ class Frame:
   descriptors: np.ndarray
 
 
+def cpu_budget() -> int:
+  """Cores this process may actually run on."""
+  affinity = getattr(os, "sched_getaffinity", None)
+  if affinity is not None:
+    return len(affinity(0))
+  return os.cpu_count() or 8
+
+
 def parallel_map(fn: Callable[..., _R], *iterables: Iterable[object]) -> list[_R]:
   """Ordered ``ThreadPoolExecutor.map`` for native work that releases the GIL."""
   columns = [list(it) for it in iterables]
@@ -45,7 +53,7 @@ def parallel_map(fn: Callable[..., _R], *iterables: Iterable[object]) -> list[_R
     raise ValueError("parallel_map iterables must have equal length")
   if not columns[0]:
     return []
-  workers = min(len(columns[0]), max(4, (os.cpu_count() or 8) // 8))
+  workers = min(len(columns[0]), max(4, cpu_budget() // 8))
   with ThreadPoolExecutor(max_workers=workers) as executor:
     return list(executor.map(fn, *columns))
 
@@ -91,7 +99,7 @@ def set_precompute_concurrency(n: int) -> None:
 
 def _cv2_thread_budget() -> int:
   """cv2's process-global thread count: the CPUs up to 32, or an eighth if larger."""
-  n_cpu = os.cpu_count() or 32
+  n_cpu = cpu_budget()
   return max(n_cpu // 8, min(n_cpu, 32))
 
 
@@ -139,7 +147,7 @@ def _iter_dis_flows(
     return forward, backward
 
   # Concurrent DIS calls help only with spare cores; counts never change the output.
-  n_cpu = os.cpu_count() or 32
+  n_cpu = cpu_budget()
   cv2.setNumThreads(_cv2_thread_budget())
   workers = max(1, n_cpu // 16 // _PRECOMPUTE_CONCURRENCY)
   with ThreadPoolExecutor(max_workers=workers) as executor:
