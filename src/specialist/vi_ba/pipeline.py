@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import ctypes
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -186,6 +186,66 @@ def release_freed_memory() -> None:
     ctypes.CDLL("libc.so.6").malloc_trim(0)
   except (OSError, AttributeError):
     pass
+
+
+class BandedKeyframes(Sequence[np.ndarray]):
+  """A lens's keyframes decoded per band; each jump to an uncached band re-decodes."""
+
+  def __init__(
+    self,
+    path: Path,
+    container_frames: int,
+    fps: float,
+    start: float,
+    duration: float | None,
+    keyframe_every: int,
+    band: int = 256,
+  ) -> None:
+    self._args = (path, container_frames, fps, start, duration, keyframe_every)
+    self._band = band
+    self._first = -1
+    self._cache: list[np.ndarray] = []
+    start_frame = int(round(start * fps))
+    available = container_frames - start_frame
+    total = (
+      available if duration is None else min(int(round(duration * fps)), available)
+    )
+    self._len = len(range(0, max(0, total), keyframe_every))
+
+  def __len__(self) -> int:
+    return self._len
+
+  def _load(self, first: int) -> None:
+    path, container_frames, fps, start, _, keyframe_every = self._args
+    begin = first * keyframe_every
+    span = min(self._band, self._len - first) * keyframe_every
+    gray, _ = decode_lens_keyframes(
+      path,
+      container_frames,
+      fps,
+      start + begin / fps,
+      span / fps,
+      keyframe_every,
+      keep_color=False,
+    )
+    expected = min(self._band, self._len - first)
+    # A short read mid-file passes the decode guard as the lens end, so catch it here.
+    if len(gray) < expected and first + expected < self._len:
+      raise RuntimeError(
+        f"decode returned {len(gray)} of {expected} keyframes for band "
+        f"[{first}, {first + expected}) of {path}"
+      )
+    self._first, self._cache = first, gray
+
+  def __getitem__(self, index: int) -> np.ndarray:  # type: ignore[override]
+    if index < 0:
+      index += self._len
+    if not 0 <= index < self._len:
+      raise IndexError(index)
+    first = (index // self._band) * self._band
+    if first != self._first:
+      self._load(first)
+    return self._cache[index - first]
 
 
 def shared_keyframe_bound(video_path: Path, rear_path: Path) -> int:
@@ -385,7 +445,7 @@ def keyframe_timestamps(
 
 
 def run_lens_frontend(
-  frames: list[np.ndarray],
+  frames: Sequence[np.ndarray],
   params: MeiParams,
   cfg: LensFrontendConfig,
   masks: list[list[Rect]] | None = None,

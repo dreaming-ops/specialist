@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from collections.abc import Callable, Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import TypeVar
@@ -107,7 +107,7 @@ def available_ram() -> int:
     return page * os.sysconf("SC_PHYS_PAGES")
 
 
-def _flow_chunk_size(frames: list[np.ndarray]) -> int:
+def _flow_chunk_size(frames: Sequence[np.ndarray]) -> int:
   """Flow pairs to hold at once, bounded by a fraction of the available memory."""
   n = len(frames)
   if n < 2:
@@ -120,7 +120,7 @@ def _flow_chunk_size(frames: list[np.ndarray]) -> int:
 
 
 def _iter_dis_flows(
-  frames: list[np.ndarray],
+  frames: Sequence[np.ndarray],
   ks: range,
 ) -> Iterator[_FlowPair]:
   """``(forward, backward)`` cv2 DIS flow per pair ``(k-1, k)``, computed ahead."""
@@ -146,10 +146,10 @@ def _iter_dis_flows(
     yield from executor.map(calc_pair, pair_ks)
 
 
-_FlowIter = Callable[[list[np.ndarray], range], Iterator[_FlowPair]]
+_FlowIter = Callable[[Sequence[np.ndarray], range], Iterator[_FlowPair]]
 
 
-def _select_flow_iter(frames: list[np.ndarray], gpu: bool) -> _FlowIter:
+def _select_flow_iter(frames: Sequence[np.ndarray], gpu: bool) -> _FlowIter:
   """The flow backend: the GPU wavefront when requested and runnable, else cv2."""
   if not gpu:
     return _iter_dis_flows
@@ -232,7 +232,7 @@ def _detect_corners(
 
 
 def dis_flow_track(
-  frames: list[np.ndarray],
+  frames: Sequence[np.ndarray],
   max_corners: int,
   masks: list[list[Rect]] | None = None,
   gpu_flow: bool = False,
@@ -250,8 +250,8 @@ def dis_flow_track(
   chunk_size = _flow_chunk_size(frames)
   flow_stream: Iterator[_FlowPair] = iter(())
   chunk_end = 1
-  # Each frame's active points as one packed ``(N, 2)`` float64 array.
-  per_frame_pts: list[Float64Array] = [np.empty((0, 2)) for _ in frames]
+  # Sized by ``len(frames)``: iterating a banded reader decodes the whole lens.
+  per_frame_pts: list[Float64Array] = [np.empty((0, 2)) for _ in range(len(frames))]
   matches_between: list[npt.NDArray[np.int64]] = []
 
   for k, img in enumerate(frames):

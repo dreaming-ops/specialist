@@ -81,14 +81,14 @@ def test_unproject_tracks_batched_slices_match_per_track_scalar() -> None:
 
 
 def _write_video(path: Path, n_frames: int, width: int, height: int) -> None:
-  """Frame ``i`` halves are ``i * 16`` and ``i * 16 + 8`` bright."""
+  """Frame ``i`` halves are ``i * 16`` and ``i * 16 + 8`` bright, wrapping every 16."""
   writer = cv2.VideoWriter(
     str(path), cv2.VideoWriter_fourcc(*"mp4v"), 30.0, (width, height)
   )
   assert writer.isOpened()
   for i in range(n_frames):
-    frame = np.full((height, width, 3), i * 16, dtype=np.uint8)
-    frame[:, width // 2 :] = i * 16 + 8
+    frame = np.full((height, width, 3), (i * 16) % 256, dtype=np.uint8)
+    frame[:, width // 2 :] = (i * 16 + 8) % 256
     writer.write(frame)
   writer.release()
 
@@ -277,3 +277,112 @@ def test_early_stop_names_eof_apart_from_a_failed_decode(
   _report_early_stop(cap, video, 3, container_frames=6)
   assert "decode failed" in capsys.readouterr().out
   cap.release()
+
+
+def test_banded_keyframes_match_the_eager_decode(tmp_path: Path) -> None:
+  """Banded reads match the eager decode frame by frame, and an earlier band reloads."""
+  from specialist.vi_ba.pipeline import (
+    BandedKeyframes,
+    decode_lens_keyframes,
+    shared_keyframe_bound,
+  )
+
+  front = tmp_path / "VID_x_00_001.mp4"
+  rear = tmp_path / "VID_x_10_001.mp4"
+  _write_video(front, n_frames=15, width=64, height=64)
+  _write_video(rear, n_frames=15, width=64, height=64)
+
+  bound = shared_keyframe_bound(front, rear)
+  eager, _ = decode_lens_keyframes(
+    front, bound, 30.0, start=0.0, duration=None, keyframe_every=2, keep_color=False
+  )
+  banded = BandedKeyframes(front, bound, 30.0, 0.0, None, keyframe_every=2, band=3)
+
+  assert len(banded) == len(eager)
+  for i, expected in enumerate(eager):
+    assert np.array_equal(banded[i], expected), f"frame {i} differs"
+  # re-reading an earlier band must reload it rather than return stale pixels
+  assert np.array_equal(banded[0], eager[0])
+
+
+def test_a_transient_short_read_is_retried_and_recovers(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """One spurious mid-segment end costs a re-decode of that span, never the run."""
+  import threading
+
+  from specialist.vi_ba import pipeline
+
+  video = tmp_path / "VID_x_00_001.mp4"
+  _write_video(video, n_frames=220, width=64, height=64)
+  clean, _ = pipeline.decode_lens_keyframes(
+    video, 220, 30.0, start=0.0, duration=None, keyframe_every=3, keep_color=False
+  )
+
+  real_capture = cv2.VideoCapture
+  lock = threading.Lock()
+  fired: list[bool] = []
+
+  class OneShortRead:
+    """Fails once in the span from frame 0, the only span that never seeks."""
+
+    def __init__(self, path: str) -> None:
+      self._cap = real_capture(path)
+      self._seeked = False
+
+    def _fails_now(self) -> bool:
+      with lock:
+        if self._seeked or fired:
+          return False
+        fired.append(True)
+        return True
+
+    def set(self, prop: int, value: float) -> bool:
+      self._seeked = True
+      return bool(self._cap.set(prop, value))
+
+    def get(self, prop: int) -> float:
+      return float(self._cap.get(prop))
+
+    def grab(self) -> bool:
+      return False if self._fails_now() else bool(self._cap.grab())
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+      if self._fails_now():
+        return False, None
+      ok, frame = self._cap.read()
+      return bool(ok), frame
+
+    def release(self) -> None:
+      self._cap.release()
+
+  monkeypatch.setattr(pipeline.cv2, "VideoCapture", OneShortRead)
+  recovered, _ = pipeline.decode_lens_keyframes(
+    video, 220, 30.0, start=0.0, duration=None, keyframe_every=3, keep_color=False
+  )
+
+  assert fired, "the injected short read never fired, so nothing was retried"
+  assert len(recovered) == len(clean)
+  for a, b in zip(recovered, clean, strict=True):
+    assert np.array_equal(a, b)
+
+
+def test_a_band_that_comes_up_short_is_named(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  """The decode guard forgives a band's mid-file short read; a count check names it."""
+  from specialist.vi_ba import pipeline
+
+  video = tmp_path / "VID_x_00_001.mp4"
+  _write_video(video, n_frames=60, width=64, height=64)
+  frames = pipeline.BandedKeyframes(
+    video, 60, 30.0, start=0.0, duration=None, keyframe_every=3, band=4
+  )
+  real = pipeline.decode_lens_keyframes
+  monkeypatch.setattr(
+    pipeline,
+    "decode_lens_keyframes",
+    lambda *a, **k: (real(*a, **k)[0][:-1], []),
+  )
+  with pytest.raises(RuntimeError, match="band"):
+    frames[0]

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+
 import numpy as np
 import numpy.typing as npt
 
@@ -237,3 +239,30 @@ def test_flow_chunk_is_capped_regardless_of_memory() -> None:
 
   frames = [np.zeros((2880, 2880), dtype=np.uint8) for _ in range(4000)]
   assert features._flow_chunk_size(frames) <= features._FLOW_CHUNK_MAX_PAIRS
+
+
+class _CountingFrames(Sequence[np.ndarray]):
+  """Counts every ``__getitem__``, since each banded-reader access is a band decode."""
+
+  def __init__(self, frames: list[np.ndarray]) -> None:
+    self.frames = frames
+    self.counts = [0] * len(frames)
+
+  def __len__(self) -> int:
+    return len(self.frames)
+
+  def __getitem__(self, index: int) -> np.ndarray:  # type: ignore[override]
+    self.counts[index] += 1
+    return self.frames[index]
+
+
+def test_flow_reads_each_frame_a_bounded_number_of_times() -> None:
+  """The camera's walk plus the flow pairs read each frame at most three times."""
+  from specialist.vi_ba import features
+
+  rng = np.random.default_rng(0)
+  frames = _CountingFrames(
+    [rng.integers(0, 255, (64, 64), dtype=np.uint8) for _ in range(6)]
+  )
+  features.dis_flow_track(frames, max_corners=30)
+  assert max(frames.counts) <= 3, frames.counts

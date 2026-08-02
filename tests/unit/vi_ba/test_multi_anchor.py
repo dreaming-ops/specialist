@@ -71,7 +71,7 @@ def test_masks_unmask_exactly_the_configured_anchor_ids(
   """Configured anchor tags stay unmasked; every other tag region is masked."""
   frames = [np.zeros((60, 90), dtype=np.uint8)]
   tags = [[_tag(1, 15.0, 30.0), _tag(0, 45.0, 30.0), _tag(7, 75.0, 30.0)]]
-  blocked = _build_non_anchor_tag_masks(frames, tags, anchor_ids, 2)
+  blocked = _build_non_anchor_tag_masks(frames[0].shape[:2], tags, anchor_ids, 2)
   plane = mask_plane(frames[0].shape[:2], blocked[0])
   for x, value in zip((15, 45, 75), expected, strict=True):
     assert plane[30, x] == value
