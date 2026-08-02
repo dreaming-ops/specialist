@@ -11,6 +11,7 @@ import sysconfig
 from pathlib import Path
 
 GTSAM_TAG = "4.3a0"
+BOOST_TAG = "1.83.0"
 
 
 def _repo_root(start: Path) -> Path:
@@ -64,6 +65,38 @@ def _ensure_headers(gtsam_src: Path) -> None:
   )
 
 
+def _system_boost() -> Path | None:
+  """The prefix whose ``boost/`` headers the compiler will see, if any."""
+  if sys.platform == "darwin":
+    brew = os.popen("brew --prefix 2>/dev/null").read().strip() or "/opt/homebrew"
+    root = Path(brew) / "include"
+  else:
+    root = Path("/usr/include")
+  return root if (root / "boost" / "concept_check.hpp").exists() else None
+
+
+def _ensure_boost(boost_src: Path) -> None:
+  """Fetch the pinned Boost release headers; ``boost/`` is all the build needs."""
+  if (boost_src / "boost" / "concept_check.hpp").exists():
+    return
+  import io  # noqa: PLC0415
+  import tarfile  # noqa: PLC0415
+  import urllib.request  # noqa: PLC0415
+
+  plain = BOOST_TAG.replace(".", "_")
+  url = f"https://archives.boost.io/release/{BOOST_TAG}/source/boost_{plain}.tar.gz"
+  print(f"fetching boost {BOOST_TAG} headers into {boost_src} ...")
+  boost_src.mkdir(parents=True, exist_ok=True)
+  with urllib.request.urlopen(url) as resp:
+    data = io.BytesIO(resp.read())
+  prefix = f"boost_{plain}/boost/"
+  with tarfile.open(fileobj=data, mode="r:gz") as tar:
+    members = [m for m in tar.getmembers() if m.name.startswith(prefix)]
+    for m in members:
+      m.name = m.name[len(f"boost_{plain}/") :]
+    tar.extractall(boost_src, members=members, filter="data")
+
+
 def _detect_gxx_abi_version(gtsam_pkg: Path) -> str | None:
   """Return the ``-fabi-version`` the wheel's pybind11 module embeds, or ``None``."""
   pat = re.compile(rb"pybind11_internals_v\d+_[a-z_]*cxxabi(\d+)")
@@ -100,11 +133,11 @@ def _detect_cxx11_abi(libgtsam: Path) -> str:
   return "0"
 
 
-def _includes(gtsam_src: Path, generated: Path) -> list[str]:
+def _includes(gtsam_src: Path, generated: Path, boost_root: Path) -> list[str]:
   import numpy  # noqa: PLC0415
   import pybind11  # noqa: PLC0415
 
-  inc = [
+  return [
     pybind11.get_include(),
     sysconfig.get_path("include"),
     numpy.get_include(),
@@ -112,13 +145,8 @@ def _includes(gtsam_src: Path, generated: Path) -> list[str]:
     str(generated),
     str(gtsam_src / "gtsam" / "3rdparty" / "Eigen"),
     str(gtsam_src / "gtsam" / "3rdparty" / "metis" / "include"),
+    str(boost_root),
   ]
-  if sys.platform == "darwin":
-    brew = os.popen("brew --prefix 2>/dev/null").read().strip() or "/opt/homebrew"
-    inc.append(f"{brew}/include")
-  else:
-    inc.append("/usr/include")
-  return inc
 
 
 def build(force: bool = False) -> Path:
@@ -153,6 +181,10 @@ def build(force: bool = False) -> Path:
 
   gtsam_pkg, libgtsam = _gtsam_paths()
   _ensure_headers(gtsam_src)
+  boost_root = _system_boost()
+  if boost_root is None:
+    boost_root = repo / ".build" / f"boost-{BOOST_TAG}"
+    _ensure_boost(boost_root)
   cxx = os.environ.get("CXX", "c++")
   cmd = [cxx, "-O3", "-shared", "-std=c++17", "-fPIC"]
   if sys.platform == "darwin":
@@ -165,7 +197,7 @@ def build(force: bool = False) -> Path:
     if sysconfig.get_platform().endswith("x86_64"):
       # The wheel frees the factor's Eigen buffers, so both build for its baseline.
       cmd += ["-march=x86-64"]
-  for inc in _includes(gtsam_src, generated):
+  for inc in _includes(gtsam_src, generated, boost_root):
     cmd += ["-I", inc]
   cmd += [str(src), "-o", str(out), str(libgtsam)]
   # Linux finds libgtsam by rpath; macOS dyld reuses the one `import gtsam` loaded.
