@@ -230,3 +230,29 @@ def test_full_segments_flag_nothing() -> None:
 
   per_file = [[([0] * 10, []), ([0] * 10, [])], [([0] * 10, []), ([0] * 10, [])]]
   assert pipeline._short_segments(per_file, [0, 100, 200], 10) == []
+
+
+def test_per_lens_decode_matches_the_dual_decode(tmp_path: Path) -> None:
+  from specialist.vi_ba.pipeline import decode_lens_keyframes, shared_keyframe_bound
+
+  front = tmp_path / "VID_x_00_001.mp4"
+  rear = tmp_path / "VID_x_10_001.mp4"
+  _write_video(front, n_frames=13, width=64, height=64)
+  _write_video(rear, n_frames=12, width=64, height=64)
+
+  f_gray, r_gray, _, _ = decode_dual_keyframes(
+    front, rear, 30.0, start=0.0, duration=None, keyframe_every=3, keep_color=False
+  )
+  bound = shared_keyframe_bound(front, rear)
+  solo_f, _ = decode_lens_keyframes(
+    front, bound, 30.0, start=0.0, duration=None, keyframe_every=3, keep_color=False
+  )
+  solo_r, _ = decode_lens_keyframes(
+    rear, bound, 30.0, start=0.0, duration=None, keyframe_every=3, keep_color=False
+  )
+  n = min(len(solo_f), len(solo_r))
+  assert len(f_gray) == len(r_gray) == n
+  for a, b in zip(f_gray, solo_f[:n], strict=True):
+    assert np.array_equal(a, b)
+  for a, b in zip(r_gray, solo_r[:n], strict=True):
+    assert np.array_equal(a, b)

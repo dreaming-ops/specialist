@@ -52,13 +52,15 @@ from specialist.vi_ba.init import (
 )
 from specialist.vi_ba.pipeline import (
   LensFrontendConfig,
-  decode_dual_keyframes,
+  decode_lens_keyframes,
   filter_tracks_by_parallax,
   keyframe_timestamps,
   lens_setups,
   probe_capture,
+  release_freed_memory,
   resolve_keyframe_every,
   run_lens_frontend,
+  shared_keyframe_bound,
   triangulate_lens,
   unproject_tracks,
 )
@@ -387,23 +389,16 @@ def _cap_landmarks(
 
 
 def _revisit_tracks(
-  frames: list[np.ndarray],
-  masks: list[list[Rect]],
+  orb: list[Frame],
   body_poses: list[gtsam.Pose3],
   lens: LensSetup,
-  n_features: int,
   base_track_id: int,
   max_center_dist: float,
   min_kf_gap: int,
 ) -> dict[int, dict[int, Float64Array]]:
   """Recover tracks broken by fast lifts via ORB loop closure."""
-  orb = parallel_map(
-    lambda f, m: detect_orb(f, n_features, 20, mask_plane(f.shape[:2], m)),
-    frames,
-    masks,
-  )
   centers = np.asarray([_translation(p.compose(lens.body_T_lens)) for p in body_poses])
-  n = len(frames)
+  n = len(orb)
   parent: dict[tuple[int, int], tuple[int, int]] = {}
 
   def find(x: tuple[int, int]) -> tuple[int, int]:
@@ -744,6 +739,7 @@ class _LensChannel:
   gray: list[np.ndarray]
   tags: list[list[TagDetection]]
   masks: list[list[Rect]] = field(default_factory=list)
+  orb: list[Frame] = field(default_factory=list)
   feature_frames: list[Frame] = field(default_factory=list)
   tracks: dict[int, dict[int, Float64Array]] = field(default_factory=dict)
   kept: dict[int, dict[int, Float64Array]] = field(default_factory=dict)
@@ -761,24 +757,31 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   front_lens, rear_lens = lens_setups(offset_v3, decoded_width)
 
   keyframe_every = resolve_keyframe_every(args.keyframe_every, fps)
-  front_gray, rear_gray, front_color, rear_color = decode_dual_keyframes(
-    args.insv_path,
-    rear_path,
-    fps,
-    args.start,
-    args.duration,
-    keyframe_every,
-    keep_color=args.keep_frames,
-  )
-  n_keyframes = len(front_gray)
+  # One lens at a time: a lens's keyframes are the largest thing prep holds.
+  bound = shared_keyframe_bound(args.insv_path, rear_path)
+
+  def decode_lens(path: Path) -> tuple[list[np.ndarray], list[bytes]]:
+    return decode_lens_keyframes(
+      path, bound, fps, args.start, args.duration, keyframe_every, args.keep_frames
+    )
+
+  front_gray, front_color = decode_lens(args.insv_path)
+  front_tags_per_kf = detect_all_tags(front_gray)
+  n_front = len(front_gray)
+  front_gray = []
+  release_freed_memory()
+  rear_gray, rear_color = decode_lens(rear_path)
+  rear_tags_per_kf = detect_all_tags(rear_gray)
+  n_keyframes = min(n_front, len(rear_gray))
+  rear_gray = []
+  release_freed_memory()
   if n_keyframes < 3:
     raise RuntimeError(f"only {n_keyframes} keyframes decoded — window too short")
+  front_tags_per_kf = front_tags_per_kf[:n_keyframes]
+  rear_tags_per_kf = rear_tags_per_kf[:n_keyframes]
+  front_color = front_color[:n_keyframes]
+  rear_color = rear_color[:n_keyframes]
   keyframe_times = keyframe_timestamps(args.start, fps, keyframe_every, n_keyframes)
-
-  front_tags_per_kf, rear_tags_per_kf = run_two_concurrently(
-    lambda: detect_all_tags(front_gray),
-    lambda: detect_all_tags(rear_gray),
-  )
 
   body_R_imu = np.asarray(args.imu.body_R_imu, dtype=np.float64)
   imu = _body_imu_samples(data, body_R_imu)
@@ -813,15 +816,10 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   for tag_id, obs in obs_by_tag.items():
     _print_anchor_geometry(slot, tag_id, lens_sides, obs)
 
-  front = _LensChannel(setup=front_lens, gray=front_gray, tags=front_tags_per_kf)
-  rear = _LensChannel(setup=rear_lens, gray=rear_gray, tags=rear_tags_per_kf)
+  front = _LensChannel(setup=front_lens, gray=[], tags=front_tags_per_kf)
+  rear = _LensChannel(setup=rear_lens, gray=[], tags=rear_tags_per_kf)
   anchor_tag_ids = set(obs_by_tag)
-  for ch in (front, rear):
-    ch.masks = _build_non_anchor_tag_masks(
-      ch.gray, ch.tags, anchor_tag_ids, args.frontend.mask_tag_pad
-    )
   static_rects = list(args.frontend.mask_rear_rects)
-  _apply_static_mask_rects(rear.masks, static_rects, rear.gray[0].shape[:2])
 
   cfg = LensFrontendConfig(
     n_features=args.frontend.orb_n_features,
@@ -829,22 +827,32 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     max_half_angle=args.frontend.max_half_angle,
     gpu_flow=args.frontend.gpu_flow,
   )
-  (front.feature_frames, front.tracks), (rear.feature_frames, rear.tracks) = (
-    run_two_concurrently(
-      lambda: run_lens_frontend(
-        front.gray,
-        front.setup.params,
-        cfg,
-        masks=front.masks,
-      ),
-      lambda: run_lens_frontend(
-        rear.gray,
-        rear.setup.params,
-        cfg,
-        masks=rear.masks,
-      ),
+
+  def run_lens(ch: _LensChannel, path: Path) -> None:
+    """Decode this lens, take what downstream needs from its pixels, then drop them."""
+    ch.gray = decode_lens(path)[0][:n_keyframes]
+    ch.masks = _build_non_anchor_tag_masks(
+      ch.gray, ch.tags, anchor_tag_ids, args.frontend.mask_tag_pad
     )
-  )
+    if ch is rear:
+      _apply_static_mask_rects(ch.masks, static_rects, ch.gray[0].shape[:2])
+    ch.feature_frames, ch.tracks = run_lens_frontend(
+      ch.gray, ch.setup.params, cfg, masks=ch.masks
+    )
+    if ch is front and args.frontend.revisit:
+      ch.orb = parallel_map(
+        lambda f, m: detect_orb(
+          f, args.frontend.orb_n_features, 20, mask_plane(f.shape[:2], m)
+        ),
+        ch.gray,
+        ch.masks,
+      )
+    ch.gray = []
+    ch.masks = []
+    release_freed_memory()
+
+  run_lens(front, args.insv_path)
+  run_lens(rear, rear_path)
   for ch in (front, rear):
     ch.kept = {
       t: o for t, o in ch.tracks.items() if len(o) >= args.frontend.min_track_length
@@ -999,11 +1007,9 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     revisits: dict[int, dict[int, Float64Array]] = {}
     if args.frontend.revisit:
       revisits = _revisit_tracks(
-        front.gray,
-        front.masks,
+        front.orb,
         body_poses,
         front_lens,
-        args.frontend.orb_n_features,
         max(front.kept, default=0),
         args.frontend.loop_closure_max_dist,
         args.frontend.loop_closure_min_kf_gap,

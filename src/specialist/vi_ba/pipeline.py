@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -164,6 +165,104 @@ def capture_duration(video_path: Path) -> float:
   """Seconds decodable from a capture, bounded by the shorter lens file."""
   rear_path, fps, _ = probe_capture(video_path)
   return _shared_frame_count(video_path, rear_path) / fps
+
+
+def release_freed_memory() -> None:
+  """Return freed heap to the OS; a no-op without glibc's ``malloc_trim``."""
+  try:
+    ctypes.CDLL("libc.so.6").malloc_trim(0)
+  except (OSError, AttributeError):
+    pass
+
+
+def shared_keyframe_bound(video_path: Path, rear_path: Path) -> int:
+  """Frames in both lens files: the bound that keeps a per-lens decode index-aligned."""
+  return _shared_frame_count(video_path, rear_path)
+
+
+def decode_lens_keyframes(
+  video_path: Path,
+  container_frames: int,
+  fps: float,
+  start: float,
+  duration: float | None,
+  keyframe_every: int,
+  keep_color: bool,
+) -> tuple[list[np.ndarray], list[bytes]]:
+  """One lens file's keyframes, at most ``container_frames`` so both lenses align."""
+  paths = [video_path]
+  start_frame = int(round(start * fps))
+  available = container_frames - start_frame
+  if duration is None:
+    total_frames = available
+  else:
+    total_frames = min(int(round(duration * fps)), available)
+
+  def decode_span(
+    span: tuple[Path, int, int],
+  ) -> tuple[list[np.ndarray], list[bytes]]:
+    path, begin, end = span
+    gray_frames: list[np.ndarray] = []
+    color_frames: list[bytes] = []
+    with _decode_slot():
+      cap = cv2.VideoCapture(str(path))
+      if start_frame + begin > 0:
+        cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame + begin)
+      for i in range(begin, end):
+        # Only keyframes pay the YUV->BGR retrieve(); the rest only grab().
+        if i % keyframe_every != 0:
+          if not cap.grab():
+            break
+          continue
+        ok, frame = cap.read()
+        if not ok:
+          break
+        gray_frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+        if keep_color:
+          color_frames.append(
+            cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
+          )
+      cap.release()
+    return gray_frames, color_frames
+
+  n_segments = min(
+    _DECODE_MAX_SEGMENTS,
+    max(1, total_frames // (_DECODE_MIN_KEYFRAMES_PER_SEGMENT * keyframe_every)),
+  )
+  # Split points floor onto the keyframe stride, so every segment begins on a keyframe.
+  bounds = [
+    round(total_frames * seg / n_segments) // keyframe_every * keyframe_every
+    for seg in range(n_segments)
+  ] + [total_frames]
+  spans = [
+    (path, begin, end)
+    for path in paths
+    for begin, end in zip(bounds, bounds[1:], strict=False)
+  ]
+  parts = parallel_map(decode_span, spans)
+  # The backend can end a stream mid-segment; a fresh capture over the span reads it.
+  for _ in range(_DECODE_RETRIES):
+    per_file = [parts[f * n_segments : (f + 1) * n_segments] for f in range(len(paths))]
+    short = _short_segments(per_file, bounds, keyframe_every)
+    if not short:
+      break
+    flat = [f * n_segments + s for f, s in short]
+    redone = parallel_map(decode_span, [spans[i] for i in flat])
+    for index, part in zip(flat, redone, strict=True):
+      parts[index] = part
+  per_file = [parts[f * n_segments : (f + 1) * n_segments] for f in range(len(paths))]
+  for file_index, segment in _short_segments(per_file, bounds, keyframe_every):
+    begin, end = bounds[segment], bounds[segment + 1]
+    raise RuntimeError(
+      f"decode stopped early inside segment [{begin}, {end}) of {paths[file_index]}"
+    )
+  gray = [
+    [frame for part in file_parts for frame in part[0]] for file_parts in per_file
+  ]
+  color = [
+    [frame for part in file_parts for frame in part[1]] for file_parts in per_file
+  ]
+  return gray[0], color[0]
 
 
 def decode_dual_keyframes(

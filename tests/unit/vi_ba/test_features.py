@@ -218,3 +218,22 @@ def test_rect_mask_with_no_rectangles_keeps_everything_in_frame() -> None:
 
   xy = np.array([[0.0, 0.0], [9.0, 9.0], [-1.0, 5.0], [5.0, 99.0]])
   assert list(_mask_ok(xy, [], (10, 10))) == [True, True, False, False]
+
+
+def test_flow_chunk_budget_tracks_available_memory() -> None:
+  """Total RAM over-commits: decoded keyframes and co-tenants already hold memory."""
+  from specialist.vi_ba import features
+
+  frames = [np.zeros((2880, 2880), dtype=np.uint8) for _ in range(400)]
+  per_pair = 2880 * 2880 * 2 * 4 * 2
+  cached = features._flow_chunk_size(frames) * per_pair
+  assert 0 < cached <= max(features.available_ram() * 0.25, per_pair)
+  assert features.available_ram() > 0
+
+
+def test_flow_chunk_is_capped_regardless_of_memory() -> None:
+  """The cap is ``_FLOW_CHUNK_MAX_PAIRS`` however much memory the host has."""
+  from specialist.vi_ba import features
+
+  frames = [np.zeros((2880, 2880), dtype=np.uint8) for _ in range(4000)]
+  assert features._flow_chunk_size(frames) <= features._FLOW_CHUNK_MAX_PAIRS
