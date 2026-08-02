@@ -256,3 +256,24 @@ def test_per_lens_decode_matches_the_dual_decode(tmp_path: Path) -> None:
     assert np.array_equal(a, b)
   for a, b in zip(r_gray, solo_r[:n], strict=True):
     assert np.array_equal(a, b)
+
+
+def test_early_stop_names_eof_apart_from_a_failed_decode(
+  tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+  """A failed decode and end of stream look alike, so position tells them apart."""
+  from specialist.vi_ba.pipeline import _report_early_stop
+
+  video = tmp_path / "VID_x_00_001.mp4"
+  _write_video(video, n_frames=6, width=64, height=64)
+  cap = cv2.VideoCapture(str(video))
+  while cap.grab():
+    pass
+  _report_early_stop(cap, video, 6, container_frames=6)
+  assert "end of stream" in capsys.readouterr().out
+
+  cap.set(cv2.CAP_PROP_POS_FRAMES, 2)
+  cap.grab()
+  _report_early_stop(cap, video, 3, container_frames=6)
+  assert "decode failed" in capsys.readouterr().out
+  cap.release()
