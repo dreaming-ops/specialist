@@ -191,3 +191,30 @@ def test_chain_tracks_unrelated_pairs_produce_separate_tracks() -> None:
   assert len(tracks) == 2
   lengths = sorted(len(obs) for obs in tracks.values())
   assert lengths == [2, 2]
+
+
+def test_rect_mask_matches_the_plane_it_replaces() -> None:
+  """The blocked-rectangle point test agrees exactly with the full-resolution plane."""
+  from specialist.vi_ba.features import _mask_ok, mask_plane
+
+  shape = (40, 60)
+  blocked = [(5, 5, 20, 15), (30, 25, 55, 38)]
+  plane = mask_plane(shape, blocked)
+
+  ys, xs = np.mgrid[-3 : shape[0] + 3, -3 : shape[1] + 3]
+  xy = np.stack([xs.ravel(), ys.ravel()], axis=1).astype(np.float64)
+
+  ix = np.round(xy[:, 0]).astype(np.int64)
+  iy = np.round(xy[:, 1]).astype(np.int64)
+  inside = (ix >= 0) & (ix < shape[1]) & (iy >= 0) & (iy < shape[0])
+  from_plane = np.zeros(len(xy), dtype=bool)
+  from_plane[inside] = plane[iy[inside], ix[inside]] > 0
+
+  assert np.array_equal(_mask_ok(xy, blocked, shape), from_plane)
+
+
+def test_rect_mask_with_no_rectangles_keeps_everything_in_frame() -> None:
+  from specialist.vi_ba.features import _mask_ok
+
+  xy = np.array([[0.0, 0.0], [9.0, 9.0], [-1.0, 5.0], [5.0, 99.0]])
+  assert list(_mask_ok(xy, [], (10, 10))) == [True, True, False, False]

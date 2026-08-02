@@ -14,6 +14,7 @@ import numpy as np
 import numpy.typing as npt
 
 Float64Array = npt.NDArray[np.float64]
+Rect = tuple[int, int, int, int]
 _FlowPair = tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]
 _R = TypeVar("_R")
 
@@ -170,14 +171,24 @@ def _in_bounds(xy: Float64Array, h: int, w: int) -> npt.NDArray[np.bool_]:
   return (xy[:, 0] >= 1.0) & (xy[:, 0] < w - 1) & (xy[:, 1] >= 1.0) & (xy[:, 1] < h - 1)
 
 
-def _mask_ok(xy: Float64Array, mask: np.ndarray) -> npt.NDArray[np.bool_]:
+def mask_plane(shape: tuple[int, int], blocked: list[Rect]) -> np.ndarray:
+  """The OpenCV mask of a rectangle list: 255 keeps a pixel, 0 excludes it."""
+  plane = np.full(shape, 255, dtype=np.uint8)
+  for x0, y0, x1, y1 in blocked:
+    plane[y0:y1, x0:x1] = 0
+  return plane
+
+
+def _mask_ok(
+  xy: Float64Array, blocked: list[Rect], shape: tuple[int, int]
+) -> npt.NDArray[np.bool_]:
   ix = np.round(xy[:, 0]).astype(np.int64)
   iy = np.round(xy[:, 1]).astype(np.int64)
-  h, w = mask.shape
+  h, w = shape
   ok = (ix >= 0) & (ix < w) & (iy >= 0) & (iy < h)
-  vals = np.zeros(len(xy), dtype=np.uint8)
-  vals[ok] = mask[iy[ok], ix[ok]]
-  return vals > 0
+  for x0, y0, x1, y1 in blocked:
+    ok &= ~((ix >= x0) & (ix < x1) & (iy >= y0) & (iy < y1))
+  return ok
 
 
 # Shi-Tomasi seeding: response fraction, spacing (px) and the half-budget reseed.
@@ -212,7 +223,7 @@ def _detect_corners(
 def dis_flow_track(
   frames: list[np.ndarray],
   max_corners: int,
-  masks: list[np.ndarray] | None = None,
+  masks: list[list[Rect]] | None = None,
   gpu_flow: bool = False,
 ) -> tuple[list[Frame], list[npt.NDArray[np.int64]]]:
   """Sparse tracks propagated by DIS dense flow, seeded by Shi-Tomasi with redetect."""
@@ -249,7 +260,7 @@ def dis_flow_track(
       h, w = img.shape[:2]
       ok &= _in_bounds(nxt_xy, h, w)
       if mask_k is not None:
-        ok &= _mask_ok(nxt_xy, mask_k)
+        ok &= _mask_ok(nxt_xy, mask_k, img.shape[:2])
       sel = np.flatnonzero(ok)
       per_frame_pts[k] = nxt_xy[sel]
       matches_between.append(
@@ -269,10 +280,7 @@ def dis_flow_track(
 
     n_active = per_frame_pts[k].shape[0]
     if k == 0 or n_active < int(round(_REDETECT_RATIO * max_corners)):
-      if mask_k is None:
-        redetect_mask = np.full(img.shape[:2], 255, dtype=np.uint8)
-      else:
-        redetect_mask = mask_k.copy()
+      redetect_mask = mask_plane(img.shape[:2], mask_k or [])
       for p in per_frame_pts[k]:
         cv2.circle(
           redetect_mask,

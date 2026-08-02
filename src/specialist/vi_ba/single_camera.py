@@ -23,7 +23,14 @@ from specialist.vi_ba.configs import (
   GripperCfg,
   ImuCfg,
 )
-from specialist.vi_ba.features import Frame, detect_orb, match_pair, parallel_map
+from specialist.vi_ba.features import (
+  Frame,
+  Rect,
+  detect_orb,
+  mask_plane,
+  match_pair,
+  parallel_map,
+)
 from specialist.vi_ba.finger_kinematics import FingerReproj, build_finger_reproj
 from specialist.vi_ba.imu import (
   ImuSamples,
@@ -200,11 +207,12 @@ def _build_non_anchor_tag_masks(
   tags_per_kf: list[list[TagDetection]],
   exclude_tag_ids: set[int],
   pad_px: int,
-) -> list[np.ndarray]:
-  masks: list[np.ndarray] = []
+) -> list[list[Rect]]:
+  """Per keyframe, the padded boxes of every tag not in ``exclude_tag_ids``."""
+  blocked: list[list[Rect]] = []
   for frame, tags in zip(frames, tags_per_kf, strict=True):
     h, w = frame.shape[:2]
-    mask = np.full((h, w), 255, dtype=np.uint8)
+    rects: list[Rect] = []
     for tag in tags:
       if int(tag.tag_id) in exclude_tag_ids:
         continue
@@ -214,17 +222,17 @@ def _build_non_anchor_tag_masks(
       x1 = min(int(np.ceil(corners[:, 0].max())) + pad_px, w)
       y1 = min(int(np.ceil(corners[:, 1].max())) + pad_px, h)
       if x1 > x0 and y1 > y0:
-        mask[y0:y1, x0:x1] = 0
-    masks.append(mask)
-  return masks
+        rects.append((x0, y0, x1, y1))
+    blocked.append(rects)
+  return blocked
 
 
 def _apply_static_mask_rects(
-  masks: list[np.ndarray], rects: list[tuple[int, int, int, int]]
+  blocked: list[list[Rect]], rects: list[Rect], shape: tuple[int, int]
 ) -> None:
-  if not rects or not masks:
+  if not rects or not blocked:
     return
-  h, w = masks[0].shape[:2]
+  h, w = shape
   for x1, y1, x2, y2 in rects:
     x1c, y1c = max(0, x1), max(0, y1)
     x2c, y2c = min(w, x2), min(h, y2)
@@ -233,8 +241,8 @@ def _apply_static_mask_rects(
         f"mask_rear_rects entry {(x1, y1, x2, y2)} is empty after clamping to the "
         f"{w}x{h} frame — check the coordinate order (x1 y1 x2 y2) and bounds"
       )
-    for m in masks:
-      m[y1c:y2c, x1c:x2c] = 0
+    for frame_rects in blocked:
+      frame_rects.append((x1c, y1c, x2c, y2c))
 
 
 # Anchor-detection lens side: name, lens, per-kf tag detections, gyro increments.
@@ -380,7 +388,7 @@ def _cap_landmarks(
 
 def _revisit_tracks(
   frames: list[np.ndarray],
-  masks: list[np.ndarray],
+  masks: list[list[Rect]],
   body_poses: list[gtsam.Pose3],
   lens: LensSetup,
   n_features: int,
@@ -389,7 +397,11 @@ def _revisit_tracks(
   min_kf_gap: int,
 ) -> dict[int, dict[int, Float64Array]]:
   """Recover tracks broken by fast lifts via ORB loop closure."""
-  orb = parallel_map(lambda f, m: detect_orb(f, n_features, 20, m), frames, masks)
+  orb = parallel_map(
+    lambda f, m: detect_orb(f, n_features, 20, mask_plane(f.shape[:2], m)),
+    frames,
+    masks,
+  )
   centers = np.asarray([_translation(p.compose(lens.body_T_lens)) for p in body_poses])
   n = len(frames)
   parent: dict[tuple[int, int], tuple[int, int]] = {}
@@ -731,7 +743,7 @@ class _LensChannel:
   setup: LensSetup
   gray: list[np.ndarray]
   tags: list[list[TagDetection]]
-  masks: list[np.ndarray] = field(default_factory=list)
+  masks: list[list[Rect]] = field(default_factory=list)
   feature_frames: list[Frame] = field(default_factory=list)
   tracks: dict[int, dict[int, Float64Array]] = field(default_factory=dict)
   kept: dict[int, dict[int, Float64Array]] = field(default_factory=dict)
@@ -809,7 +821,7 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
       ch.gray, ch.tags, anchor_tag_ids, args.frontend.mask_tag_pad
     )
   static_rects = list(args.frontend.mask_rear_rects)
-  _apply_static_mask_rects(rear.masks, static_rects)
+  _apply_static_mask_rects(rear.masks, static_rects, rear.gray[0].shape[:2])
 
   cfg = LensFrontendConfig(
     n_features=args.frontend.orb_n_features,
