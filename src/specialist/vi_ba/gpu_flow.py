@@ -16,11 +16,12 @@ _FlowPair = tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]
 
 __all__ = ["unavailable_reason", "prime", "shutdown"]
 
-# Per-stream batch from free memory, budgets in bytes; GPUs under _MIN_FREE stay idle.
+# Batch from card memory and frame area, budgets in bytes; skip a GPU under _MIN_FREE.
 _MAX_BATCH = 24
 _MIN_FREE = 8 * 2**30
 _RESERVE = 3 * 2**30
 _PAIR_MEMORY = 1.15 * 2**30
+_REFERENCE_PIXELS = 2880 * 2880
 
 # Distinct GPUs one process claims; past the cap, extra streams share the most-free GPU.
 _MAX_GPUS = 8
@@ -58,9 +59,9 @@ def _import_backend() -> tuple[Any, Any]:
   return _backend
 
 
-def _device_batch(free: float) -> int:
-  """Largest per-stream batch that fits ``free`` bytes of free memory, capped."""
-  batch = int((free - _RESERVE) / _PAIR_MEMORY)
+def _device_batch(total: float, pair_memory: float) -> int:
+  """Per-stream batch for a ``total``-byte card at ``pair_memory`` per pair, capped."""
+  batch = int((total - _RESERVE) / pair_memory)
   return max(0, min(_MAX_BATCH, batch))
 
 
@@ -76,37 +77,35 @@ def unavailable_reason() -> str | None:
     if not torch.cuda.is_available():
       return "torch reports no CUDA device"
     for i in range(torch.cuda.device_count()):
-      free = torch.cuda.mem_get_info(i)[0]
-      if free >= _MIN_FREE and _device_batch(free) >= 1:
+      free, total = torch.cuda.mem_get_info(i)
+      if free >= _MIN_FREE and _device_batch(total, _PAIR_MEMORY) >= 1:
         return None
     return "no GPU has enough free memory"
   except Exception as exc:
     return f"CUDA probe failed: {exc!r}"
 
 
-def _claim_device() -> tuple[int, int]:
+def _claim_device(pair_memory: float) -> tuple[int, int]:
   """``(gpu, batch)``, preferring unclaimed GPUs by free memory; raises if none fits."""
   torch = _import_backend()[0]
   if not torch.cuda.is_available():
     raise RuntimeError("CUDA not available")
   with _claim_lock:
-    free = {
-      i: torch.cuda.mem_get_info(i)[0]
+    info = {
+      i: torch.cuda.mem_get_info(i)
       for i in range(torch.cuda.device_count())
       if i not in _bad
     }
-    unclaimed = [
-      i
-      for i in free
-      if i not in _claimed and free[i] >= _MIN_FREE and _device_batch(free[i]) >= 1
-    ]
-    shareable = [i for i in free if _device_batch(free[i]) >= 1]
+    free = {i: f for i, (f, _) in info.items()}
+    batch = {i: _device_batch(t, pair_memory) for i, (_, t) in info.items()}
+    shareable = [i for i in free if free[i] >= _MIN_FREE and batch[i] >= 1]
     if not shareable:
       raise RuntimeError("no GPU has enough free memory for the flow backend")
+    unclaimed = [i for i in shareable if i not in _claimed]
     pool = unclaimed if unclaimed and len(_claimed) < _MAX_GPUS else shareable
     idx = max(pool, key=lambda i: free[i])
     _claimed[idx] = _claimed.get(idx, 0) + 1
-    return idx, _device_batch(free[idx])
+    return idx, batch[idx]
 
 
 def _drop_claim(idx: int) -> None:
@@ -248,8 +247,8 @@ class _Worker(threading.Thread):
 class _Engine:
   """One lens stream bound to one GPU through a single worker."""
 
-  def __init__(self, fwd_vr: int, bwd_vr: int):
-    self.device_index, batch = _claim_device()
+  def __init__(self, fwd_vr: int, bwd_vr: int, pair_memory: float):
+    self.device_index, batch = _claim_device(pair_memory)
     self._worker = _Worker(self.device_index, batch, fwd_vr, bwd_vr)
 
   @property
@@ -302,15 +301,17 @@ class _Engine:
 
 def prime(frames: Sequence[np.ndarray], fwd_vr: int, bwd_vr: int) -> _Engine:
   """A warm engine for ``frames``' shape, trying the next-most-free GPU on failure."""
-  key = (tuple(frames[0].shape[:2]), fwd_vr, bwd_vr)
+  h, w = frames[0].shape[:2]
+  key = ((h, w), fwd_vr, bwd_vr)
   warm: _Engine | None = getattr(_stream, "engine", None)
   if warm is not None and getattr(_stream, "key", None) == key and warm in _engines:
     return warm
   torch = _import_backend()[0]
   tries = torch.cuda.device_count() if torch.cuda.is_available() else 1
   last_exc: Exception | None = None
+  pair_memory = _PAIR_MEMORY * (h * w) / _REFERENCE_PIXELS
   for _ in range(tries):
-    engine = _Engine(fwd_vr, bwd_vr)  # raises when no GPU is claimable
+    engine = _Engine(fwd_vr, bwd_vr, pair_memory)  # raises when no GPU is claimable
     try:
       engine.prime(frames)
     except Exception as exc:
