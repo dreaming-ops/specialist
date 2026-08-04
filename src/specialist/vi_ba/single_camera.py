@@ -265,7 +265,7 @@ def _detect_anchor_obs(
   tag_size: float,
   lens_sides: tuple[_LensSide, ...],
 ) -> dict[int, dict[str, gtsam.Pose3]]:
-  """``{kf: {side: lens_T_tag}}`` for one anchor id across both lens sides."""
+  """``{kf: {side: lens_T_tag}}`` for one anchor id over the given lenses, ungated."""
   obs: dict[int, dict[str, gtsam.Pose3]] = {}
   for side, lens, tags, rotations in lens_sides:
     for kf, pose in lens_T_tag_per_kf(
@@ -919,7 +919,7 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   cfg = LensFrontendConfig(
     n_features=args.frontend.orb_n_features,
     ransac_threshold=args.frontend.ransac_threshold,
-    max_half_angle=args.frontend.max_half_angle,
+    max_half_angle=args.frontend.feature_max_half_angle,
     gpu_flow=args.frontend.gpu_flow,
     flow_scale=args.frontend.flow_scale,
   )

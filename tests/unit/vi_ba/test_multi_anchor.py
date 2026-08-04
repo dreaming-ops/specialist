@@ -393,7 +393,7 @@ def _pinned_solve_fixture(
 
 
 def _assert_no_corner_point_variables(values: gtsam.Values) -> None:
-  """Corner factors are unary on the observing pose; no corner point is solved."""
+  """Solved values hold no landmark points; freed corners have their own symbol char."""
   key_chars = {gtsam.Symbol(k).chr() for k in values.keys()}
   assert ord("A") not in key_chars
 
@@ -439,7 +439,9 @@ def test_sighting_bearing_falls_back_to_detection_ray() -> None:
   lens_T_tag = _pose(0.0, 0.0, 0.0, 0.1, 0.0, 0.9)
   det = _project_tag(gtsam.Pose3(), narrow_mei_params(), lens_T_tag, 1, 0.1)
   with_obs = _sighting_bearing({0: {"front": lens_T_tag}}, 0, "front", det, lens)
-  assert np.allclose(with_obs, np.asarray(lens_T_tag.translation()))
+  direction = np.asarray(lens_T_tag.translation())
+  assert np.allclose(with_obs, direction / np.linalg.norm(direction))
+  assert np.isclose(np.linalg.norm(with_obs), 1.0)
   fallback = _sighting_bearing({}, 0, "front", det, lens)
   assert np.allclose(fallback, tag_center_bearing(det, lens.params))
 

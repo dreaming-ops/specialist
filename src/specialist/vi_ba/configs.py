@@ -31,7 +31,9 @@ class FrontendCfg:
   flow_scale: float = 0.25
 
   min_track_length: int = 3
-  max_half_angle: float = float(np.deg2rad(70.0))
+  # Bearing half-angle (rad) past which the essential-matrix RANSAC drops a match.
+  feature_max_half_angle: float = float(np.deg2rad(70.0))
+
   reproj_sigma: float = 0.5
   # Padding (px) around a masked tag's detected box.
   mask_tag_pad: int = 45
@@ -79,6 +81,13 @@ class AnchorCfg:
 
   # The anchor's four metric corners reproject into the bundle and pin absolute scale.
   corner_reproj_sigma: float = 1.5
+  # Co-optimize secondary anchor corners as points held near the seed by a loose prior.
+  free_secondary: bool = True
+
+  # Sigma (m) of the loose prior holding each freed corner near its seed.
+  secondary_corner_prior_sigma: float = 0.05
+  # Drop anchor sightings past this bearing half-angle (rad).
+  max_half_angle: float = float(np.deg2rad(75.0))
 
 
 @dataclass
