@@ -12,6 +12,20 @@ Float64Array = npt.NDArray[np.float64]
 __all__ = ["bounding_box_diagonal", "max_parallax", "path_length"]
 
 
+def _canonical(quats: Float64Array) -> Float64Array:
+  """Every quaternion as its ``w >= 0`` representative."""
+  out: Float64Array = np.where((quats[:, 3] < 0.0)[:, None], -quats, quats)
+  return out
+
+
+def quat_xyzw(rotation: gtsam.Rot3) -> Float64Array:
+  """A rotation as an xyzw quaternion with ``w >= 0``."""
+  q = rotation.toQuaternion()
+  raw = np.array([[q.x(), q.y(), q.z(), q.w()]], dtype=np.float64)
+  out: Float64Array = _canonical(raw)[0]
+  return out
+
+
 def quats_to_matrices(quaternions: Float64Array) -> Float64Array:
   """Batch xyzw quaternions to rotation matrices, ``(n, 4) -> (n, 3, 3)``."""
   out: Float64Array = Rotation.from_quat(quaternions).as_matrix()
@@ -20,7 +34,7 @@ def quats_to_matrices(quaternions: Float64Array) -> Float64Array:
 
 def matrices_to_quats(matrices: Float64Array) -> Float64Array:
   """Batch rotation matrices to xyzw quaternions, ``(n, 3, 3) -> (n, 4)``."""
-  out: Float64Array = Rotation.from_matrix(matrices).as_quat()
+  out: Float64Array = _canonical(Rotation.from_matrix(matrices).as_quat())
   return out
 
 

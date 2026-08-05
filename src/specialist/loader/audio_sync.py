@@ -15,7 +15,7 @@ from scipy.signal import butter, find_peaks, sosfiltfilt
 
 Float64Array = npt.NDArray[np.float64]
 
-__all__ = ["ClapSyncResult", "sync_two_claps"]
+__all__ = ["ClapSyncResult", "resolve_ffmpeg", "sync_two_claps"]
 
 
 @dataclass(frozen=True)
@@ -29,7 +29,7 @@ class ClapSyncResult:
 
 
 @functools.cache
-def _resolve_ffmpeg() -> str:
+def resolve_ffmpeg() -> str:
   """The ffmpeg from ``$FFMPEG``, else ``imageio-ffmpeg``, else PATH; raises if none."""
   override = os.environ.get("FFMPEG")
   if override:
@@ -54,7 +54,7 @@ def _decode_mono_pcm(
   target_rate: int = 16_000,
 ) -> tuple[Float64Array, int]:
   """Mono float32 PCM at ``target_rate`` from any container ffmpeg reads."""
-  ffmpeg = _resolve_ffmpeg()
+  ffmpeg = resolve_ffmpeg()
   if not src.is_file():
     raise FileNotFoundError(f"audio source not found: {src}")
   cmd = [

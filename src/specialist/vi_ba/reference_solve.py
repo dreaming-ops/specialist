@@ -219,6 +219,16 @@ class ReferenceSolve:
   landmark_keep: LandmarkKeep
   secondary_world: dict[int, gtsam.Pose3]
   body_poses: dict[str, list[gtsam.Pose3]]
+  # Per secondary anchor, how far its re-estimate moved off its seed (m, rad).
+  secondary_moves: dict[int, tuple[float, float]]
+
+  @property
+  def worst_secondary_move(self) -> tuple[float, float]:
+    """Largest secondary-anchor translation and rotation move, or NaN with none."""
+    if not self.secondary_moves:
+      return float("nan"), float("nan")
+    moves = self.secondary_moves.values()
+    return max(dt for dt, _ in moves), max(dr for _, dr in moves)
 
 
 def _solve_joint_graph(
@@ -244,6 +254,7 @@ def _solve_joint_graph(
 
   solved_poses = _solved_body_poses(cameras, keys, result.values)
   resolved: dict[int, gtsam.Pose3] = {}
+  moves: dict[int, tuple[float, float]] = {}
   for tag_id in seed:
     estimate = _secondary_anchor_seed(
       cameras, tag_id, body_poses_by_tracker=solved_poses
@@ -257,6 +268,7 @@ def _solve_joint_graph(
       f"{dt * 1000:.1f}mm / {np.degrees(dr):.2f}deg{note}"
     )
     resolved[tag_id] = estimate
+    moves[tag_id] = (dt, dr)
   return ReferenceSolve(
     ref_tag_id=args.anchor.tag_ids[0],
     ref_anchor=ref_anchor,
@@ -264,6 +276,7 @@ def _solve_joint_graph(
     landmark_keep=landmark_keep,
     secondary_world=resolved,
     body_poses=solved_poses,
+    secondary_moves=moves,
   )
 
 

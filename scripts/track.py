@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -14,6 +15,7 @@ import numpy.typing as npt
 import tyro
 
 from specialist.loader.audio_sync import sync_two_claps
+from specialist.record.layer import write_track_layer
 from specialist.vi_ba import gpu_flow
 from specialist.vi_ba.compose import (
   CameraKeys,
@@ -21,7 +23,6 @@ from specialist.vi_ba.compose import (
   cross_tracker_observations,
 )
 from specialist.vi_ba.configs import Args, validate
-from specialist.vi_ba.export import Summary, build_raw_export, write_run_json
 from specialist.vi_ba.features import available_ram, set_precompute_concurrency
 from specialist.vi_ba.pipeline import (
   capture_duration,
@@ -34,7 +35,7 @@ from specialist.vi_ba.single_camera import (
   PreparedCamera,
   prepare_camera,
 )
-from specialist.vi_ba.viz import log_multi_ba_run
+from specialist.vi_ba.summary import Summary
 from specialist.vi_ba.viz_build import build_run_outputs
 
 Float64Array = npt.NDArray[np.float64]
@@ -112,6 +113,25 @@ def _stage_timer() -> Callable[[str], None]:
   return mark
 
 
+def _non_default_flags(args: object, prefix: str = "") -> list[str]:
+  """Every non-default value of a defaulted field, dotted through the nested configs."""
+  out: list[str] = []
+  for spec in dataclasses.fields(args):  # type: ignore[arg-type]
+    value = getattr(args, spec.name)
+    if dataclasses.is_dataclass(value) and not isinstance(value, type):
+      out += _non_default_flags(value, f"{prefix}{spec.name}.")
+      continue
+    if spec.default is not dataclasses.MISSING:
+      default = spec.default
+    elif spec.default_factory is not dataclasses.MISSING:
+      default = spec.default_factory()
+    else:
+      continue
+    if value != default:
+      out.append(f"{prefix}{spec.name}={value}")
+  return out
+
+
 def _print_capture_diagnostics(
   cameras: list[PreparedCamera],
   optimized_body_poses: dict[str, list[gtsam.Pose3]],
@@ -134,6 +154,12 @@ _PREP_MEMORY_SHARE = 0.35
 
 def main(args: Args) -> None:
   validate(args)
+  if args.session_id is None:
+    print(
+      "WARNING: no --session-id; the track layer gets a fresh random "
+      "recording id and will never attach to a base recording.",
+      flush=True,
+    )
   args.output_dir.mkdir(parents=True, exist_ok=True)
   names = _derive_names(args.input_insvs, args.slots)
   mark = _stage_timer()
@@ -178,7 +204,6 @@ def main(args: Args) -> None:
         start=start,
         duration=duration,
         keyframe_every=args.window.keyframe_every,
-        keep_frames=args.log_frames_in_rrd,
         base_tag_id=base_tag_id,
         left_finger_tag_id=left_id,
         right_finger_tag_id=right_id,
@@ -245,45 +270,32 @@ def main(args: Args) -> None:
     secondary_anchor_world,
   )
 
+  worst_move_translation, worst_move_rotation = selected.worst_secondary_move
   summary = Summary(
+    non_default_flags=tuple(_non_default_flags(args)),
     sources=tuple(str(p) for p in args.input_insvs),
     slots=names,
     cross_tracker_obs=len(cross_obs),
     initial_graph_error=result.initial_error,
     final_graph_error=result.final_error,
     solver_iterations=result.iterations,
+    secondary_anchor_move_translation=worst_move_translation,
+    secondary_anchor_move_rotation=worst_move_rotation,
   )
   _print_capture_diagnostics(cameras, optimized_body_poses)
 
-  raw = build_raw_export(
-    cameras,
-    optimized_body_poses,
-    outputs.culled_points,
-    outputs.world_T_anchor,
-    outputs.audio_offset_by_tracker,
-    anchor_tag_id,
-    args,
+  write_track_layer(
+    rrd_path=rrd_path,
+    outputs=outputs,
+    summary=summary,
+    reference_tag_id=anchor_tag_id,
+    anchor_tag_size=args.anchor.tag_size,
+    mask_pad_px=args.frontend.mask_tag_pad,
+    urdf_path=urdf_path,
+    session_id=args.session_id,
+    open_viewer=args.open_viewer,
   )
-
-  json_path = args.output_dir / f"track_{stamp}.json"
-  write_run_json(json_path, summary, outputs.per_tracker, raw)
-  print(f"\nWrote {json_path}")
-
-  # Best-effort viz after the result JSON is on disk: a viz failure never masks a solve.
-  try:
-    log_multi_ba_run(
-      rrd_path=rrd_path,
-      cameras=outputs.viz_trackers,
-      world_T_anchor=outputs.world_T_anchor,
-      reference_tag_id=anchor_tag_id,
-      anchor_tag_size=args.anchor.tag_size,
-      mask_pad_px=args.frontend.mask_tag_pad,
-      urdf_path=urdf_path,
-      open_viewer=args.open_viewer,
-    )
-    print(f"Wrote {rrd_path}")
-  except Exception as exc:  # noqa: BLE001 - viz is best-effort; JSON already saved
-    print(f"  [viz] skipped ({exc})")
+  print(f"Wrote {rrd_path}")
 
 
 if __name__ == "__main__":

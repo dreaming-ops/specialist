@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 
 import gtsam
 import numpy as np
@@ -13,22 +13,20 @@ from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.compose import (
   CameraKeys,
   CrossSighting,
-  CulledPoints,
   LandmarkKeep,
-  LandmarkPoints,
   LandmarkTracks,
   anchor_sightings,
   anchored_keyframes,
   points_from_values,
 )
 from specialist.vi_ba.configs import Args
-from specialist.vi_ba.export import CameraSummary
 from specialist.vi_ba.finger_kinematics import pin_angles_to_keyframes
 from specialist.vi_ba.geometry import bounding_box_diagonal, path_length
 from specialist.vi_ba.highrate import propagate_highrate
 from specialist.vi_ba.landmark_cull import cull_and_reproject
 from specialist.vi_ba.optimize import OptimizeResult
 from specialist.vi_ba.single_camera import PreparedCamera
+from specialist.vi_ba.summary import CameraSummary
 from specialist.vi_ba.tag_detection import (
   TagDetection,
   estimate_lens_T_tag,
@@ -144,12 +142,8 @@ def _build_tracker_outputs(
   anchor_corners_by_tag: dict[int, Float64Array],
   base_tag_corners_world: dict[str, list[Float64Array]],
   audio_offset: float,
-) -> tuple[
-  CameraVizData,
-  CameraSummary,
-  tuple[LandmarkPoints, LandmarkPoints],
-]:
-  """``CameraVizData``, ``CameraSummary`` and culled ``(front, rear)`` landmarks."""
+) -> tuple[CameraVizData, CameraSummary]:
+  """One camera's Rerun payload from the solved values."""
   front_points = points_from_values(
     result.values, keys.front_landmark_key, camera.name, landmark_keep[0]
   )
@@ -186,30 +180,17 @@ def _build_tracker_outputs(
     result.values.atConstantBias(keys.bias_key(camera.name, i))
     for i in range(camera.n_keyframes)
   ]
-  # Tag axes cost one PnP solve per detection; only frame-logging runs show them.
-  front_tag_axes = (
-    _project_tag_axes_per_kf(
-      camera.front_tags_per_kf, camera.front_lens, tag_size_by_id
-    )
-    if args.log_frames_in_rrd
-    else None
+  front_tag_axes = _project_tag_axes_per_kf(
+    camera.front_tags_per_kf, camera.front_lens, tag_size_by_id
   )
-  rear_tag_axes = (
-    _project_tag_axes_per_kf(camera.rear_tags_per_kf, camera.rear_lens, tag_size_by_id)
-    if args.log_frames_in_rrd
-    else None
+  rear_tag_axes = _project_tag_axes_per_kf(
+    camera.rear_tags_per_kf, camera.rear_lens, tag_size_by_id
   )
-  front_reproj = front_reproj_per_kf if args.log_frames_in_rrd else None
-  rear_reproj = rear_reproj_per_kf if args.log_frames_in_rrd else None
-  front_rejected_kp = (
-    _per_kf_rejected_keypoints(camera.front_rejected, camera.n_keyframes)
-    if args.log_frames_in_rrd
-    else None
+  front_rejected_kp = _per_kf_rejected_keypoints(
+    camera.front_rejected, camera.n_keyframes
   )
-  rear_rejected_kp = (
-    _per_kf_rejected_keypoints(camera.rear_rejected, camera.n_keyframes)
-    if args.log_frames_in_rrd
-    else None
+  rear_rejected_kp = _per_kf_rejected_keypoints(
+    camera.rear_rejected, camera.n_keyframes
   )
   velocities_final = [
     np.asarray(result.values.atVector(keys.velocity_key(camera.name, i)))
@@ -245,10 +226,8 @@ def _build_tracker_outputs(
     keyframe_times=np.asarray(camera.keyframe_times, dtype=np.float64) - audio_offset,
     front_points=front_points,
     rear_points=rear_points,
-    front_frames=camera.front_frames if args.log_frames_in_rrd else None,
-    rear_frames=camera.rear_frames if args.log_frames_in_rrd else None,
-    front_keypoints=camera.front_keypoints if args.log_frames_in_rrd else None,
-    rear_keypoints=camera.rear_keypoints if args.log_frames_in_rrd else None,
+    front_keypoints=camera.front_keypoints,
+    rear_keypoints=camera.rear_keypoints,
     front_tag_detections=camera.front_tags_per_kf,
     rear_tag_detections=camera.rear_tags_per_kf,
     velocities=velocities_final,
@@ -260,8 +239,8 @@ def _build_tracker_outputs(
     rear_rmse_per_kf=rear_rmse_per_kf,
     front_tag_axes=front_tag_axes,
     rear_tag_axes=rear_tag_axes,
-    front_landmark_reprojections=front_reproj,
-    rear_landmark_reprojections=rear_reproj,
+    front_landmark_reprojections=front_reproj_per_kf,
+    rear_landmark_reprojections=rear_reproj_per_kf,
     front_rejected_keypoints=front_rejected_kp,
     rear_rejected_keypoints=rear_rejected_kp,
     rear_static_mask_rects=camera.rear_static_mask_rects,
@@ -277,8 +256,11 @@ def _build_tracker_outputs(
     highrate_quats=highrate_quats,
     highrate_vels=highrate_vels,
     joint_frame_angles=joint_frame_angles or None,
+    body_T_base_tag=camera.body_T_base_tag,
+    front_lens_mei={k: float(v) for k, v in asdict(camera.front_lens.params).items()},
+    rear_lens_mei={k: float(v) for k, v in asdict(camera.rear_lens.params).items()},
   )
-  return viz_data, summary, (front_points, rear_points)
+  return viz_data, summary
 
 
 def _tag_size_by_id(args: Args) -> dict[int, float]:
@@ -309,11 +291,10 @@ def _base_tag_corners_world(
 
 @dataclass(frozen=True)
 class RunOutputs:
-  """A solved run's per-camera payloads and summaries, and its JSON export geometry."""
+  """A solved run's per-camera payloads and summaries, anchors and audio offsets."""
 
   viz_trackers: list[CameraVizData]
   per_tracker: list[CameraSummary]
-  culled_points: CulledPoints
   world_T_anchor: dict[int, gtsam.Pose3]
   audio_offset_by_tracker: dict[str, float]
 
@@ -348,9 +329,8 @@ def build_run_outputs(
 
   viz_trackers: list[CameraVizData] = []
   per_tracker: list[CameraSummary] = []
-  culled_points: CulledPoints = {}
   for t in cameras:
-    viz_data, summary, culled_pair = _build_tracker_outputs(
+    viz_data, summary = _build_tracker_outputs(
       t,
       poses=optimized_body_poses[t.name],
       result=result,
@@ -365,11 +345,9 @@ def build_run_outputs(
     )
     viz_trackers.append(viz_data)
     per_tracker.append(summary)
-    culled_points[t.name] = culled_pair
   return RunOutputs(
     viz_trackers,
     per_tracker,
-    culled_points,
     world_T_anchor,
     audio_offset_by_tracker,
   )

@@ -115,7 +115,7 @@ def _decode_slot() -> Iterator[None]:
 
 
 def _short_segments(
-  per_file: list[list[tuple[list[Any], list[bytes]]]],
+  per_file: list[list[list[Any]]],
   bounds: list[int],
   keyframe_every: int,
 ) -> list[tuple[int, int]]:
@@ -124,7 +124,7 @@ def _short_segments(
     (file_index, segment)
     for file_index, file_parts in enumerate(per_file)
     for segment, part in enumerate(file_parts[:-1])
-    if len(part[0]) != (bounds[segment + 1] - bounds[segment]) // keyframe_every
+    if len(part) != (bounds[segment + 1] - bounds[segment]) // keyframe_every
   ]
 
 
@@ -224,14 +224,13 @@ class BandedKeyframes(Sequence[np.ndarray]):
     path, container_frames, fps, start, _, keyframe_every = self._args
     begin = first * keyframe_every
     span = min(self._band, self._len - first) * keyframe_every
-    gray, _ = decode_lens_keyframes(
+    gray = decode_lens_keyframes(
       path,
       container_frames,
       fps,
       start + begin / fps,
       span / fps,
       keyframe_every,
-      keep_color=False,
     )
     expected = min(self._band, self._len - first)
     # A short read mid-file passes the decode guard as the lens end, so catch it here.
@@ -274,8 +273,7 @@ def decode_lens_keyframes(
   start: float,
   duration: float | None,
   keyframe_every: int,
-  keep_color: bool,
-) -> tuple[list[np.ndarray], list[bytes]]:
+) -> list[np.ndarray]:
   """One lens file's keyframes, at most ``container_frames`` so both lenses align."""
   paths = [video_path]
   start_frame = int(round(start * fps))
@@ -287,10 +285,9 @@ def decode_lens_keyframes(
 
   def decode_span(
     span: tuple[Path, int, int],
-  ) -> tuple[list[np.ndarray], list[bytes]]:
+  ) -> list[np.ndarray]:
     path, begin, end = span
     gray_frames: list[np.ndarray] = []
-    color_frames: list[bytes] = []
     with _decode_slot():
       cap = cv2.VideoCapture(str(path))
       if start_frame + begin > 0:
@@ -307,12 +304,8 @@ def decode_lens_keyframes(
           _report_early_stop(cap, path, i, container_frames)
           break
         gray_frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-        if keep_color:
-          color_frames.append(
-            cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
-          )
       cap.release()
-    return gray_frames, color_frames
+    return gray_frames
 
   n_segments = min(
     _DECODE_MAX_SEGMENTS,
@@ -345,13 +338,8 @@ def decode_lens_keyframes(
     raise RuntimeError(
       f"decode stopped early inside segment [{begin}, {end}) of {paths[file_index]}"
     )
-  gray = [
-    [frame for part in file_parts for frame in part[0]] for file_parts in per_file
-  ]
-  color = [
-    [frame for part in file_parts for frame in part[1]] for file_parts in per_file
-  ]
-  return gray[0], color[0]
+  gray = [[frame for part in file_parts for frame in part] for file_parts in per_file]
+  return gray[0]
 
 
 def decode_dual_keyframes(
@@ -361,9 +349,8 @@ def decode_dual_keyframes(
   start: float,
   duration: float | None,
   keyframe_every: int,
-  keep_color: bool,
-) -> tuple[list[np.ndarray], list[np.ndarray], list[bytes], list[bytes]]:
-  """Gray and JPEG keyframes per lens; JPEG lists stay empty unless ``keep_color``."""
+) -> tuple[list[np.ndarray], list[np.ndarray]]:
+  """``(front_gray, rear_gray)`` keyframe lists at native per-lens resolution."""
   paths = [video_path, rear_path]
   container_frames = _shared_frame_count(video_path, rear_path)
   start_frame = int(round(start * fps))
@@ -375,10 +362,9 @@ def decode_dual_keyframes(
 
   def decode_span(
     span: tuple[Path, int, int],
-  ) -> tuple[list[np.ndarray], list[bytes]]:
+  ) -> list[np.ndarray]:
     path, begin, end = span
     gray_frames: list[np.ndarray] = []
-    color_frames: list[bytes] = []
     with _decode_slot():
       cap = cv2.VideoCapture(str(path))
       if start_frame + begin > 0:
@@ -395,12 +381,8 @@ def decode_dual_keyframes(
           _report_early_stop(cap, path, i, container_frames)
           break
         gray_frames.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
-        if keep_color:
-          color_frames.append(
-            cv2.imencode(".jpg", frame, [cv2.IMWRITE_JPEG_QUALITY, 75])[1].tobytes()
-          )
       cap.release()
-    return gray_frames, color_frames
+    return gray_frames
 
   n_segments = min(
     _DECODE_MAX_SEGMENTS,
@@ -433,20 +415,10 @@ def decode_dual_keyframes(
     raise RuntimeError(
       f"decode stopped early inside segment [{begin}, {end}) of {paths[file_index]}"
     )
-  gray = [
-    [frame for part in file_parts for frame in part[0]] for file_parts in per_file
-  ]
-  color = [
-    [frame for part in file_parts for frame in part[1]] for file_parts in per_file
-  ]
+  gray = [[frame for part in file_parts for frame in part] for file_parts in per_file]
   # The trailing keyframe can land past the shorter file's final decoded frame.
   n_keyframes = min(len(gray[0]), len(gray[1]))
-  return (
-    gray[0][:n_keyframes],
-    gray[1][:n_keyframes],
-    color[0][:n_keyframes],
-    color[1][:n_keyframes],
-  )
+  return gray[0][:n_keyframes], gray[1][:n_keyframes]
 
 
 def keyframe_timestamps(

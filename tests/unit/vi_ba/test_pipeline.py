@@ -138,7 +138,7 @@ def test_decode_duration_past_file_end_clamps_to_container(tmp_path: Path) -> No
   _write_video(front, n_frames=13, width=64, height=64)
   _write_video(rear, n_frames=12, width=64, height=64)
   overrun = decode_dual_keyframes(
-    front, rear, 30.0, start=0.0, duration=10.0, keyframe_every=3, keep_color=False
+    front, rear, 30.0, start=0.0, duration=10.0, keyframe_every=3
   )
   assert len(overrun[0]) == len(overrun[1]) == 4
 
@@ -149,34 +149,20 @@ def test_decode_lens_pair_reads_both_files_aligned(tmp_path: Path) -> None:
   # The master file has one extra trailing frame; the decode clamps to the shared range.
   _write_video(front_path, n_frames=13, width=64, height=64)
   _write_video(rear_path, n_frames=12, width=64, height=64)
-  front_gray, rear_gray, front_color, rear_color = decode_dual_keyframes(
+  front_gray, rear_gray = decode_dual_keyframes(
     front_path,
     rear_path,
     30.0,
     start=0.0,
     duration=None,
     keyframe_every=3,
-    keep_color=True,
   )
-  no_color = decode_dual_keyframes(
-    front_path,
-    rear_path,
-    30.0,
-    start=0.0,
-    duration=None,
-    keyframe_every=3,
-    keep_color=False,
-  )
-  assert no_color[2] == [] and no_color[3] == []
   assert len(front_gray) == len(rear_gray) == 4
   half = 64
   for k, (fg, rg) in enumerate(zip(front_gray, rear_gray, strict=True)):
     assert fg.shape == rg.shape == (half, half)  # per-lens decode resolution
     assert _brightness_index(fg[:, : half // 2]) == k * 3  # left half of frame k*3
     assert _brightness_index(rg[:, : half // 2]) == k * 3  # same frame in _10_
-  first = cv2.imdecode(np.frombuffer(front_color[0], np.uint8), cv2.IMREAD_COLOR)
-  assert isinstance(front_color[0], bytes) and first.shape == (half, half, 3)
-  assert isinstance(rear_color[0], bytes)
 
 
 def test_decode_captures_are_bounded_across_the_whole_process() -> None:
@@ -213,7 +199,7 @@ def test_a_short_middle_segment_is_flagged() -> None:
   """A middle segment that stops early misaligns every later keyframe."""
   from specialist.vi_ba import pipeline
 
-  per_file = [[([0] * 10, []), ([0] * 9, []), ([0] * 10, [])]]
+  per_file = [[[0] * 10, [0] * 9, [0] * 10]]
   assert pipeline._short_segments(per_file, [0, 100, 200, 300], 10) == [(0, 1)]
 
 
@@ -221,14 +207,14 @@ def test_a_short_final_segment_is_legitimate() -> None:
   """Only the last segment may run out: that is the end of the stream."""
   from specialist.vi_ba import pipeline
 
-  per_file = [[([0] * 10, []), ([0] * 3, [])]]
+  per_file = [[[0] * 10, [0] * 3]]
   assert pipeline._short_segments(per_file, [0, 100, 200], 10) == []
 
 
 def test_full_segments_flag_nothing() -> None:
   from specialist.vi_ba import pipeline
 
-  per_file = [[([0] * 10, []), ([0] * 10, [])], [([0] * 10, []), ([0] * 10, [])]]
+  per_file = [[[0] * 10, [0] * 10], [[0] * 10, [0] * 10]]
   assert pipeline._short_segments(per_file, [0, 100, 200], 10) == []
 
 
@@ -240,15 +226,15 @@ def test_per_lens_decode_matches_the_dual_decode(tmp_path: Path) -> None:
   _write_video(front, n_frames=13, width=64, height=64)
   _write_video(rear, n_frames=12, width=64, height=64)
 
-  f_gray, r_gray, _, _ = decode_dual_keyframes(
-    front, rear, 30.0, start=0.0, duration=None, keyframe_every=3, keep_color=False
+  f_gray, r_gray = decode_dual_keyframes(
+    front, rear, 30.0, start=0.0, duration=None, keyframe_every=3
   )
   bound = shared_keyframe_bound(front, rear)
-  solo_f, _ = decode_lens_keyframes(
-    front, bound, 30.0, start=0.0, duration=None, keyframe_every=3, keep_color=False
+  solo_f = decode_lens_keyframes(
+    front, bound, 30.0, start=0.0, duration=None, keyframe_every=3
   )
-  solo_r, _ = decode_lens_keyframes(
-    rear, bound, 30.0, start=0.0, duration=None, keyframe_every=3, keep_color=False
+  solo_r = decode_lens_keyframes(
+    rear, bound, 30.0, start=0.0, duration=None, keyframe_every=3
   )
   n = min(len(solo_f), len(solo_r))
   assert len(f_gray) == len(r_gray) == n
@@ -293,8 +279,8 @@ def test_banded_keyframes_match_the_eager_decode(tmp_path: Path) -> None:
   _write_video(rear, n_frames=15, width=64, height=64)
 
   bound = shared_keyframe_bound(front, rear)
-  eager, _ = decode_lens_keyframes(
-    front, bound, 30.0, start=0.0, duration=None, keyframe_every=2, keep_color=False
+  eager = decode_lens_keyframes(
+    front, bound, 30.0, start=0.0, duration=None, keyframe_every=2
   )
   banded = BandedKeyframes(front, bound, 30.0, 0.0, None, keyframe_every=2, band=3)
 
@@ -315,8 +301,8 @@ def test_a_transient_short_read_is_retried_and_recovers(
 
   video = tmp_path / "VID_x_00_001.mp4"
   _write_video(video, n_frames=220, width=64, height=64)
-  clean, _ = pipeline.decode_lens_keyframes(
-    video, 220, 30.0, start=0.0, duration=None, keyframe_every=3, keep_color=False
+  clean = pipeline.decode_lens_keyframes(
+    video, 220, 30.0, start=0.0, duration=None, keyframe_every=3
   )
 
   real_capture = cv2.VideoCapture
@@ -357,8 +343,8 @@ def test_a_transient_short_read_is_retried_and_recovers(
       self._cap.release()
 
   monkeypatch.setattr(pipeline.cv2, "VideoCapture", OneShortRead)
-  recovered, _ = pipeline.decode_lens_keyframes(
-    video, 220, 30.0, start=0.0, duration=None, keyframe_every=3, keep_color=False
+  recovered = pipeline.decode_lens_keyframes(
+    video, 220, 30.0, start=0.0, duration=None, keyframe_every=3
   )
 
   assert fired, "the injected short read never fired, so nothing was retried"

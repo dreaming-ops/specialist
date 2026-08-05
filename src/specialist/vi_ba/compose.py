@@ -45,7 +45,6 @@ CulledPoints = dict[str, tuple[LandmarkPoints, LandmarkPoints]]
 __all__ = [
   "CameraKeys",
   "CrossSighting",
-  "CulledPoints",
   "LandmarkKeep",
   "LandmarkPoints",
   "LandmarkTracks",

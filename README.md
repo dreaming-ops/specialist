@@ -85,7 +85,9 @@ src/specialist/
 │                finger_kinematics + urdf_joints (gripper joint recovery), imu,
 │                tag_detection, optimize, landmark_cull,
 │                configs, viz
-├── record/      offset_v3 (factory lens intrinsics and body_T_lens)
+├── record/      the rrd data layer — schema (entity paths), base + video
+│                (base recording), layer (track), read (reading them back),
+│                offset_v3 (factory lens calibration)
 └── loader/      parse_insv, mei_model, audio_sync
 
 scripts/
