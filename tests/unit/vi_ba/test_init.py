@@ -16,6 +16,7 @@ from specialist.vi_ba.init import (
   Alignment,
   apply_alignment_to_poses,
   gravity_alignment_rotation,
+  incremental_sfm,
   interpolate_camera_poses,
   pick_init_pair,
   triangulate_track_multiview,
@@ -317,3 +318,28 @@ def test_visual_inertial_align_fixed_scale_pins_metric_scale() -> None:
     third_poses, pims, velocity_regularization=0.0, fixed_scale=1.0
   )
   assert abs(a2.scale - 1.0) < 1e-2
+
+
+def test_incremental_sfm_skips_a_non_finite_bearing_track() -> None:
+  """A non-finite bearing drops its track and never aborts the triangulation SVD."""
+  rng = np.random.default_rng(0)
+  points = rng.uniform([-2.0, -2.0, 4.0], [2.0, 2.0, 7.0], (30, 3))
+  centers = [np.array([x, 0.0, 0.0]) for x in (0.0, 0.5, 1.0)]
+  bearings = {
+    tid: {
+      kf: (points[tid] - c) / np.linalg.norm(points[tid] - c)
+      for kf, c in enumerate(centers)
+    }
+    for tid in range(len(points))
+  }
+  poisoned = 999
+  finite = np.array([0.0, 0.0, 5.0]) - centers[2]
+  bearings[poisoned] = {
+    # Non-finite direction whose z still passes the in-front gate.
+    1: np.array([np.nan, np.inf, 0.5]),
+    2: finite / np.linalg.norm(finite),
+  }
+  poses, landmarks = incremental_sfm(bearings, min_shared=10)
+  assert sorted(poses) == [0, 1, 2]
+  assert poisoned not in landmarks
+  assert len(landmarks) >= 25

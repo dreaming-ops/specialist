@@ -226,6 +226,11 @@ def incremental_sfm(
     rows = np.empty((2 * len(x_n), 4))
     rows[0::2] = x_n[:, None] * p[:, 2, :] - p[:, 0, :]
     rows[1::2] = y_n[:, None] * p[:, 2, :] - p[:, 1, :]
+    # The SVD fails on non-finite rows from bearings at the MEI valid-domain edge.
+    finite = np.isfinite(rows).all(axis=1)
+    if int(finite.sum()) < 4:
+      return
+    rows = rows[finite]
     # Only the last right-singular vector is used; skip the full U factor.
     _, _, vh = np.linalg.svd(rows, full_matrices=False)
     x_h = vh[-1]
