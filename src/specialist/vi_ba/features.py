@@ -60,14 +60,15 @@ def parallel_map(fn: Callable[..., _R], *iterables: Iterable[object]) -> list[_R
 
 
 def _bilinear_sample_flow(
-  flow: npt.NDArray[np.float32], xy: Float64Array
+  flow: npt.NDArray[np.float32], xy: Float64Array, scale: float
 ) -> Float64Array:
-  """Bilinear-interpolated dense-flow lookup at subpixel positions ``xy``."""
+  """Bilinear dense-flow lookup at subpixel ``xy``; displacement in ``xy``'s frame."""
   h, w = flow.shape[:2]
   if xy.shape[0] == 0:
     return np.empty((0, 2))
-  x = np.clip(xy[:, 0], 0.0, float(w) - 1.001)
-  y = np.clip(xy[:, 1], 0.0, float(h) - 1.001)
+  # Pixel centers map to pixel centers across the scale change.
+  x = np.clip((xy[:, 0] + 0.5) * scale - 0.5, 0.0, float(w) - 1.001)
+  y = np.clip((xy[:, 1] + 0.5) * scale - 0.5, 0.0, float(h) - 1.001)
   x0 = x.astype(np.int64)
   y0 = y.astype(np.int64)
   fx = (x - x0)[:, None]
@@ -76,12 +77,13 @@ def _bilinear_sample_flow(
   f01 = flow[y0, x0 + 1].astype(np.float64)
   f10 = flow[y0 + 1, x0].astype(np.float64)
   f11 = flow[y0 + 1, x0 + 1].astype(np.float64)
-  return (
+  sampled = (
     (1.0 - fx) * (1.0 - fy) * f00
     + fx * (1.0 - fy) * f01
     + (1.0 - fx) * fy * f10
     + fx * fy * f11
   )
+  return sampled if scale == 1.0 else sampled / scale
 
 
 _PRECOMPUTE_CONCURRENCY = 1
@@ -156,6 +158,38 @@ def _iter_dis_flows(
 
 
 _FlowIter = Callable[[Sequence[np.ndarray], range], Iterator[_FlowPair]]
+
+_SCALED_CACHE = 64
+
+
+class _ScaledFrames(Sequence[np.ndarray]):
+  """A frame sequence resized on access, with a small ring of recent frames."""
+
+  def __init__(self, frames: Sequence[np.ndarray], scale: float):
+    self._frames = frames
+    self._scale = scale
+    self._cache: dict[int, np.ndarray] = {}
+    self._order: list[int] = []
+
+  def __len__(self) -> int:
+    return len(self._frames)
+
+  def __getitem__(self, index: int) -> np.ndarray:  # type: ignore[override]
+    hit = self._cache.get(index)
+    if hit is not None:
+      return hit
+    small = cv2.resize(
+      self._frames[index],
+      None,
+      fx=self._scale,
+      fy=self._scale,
+      interpolation=cv2.INTER_AREA,
+    )
+    self._cache[index] = small
+    self._order.append(index)
+    if len(self._order) > _SCALED_CACHE:
+      self._cache.pop(self._order.pop(0), None)
+    return small
 
 
 def _select_flow_iter(frames: Sequence[np.ndarray], gpu: bool) -> _FlowIter:
@@ -245,6 +279,7 @@ def dis_flow_track(
   max_corners: int,
   masks: list[list[Rect]] | None = None,
   gpu_flow: bool = False,
+  flow_scale: float = 1.0,
 ) -> tuple[list[Frame], list[npt.NDArray[np.int64]]]:
   """Sparse tracks propagated by DIS dense flow, seeded by Shi-Tomasi with redetect."""
   if masks is not None and len(masks) != len(frames):
@@ -252,11 +287,14 @@ def dis_flow_track(
   if not frames:
     return [], []
 
-  # Stream pair flows from the chosen backend in RAM-bounded chunks.
-  flow_iter = _select_flow_iter(frames, gpu_flow and len(frames) > 1)
+  # Stream pair flows in RAM-bounded chunks; prime the backend on the flow's view.
+  flow_frames = frames if flow_scale == 1.0 else _ScaledFrames(frames, flow_scale)
+  flow_iter = _select_flow_iter(flow_frames, gpu_flow and len(frames) > 1)
   backend = "cv2" if flow_iter is _iter_dis_flows else "gpu"
+  if flow_scale != 1.0:
+    backend = f"{backend} @{flow_scale:g}x"
   flow_begin = time.perf_counter()
-  chunk_size = _flow_chunk_size(frames)
+  chunk_size = _flow_chunk_size(flow_frames)
   flow_stream: Iterator[_FlowPair] = iter(())
   chunk_end = 1
   # Sized by ``len(frames)``: iterating a banded reader decodes the whole lens.
@@ -268,7 +306,7 @@ def dis_flow_track(
     if k > 0:
       if k >= chunk_end:
         chunk_end = min(k + chunk_size, len(frames))
-        flow_stream = flow_iter(frames, range(k, chunk_end))
+        flow_stream = flow_iter(flow_frames, range(k, chunk_end))
       try:
         flow_fwd, flow_bwd = next(flow_stream)
       except Exception as exc:
@@ -277,12 +315,12 @@ def dis_flow_track(
         # The GPU can be lost after priming; finish the lens on the cv2 path.
         print(f"  [flow] GPU DIS lost ({exc}); using cv2 DIS", flush=True)
         flow_iter, backend = _iter_dis_flows, "cv2"
-        flow_stream = flow_iter(frames, range(k, chunk_end))
+        flow_stream = flow_iter(flow_frames, range(k, chunk_end))
         flow_fwd, flow_bwd = next(flow_stream)
       prev_xy = per_frame_pts[k - 1]
-      disp_fwd = _bilinear_sample_flow(flow_fwd, prev_xy)
+      disp_fwd = _bilinear_sample_flow(flow_fwd, prev_xy, flow_scale)
       nxt_xy = prev_xy + disp_fwd
-      disp_bwd = _bilinear_sample_flow(flow_bwd, nxt_xy)
+      disp_bwd = _bilinear_sample_flow(flow_bwd, nxt_xy, flow_scale)
       back_xy = nxt_xy + disp_bwd
       fb = np.linalg.norm(back_xy - prev_xy, axis=1)
       ok = np.isfinite(fb) & (fb < _FB_ERROR_THRESHOLD)

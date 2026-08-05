@@ -96,7 +96,7 @@ def _send_lens_tag_columns(
   anchor_tag_ids: set[int],
   mask_pad_px: int,
 ) -> None:
-  """Per-keyframe AprilTag quads and ids; anchor gold, others cyan with mask boxes."""
+  """AprilTag quads and ids per keyframe; negative ``mask_pad_px`` draws no mask box."""
   tags = [det for dets in tags_per_kf for det in dets]
   if not tags:
     return
@@ -126,7 +126,7 @@ def _send_lens_tag_columns(
       radii=np.full(len(tags), 10.0, dtype=np.float32),
     ).partition(partition),
   )
-  keep = ~is_anchor
+  keep = ~is_anchor & (mask_pad_px >= 0)
   masked = [d.corners for d, kept in zip(tags, keep, strict=True) if kept]
   if not masked:
     return
@@ -247,7 +247,7 @@ def _send_lens_columns(
   times: rr.TimeColumn,
   color: tuple[int, int, int],
 ) -> None:
-  if keypoints is None:
+  if not keypoints:
     return
   _send_point_columns(f"{entity_path}/keypoints", keypoints, index, 1.5, color)
   counts = np.asarray([kp.shape[0] for kp in keypoints], dtype=np.float64)

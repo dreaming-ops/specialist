@@ -23,6 +23,8 @@ _TAG_FAMILY = "tagStandard41h12"
 _DETECT_THREADS = 48
 _detect_lock = threading.Lock()
 _detector: Detector | None = None
+_parallel = False
+_local = threading.local()
 
 __all__ = [
   "TagDetection",
@@ -35,9 +37,18 @@ __all__ = [
 ]
 
 
+def configure_detector(parallel: bool) -> None:
+  """Use per-thread detectors (``parallel``, ~160 MB each) or one behind a lock."""
+  global _parallel
+  _parallel = parallel
+
+
 @contextmanager
 def _detect_slot() -> Iterator[None]:
   """Hold the shared detector's lock unless detectors are per-thread."""
+  if _parallel:
+    yield
+    return
   with _detect_lock:
     yield
 
@@ -61,6 +72,14 @@ class _OrderedTeardownDetector(Detector):  # type: ignore[misc]
 def _shared_detector() -> Detector:
   """This thread's detector when parallel, else the process-wide one."""
   global _detector
+  if _parallel:
+    got = getattr(_local, "detector", None)
+    if got is None:
+      got = _OrderedTeardownDetector(
+        families=_TAG_FAMILY, nthreads=max(1, min(_DETECT_THREADS, cpu_budget()) // 2)
+      )
+      _local.detector = got
+    return got
   with _detect_lock:
     if _detector is None:
       _detector = _OrderedTeardownDetector(

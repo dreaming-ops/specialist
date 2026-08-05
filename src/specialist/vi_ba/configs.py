@@ -22,29 +22,44 @@ __all__ = [
 
 @dataclass
 class FrontendCfg:
-  orb_n_features: int = 1000
+  orb_n_features: int = 4000
   # Run DIS optical flow on the GPU, falling back loudly to cv2 without torch/CUDA.
   gpu_flow: bool = True
+
   ransac_threshold: float = 4.5
+  # Fraction of the frame the dense flow is computed at.
+  flow_scale: float = 0.25
+
   min_track_length: int = 3
   max_half_angle: float = float(np.deg2rad(70.0))
-  reproj_sigma: float = 2.25
+  reproj_sigma: float = 0.5
+  # Padding (px) around a masked tag's detected box.
   mask_tag_pad: int = 45
+  # Exclude non-anchor tags (the grippers' own plates) from feature detection.
+  mask_tags: bool = True
+
   min_parallax: float = float(np.deg2rad(0.5))
   # Max metric depth (m) for kept landmarks in the final (scaled) triangulation.
   max_landmark_depth: float = 5.0
+
   mask_rear_rects: tuple[tuple[int, int, int, int], ...] = ((728, 1425, 2153, 2880),)
-  init_min_shared_tracks: int = 60
+  init_min_shared_tracks: int = 30
+  vo_min_registered_ratio: float = 0.7
+  # Run the rear lens's landmark frontend; tag detection runs regardless.
+  rear_landmarks: bool = False
   # Re-match ORB features between nearby non-adjacent keyframes to rejoin broken tracks.
   revisit: bool = True
+
   loop_closure_max_dist: float = 0.1
   loop_closure_min_kf_gap: int = 15
   # Triangulate the revisit landmarks from the anchor-covisible views alone.
   anchored_revisit: bool = True
   # Cap on triangulated landmarks per lens, keeping the longest tracks.
-  max_landmarks_per_lens: int = 400
+  max_landmarks_per_lens: int = 4000
   # Cap on observations per track in the joint BA: endpoints plus an even middle.
   max_obs_per_track: int = 8
+  # Per-thread AprilTag detectors so concurrent tag walks overlap.
+  parallel_tag_detect: bool = True
 
 
 @dataclass
@@ -108,10 +123,7 @@ class Args:
   # Per-tracker finger tag ids; 0 disables that tracker's finger.
   left_finger_tag_ids: tuple[int, ...] = ()
   right_finger_tag_ids: tuple[int, ...] = ()
-  # Lighter frontend feature budget so the joint graph stays cheap; override per run.
-  frontend: FrontendCfg = field(
-    default_factory=lambda: FrontendCfg(orb_n_features=500, init_min_shared_tracks=30)
-  )
+  frontend: FrontendCfg = field(default_factory=FrontendCfg)
   imu: ImuCfg = field(default_factory=ImuCfg)
   gripper: GripperCfg = field(default_factory=GripperCfg)
   solver: SolverCfg = field(default_factory=SolverCfg)

@@ -52,6 +52,8 @@ class LensFrontendConfig:
   max_half_angle: float = float(np.deg2rad(70.0))
   # cv2 flow by default keeps the frontend primitives GPU-free for tests.
   gpu_flow: bool = False
+  # Dense-flow resolution as a fraction of the frame; tracks sample the lifted field.
+  flow_scale: float = 1.0
 
 
 def _scaled_mei(
@@ -444,6 +446,7 @@ def run_lens_frontend(
     max_corners=cfg.n_features,
     masks=masks,
     gpu_flow=cfg.gpu_flow,
+    flow_scale=cfg.flow_scale,
   )
 
   def ransac_pair(k: int) -> npt.NDArray[np.int64]:

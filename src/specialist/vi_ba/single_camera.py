@@ -68,6 +68,7 @@ from specialist.vi_ba.pipeline import (
 )
 from specialist.vi_ba.tag_detection import (
   TagDetection,
+  configure_detector,
   detect_all_tags,
   lens_T_tag_per_kf,
 )
@@ -79,11 +80,11 @@ _A = TypeVar("_A")
 _B = TypeVar("_B")
 
 # ORB loop-closure track recovery (``_revisit_tracks``).
-_REVISIT_N_NEIGHBORS = 4  # spatially-closest non-adjacent revisit kfs to re-match
-_REVISIT_MATCH_RATIO = 0.7  # Lowe ratio-test threshold
+_REVISIT_N_NEIGHBORS = 8  # spatially-closest non-adjacent revisit kfs to re-match
+_REVISIT_MATCH_RATIO = 0.8  # Lowe ratio-test threshold
 _REVISIT_RANSAC_THRESHOLD = 4.5  # homography RANSAC reprojection tolerance, px
 _REVISIT_MIN_VIEWS = 3  # keyframes a union-found track must span to be kept
-_REVISIT_MIN_INLIERS = 20  # geometrically-verified matches required per pair
+_REVISIT_MIN_INLIERS = 10  # geometrically-verified matches required per pair
 
 # Visual-odometry pose-spike rejection (``_reject_vo_pose_outliers``).
 _VO_REJECT_FACTOR = 8.0  # residual/median-step ratio marking a PnP teleport
@@ -100,9 +101,11 @@ __all__ = [
 ]
 
 
-def _enough_registered(n_registered: int, n_keyframes: int) -> bool:
-  """A seed needs a quarter of the keyframes, and at least eight."""
-  return n_registered >= max(8, n_keyframes // 4)
+def _enough_registered(
+  n_registered: int, n_keyframes: int, ratio: float = 0.25
+) -> bool:
+  """A seed needs ``ratio`` of the keyframes, and at least eight."""
+  return n_registered >= max(8, int(n_keyframes * ratio))
 
 
 def run_two_concurrently(
@@ -132,6 +135,8 @@ class CameraArgs:
   frontend: FrontendCfg
   imu: ImuCfg
   gripper: GripperCfg
+  # Set when sibling captures prep at once; it gates per-thread AprilTag detectors.
+  parallel_siblings: bool = False
 
 
 class ViGraphInputs(TypedDict):
@@ -786,6 +791,7 @@ class _LensChannel:
 
 def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   """Every per-camera stage; body poses land in the camera's gravity-aligned world."""
+  configure_detector(args.frontend.parallel_tag_detect and args.parallel_siblings)
   data = load_insv(args.insv_path)
   offset_v3 = parse_offset_v3(data.offset_v3)
   rear_path, fps, decoded_width = probe_capture(args.insv_path)
@@ -818,8 +824,12 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     tags = detect_all_tags(band)
     if not args.frontend.revisit:
       return [(t, None) for t in tags]
-    rects = _build_non_anchor_tag_masks(
-      band[0].shape[:2], tags, orb_exclude, args.frontend.mask_tag_pad
+    rects = (
+      _build_non_anchor_tag_masks(
+        band[0].shape[:2], tags, orb_exclude, args.frontend.mask_tag_pad
+      )
+      if args.frontend.mask_tags
+      else [[] for _ in band]
     )
     orb = parallel_map(
       lambda f, m: detect_orb(
@@ -911,14 +921,19 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     ransac_threshold=args.frontend.ransac_threshold,
     max_half_angle=args.frontend.max_half_angle,
     gpu_flow=args.frontend.gpu_flow,
+    flow_scale=args.frontend.flow_scale,
   )
 
   def run_lens(ch: _LensChannel, path: Path) -> None:
     """Decode this lens, take what downstream needs from its pixels, then drop them."""
     ch.gray = lens_frames(path)
     shape = ch.gray[0].shape[:2]
-    ch.masks = _build_non_anchor_tag_masks(
-      shape, ch.tags, anchor_tag_ids, args.frontend.mask_tag_pad
+    ch.masks = (
+      _build_non_anchor_tag_masks(
+        shape, ch.tags, anchor_tag_ids, args.frontend.mask_tag_pad
+      )
+      if args.frontend.mask_tags
+      else [[] for _ in range(len(ch.tags))]
     )
     if ch is rear:
       _apply_static_mask_rects(ch.masks, static_rects, shape)
@@ -932,7 +947,8 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     release_freed_memory()
 
   run_lens(front, args.insv_path)
-  run_lens(rear, rear_path)
+  if args.frontend.rear_landmarks:
+    run_lens(rear, rear_path)
   for ch in (front, rear):
     ch.kept = {
       t: o for t, o in ch.tracks.items() if len(o) >= args.frontend.min_track_length
@@ -975,7 +991,9 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   sfm_cams, vo_outliers = _reject_vo_pose_outliers(sfm_cams)
   if vo_outliers:
     print(f"  [{slot}] visual-odometry rejected {len(vo_outliers)} rotation-spike kfs")
-  if _enough_registered(len(sfm_cams), n_keyframes):
+  if _enough_registered(
+    len(sfm_cams), n_keyframes, args.frontend.vo_min_registered_ratio
+  ):
     body_poses_prealign = body_poses_from_lens_poses(
       _fill_lens_poses(sfm_cams, n_keyframes), front_lens.body_T_lens
     )

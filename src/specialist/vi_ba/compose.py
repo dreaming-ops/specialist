@@ -70,6 +70,8 @@ _FINGER_SYMMETRY_SIGMA = 0.05
 _BASE_TAG_REPROJ_SIGMA = 1.5
 _BASE_TAG_PRIOR_SIGMA_ROT = 0.3
 _BASE_TAG_PRIOR_SIGMA_TRANS = 0.05
+# Cross-camera corner σ (px).
+_CROSS_REPROJ_SIGMA = 3.0
 
 _MAX_KEYFRAMES_PER_CAMERA = 100_000
 _MAX_LANDMARKS_PER_CAMERA = 1_000_000
@@ -481,7 +483,7 @@ def _add_cross_camera_factors(
   values: gtsam.Values,
 ) -> tuple[int, int]:
   """Add cross-camera base and finger factors where the owner's variables exist."""
-  noise = huber_pixel_noise(_BASE_TAG_REPROJ_SIGMA)
+  noise = huber_pixel_noise(_CROSS_REPROJ_SIGMA)
   base_tag_corners = tag_corners_local(args.gripper.tag_size)
   camera_by_slot = {t.name: t for t in cameras}
   base_count = finger_count = 0
