@@ -8,7 +8,7 @@ import gtsam
 import numpy as np
 import scipy.sparse as sp
 
-__all__ = ["SparseSystem", "_lm"]
+__all__ = ["SparseSystem", "assert_backend", "_lm"]
 
 # gtsam's LevenbergMarquardtParams defaults.
 _LAMBDA_INITIAL = 1e-5
@@ -152,14 +152,21 @@ def _cudss_solver() -> tuple[
   return solve, close
 
 
+def assert_backend() -> None:
+  """Import the CUDA solve stack, raising when any piece is missing."""
+  _solve, close = _cudss_solver()
+  close()
+
+
 def _lm(
   graph: gtsam.NonlinearFactorGraph,
   values: gtsam.Values,
   max_iterations: int,
   relative_error_tol: float,
   solver_factory: SolverFactory = _cudss_solver,
+  initial_error: float | None = None,
 ) -> tuple[gtsam.Values, int, float, float]:
-  """``(values, iterations, initial_error, final_error)``; raises without a backend."""
+  """``(values, iterations, initial_error, final_error)`` of the Schur LM loop."""
   system = SparseSystem(graph, values)
   solve, close = solver_factory()
   landmark_cols, state_cols = system.landmark_cols, system.state_cols
@@ -167,7 +174,7 @@ def _lm(
   eye3 = np.eye(_LANDMARK_DIM)
   eye_state = sp.identity(len(state_cols), format="csr")
   lam = _LAMBDA_INITIAL
-  err = float(graph.error(values))
+  err = float(graph.error(values)) if initial_error is None else initial_error
   initial_error = err
   iters = 0
 

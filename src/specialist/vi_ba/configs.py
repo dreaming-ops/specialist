@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Literal
 
 import numpy as np
 
@@ -12,12 +13,16 @@ __all__ = [
   "AnchorCfg",
   "Args",
   "FrontendCfg",
+  "GpuMode",
   "GripperCfg",
   "ImuCfg",
   "SolverCfg",
   "WindowCfg",
   "validate",
 ]
+
+
+GpuMode = Literal["require", "auto", "off"]
 
 
 @dataclass
@@ -101,8 +106,9 @@ class GripperCfg:
 class SolverCfg:
   max_iterations: int = 30
   velocity_prior_sigma: float = 0.1
-  # Prefer the Schur/cuDSS GPU solver; falls back to the gtsam optimizer.
-  gpu: bool = True
+
+  # Schur/cuDSS: "require" aborts without it, "auto" falls back to CPU, "off" skips it.
+  gpu: GpuMode = "require"
 
 
 @dataclass

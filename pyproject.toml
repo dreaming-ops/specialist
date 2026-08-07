@@ -24,8 +24,9 @@ dependencies = [
 
 [project.optional-dependencies]
 # CUDA backends: the Schur LM solver (`solver.gpu`) and the DIS optical-flow
-# frontend (`frontend.gpu_flow`). The tracker falls back to the gtsam optimizer
-# and the cv2 flow when these are absent. The markers keep the extra empty where
+# frontend (`frontend.gpu_flow`). The cv2 flow covers a missing flow backend; a
+# missing solver backend fails the run under the default `require` mode. The
+# markers keep the extra empty where
 # no CUDA wheels exist, so `uv sync --extra gpu` is a no-op there rather than a
 # resolution failure.
 gpu = [

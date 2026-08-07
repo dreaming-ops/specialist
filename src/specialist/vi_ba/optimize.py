@@ -10,6 +10,9 @@ from dataclasses import dataclass
 from typing import Iterator
 
 import gtsam
+import numpy as np
+
+from specialist.vi_ba.configs import GpuMode
 
 __all__ = ["OptimizeResult", "optimize_graph"]
 
@@ -52,24 +55,40 @@ def optimize_graph(
   graph: gtsam.NonlinearFactorGraph,
   initial_values: gtsam.Values,
   max_iterations: int,
-  gpu: bool = False,
+  gpu: GpuMode = "off",
 ) -> OptimizeResult:
-  """LM values and run stats; ``gpu`` tries the Schur/cuDSS path before gtsam."""
+  """LM solve; raises on a non-finite initial error, or a ``"require"`` GPU failure."""
+  initial_error = float(graph.error(initial_values))
+  if not np.isfinite(initial_error):
+    raise RuntimeError(
+      "graph initial error is not finite: a factor evaluates to inf/NaN at "
+      "the initial values, so the optimizer would silently return them"
+    )
   begin = time.perf_counter()
   values: gtsam.Values | None = None
   note = ""
-  if gpu:
+  if gpu != "off":
     try:
       from specialist.vi_ba.gpu_lm import _lm
 
       with _bounded_solve_affinity():
-        values, iterations, initial_error, final_error = _lm(
-          graph, initial_values, max_iterations, _RELATIVE_ERROR_TOL
+        values, iterations, _initial_error, final_error = _lm(
+          graph,
+          initial_values,
+          max_iterations,
+          _RELATIVE_ERROR_TOL,
+          initial_error=initial_error,
         )
       note = " (gpu)"
     except ImportError as exc:
+      if gpu == "require":
+        raise RuntimeError(
+          f"gpu solver required but its backend cannot load: {exc}"
+        ) from exc
       print(f"  [LM call] gpu backend unavailable ({exc}); using gtsam", flush=True)
     except Exception:
+      if gpu == "require":
+        raise
       traceback.print_exc()
       print("  [LM call] gpu solve failed; using gtsam", flush=True)
   if values is None:
@@ -77,8 +96,6 @@ def optimize_graph(
     params.setMaxIterations(max_iterations)
     params.setRelativeErrorTol(_RELATIVE_ERROR_TOL)
     optimizer = gtsam.LevenbergMarquardtOptimizer(graph, initial_values, params)
-    # The optimizer tracks its own error; this skips a full graph evaluation.
-    initial_error = float(optimizer.error())
     begin = time.perf_counter()  # exclude any failed gpu attempt from the timing
     with _bounded_solve_affinity():
       values = optimizer.optimize()

@@ -387,7 +387,7 @@ def _pinned_solve_fixture(
     window=WindowCfg(duration=None),
     anchor=AnchorCfg(tag_ids=(1, 5) if with_secondary else (1,)),
     base_tag_ids=(2,),
-    solver=SolverCfg(velocity_prior_sigma=0.01),
+    solver=SolverCfg(velocity_prior_sigma=0.01, gpu="off"),
   )
   return [camera], CameraKeys(["a"]), args, world_T_ref, world_T_sec
 

@@ -16,7 +16,7 @@ from specialist.vi_ba.compose import (
   assemble_joint_graph,
   points_from_values,
 )
-from specialist.vi_ba.configs import Args
+from specialist.vi_ba.configs import Args, GpuMode
 from specialist.vi_ba.landmark_cull import cull_outlier_landmarks
 from specialist.vi_ba.optimize import OptimizeResult, optimize_graph
 from specialist.vi_ba.single_camera import PreparedCamera
@@ -78,7 +78,7 @@ def _solve_with_cull_reoptimize(
   cameras: list[PreparedCamera],
   keys: CameraKeys,
   max_iterations: int,
-  gpu: bool,
+  gpu: GpuMode,
 ) -> tuple[OptimizeResult, LandmarkKeep]:
   """Re-solved result and each camera's kept tracks after an outlier-landmark cull."""
   print(f"\njoint graph: {graph.size()} factors, {values.size()} variables")

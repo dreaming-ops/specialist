@@ -99,6 +99,23 @@ def test_optimize_graph_gpu_dispatch_returns_valid_result() -> None:
   """Runs the real GPU solve where the backend is installed, else the gtsam fallback."""
   graph, values = _scene()
   reference = optimize_graph(graph, values, max_iterations=10)
-  result = optimize_graph(graph, values, max_iterations=10, gpu=True)
+  result = optimize_graph(graph, values, max_iterations=10, gpu="auto")
   assert result.iterations > 0
   assert result.final_error <= reference.final_error * 1.01 + 1e-9
+
+
+def test_require_mode_raises_when_backend_missing() -> None:
+  """``gpu="require"`` raises on an unloadable backend."""
+  graph, values = _scene()
+  try:
+    from specialist.vi_ba.gpu_lm import assert_backend
+
+    assert_backend()
+  except Exception:
+    import pytest
+
+    with pytest.raises(RuntimeError, match="gpu solver required"):
+      optimize_graph(graph, values, max_iterations=5, gpu="require")
+    return
+  result = optimize_graph(graph, values, max_iterations=5, gpu="require")
+  assert result.final_error <= result.initial_error
