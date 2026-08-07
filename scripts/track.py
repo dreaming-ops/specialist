@@ -14,7 +14,7 @@ import numpy as np
 import numpy.typing as npt
 import tyro
 
-from specialist.loader.audio_sync import sync_two_claps
+from specialist.loader.audio_sync import sync_two_captures
 from specialist.record.layer import write_track_layer
 from specialist.vi_ba import gpu_flow
 from specialist.vi_ba.compose import (
@@ -59,13 +59,12 @@ def _audio_align_starts(
   """Per-clip local-clock starts aligning every clip, and offsets relative to clip 0."""
   offsets = [0.0]
   for path in input_insvs[1:]:
-    sync = sync_two_claps(input_insvs[0], path)
+    sync = sync_two_captures(input_insvs[0], path)
     offsets.append(sync.offset)
     print(
       f"audio sync: {input_insvs[0].name} ↔ {path.name}  "
       f"offset={sync.offset:+.3f}s  "
-      f"matched_pairs={sync.matched_pairs} "
-      f"(claps_a={sync.clap_times_a.size}, claps_b={sync.clap_times_b.size})"
+      f"peak_ratio={sync.peak_ratio:.2f}"
     )
   lead = min(offsets)
   starts = [master_start + off - lead for off in offsets]
