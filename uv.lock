@@ -1190,7 +1190,7 @@ dependencies = [
     { name = "tyro" },
 ]
 
-[package.optional-dependencies]
+[package.dev-dependencies]
 dev = [
     { name = "mypy" },
     { name = "pre-commit" },
@@ -1209,29 +1209,34 @@ gpu = [
 [package.metadata]
 requires-dist = [
     { name = "allantools", specifier = ">=2024.6" },
-    { name = "cupy-cuda12x", extras = ["ctk"], marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=14.1" },
     { name = "gtsam", specifier = "==4.3a0" },
     { name = "imageio-ffmpeg", specifier = ">=0.5" },
-    { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.13" },
     { name = "numpy", specifier = ">=1.26" },
-    { name = "nvidia-cudss-cu12", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=0.8" },
-    { name = "nvmath-python", extras = ["cu12"], marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=1.0" },
     { name = "opencv-python", specifier = ">=4.10" },
-    { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=3.8" },
     { name = "pupil-apriltags", specifier = ">=1.0.4" },
     { name = "pyarrow", specifier = ">=18" },
-    { name = "pybind11", marker = "extra == 'dev'", specifier = "==2.13.6" },
-    { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },
     { name = "rerun-sdk", extras = ["datafusion"], specifier = ">=0.36,<0.37" },
-    { name = "ruff", marker = "extra == 'dev'", specifier = "==0.15.0" },
     { name = "scipy", specifier = ">=1.11" },
     { name = "specialist-description", git = "ssh://git@github.com/specialist-ai/specialist_description.git?branch=main" },
     { name = "telemetry-parser", specifier = ">=0.3" },
-    { name = "torch", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=2.11", index = "https://download.pytorch.org/whl/cu129" },
-    { name = "triton", marker = "sys_platform == 'linux' and extra == 'gpu'", specifier = ">=3.4", index = "https://download.pytorch.org/whl/cu129" },
     { name = "tyro", specifier = ">=0.9" },
 ]
-provides-extras = ["gpu", "dev"]
+
+[package.metadata.requires-dev]
+dev = [
+    { name = "mypy", specifier = ">=1.13" },
+    { name = "pre-commit", specifier = ">=3.8" },
+    { name = "pybind11", specifier = "==2.13.6" },
+    { name = "pytest", specifier = ">=8.0" },
+    { name = "ruff", specifier = "==0.15.0" },
+]
+gpu = [
+    { name = "cupy-cuda12x", extras = ["ctk"], marker = "sys_platform == 'linux'", specifier = ">=14.1" },
+    { name = "nvidia-cudss-cu12", marker = "sys_platform == 'linux'", specifier = ">=0.8" },
+    { name = "nvmath-python", extras = ["cu12"], marker = "sys_platform == 'linux'", specifier = ">=1.0" },
+    { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.11", index = "https://download.pytorch.org/whl/cu129" },
+    { name = "triton", marker = "sys_platform == 'linux'", specifier = ">=3.4", index = "https://download.pytorch.org/whl/cu129" },
+]
 
 [[package]]
 name = "specialist-description"

@@ -22,13 +22,8 @@ dependencies = [
   "imageio-ffmpeg>=0.5",
 ]
 
-[project.optional-dependencies]
-# CUDA backends: the Schur LM solver (`solver.gpu`) and the DIS optical-flow
-# frontend (`frontend.gpu_flow`). The cv2 flow covers a missing flow backend; a
-# missing solver backend fails the run under the default `require` mode. The
-# markers keep the extra empty where
-# no CUDA wheels exist, so `uv sync --extra gpu` is a no-op there rather than a
-# resolution failure.
+[dependency-groups]
+# CUDA backends; the linux markers keep the group empty where no CUDA wheels exist.
 gpu = [
   # The [ctk] and [cu12] extras carry the CUDA 12 runtime these wheels load at import.
   "cupy-cuda12x[ctk]>=14.1; sys_platform == 'linux'",
@@ -53,6 +48,9 @@ build-backend = "hatchling.build"
 
 [project.scripts]
 build-mei-factor = "specialist.vi_ba._buildext:main"
+
+[tool.uv]
+default-groups = ["dev", "gpu"]
 
 [tool.uv.sources]
 specialist-description = { git = "ssh://git@github.com/specialist-ai/specialist_description.git", branch = "main" }

@@ -17,8 +17,14 @@ is its rotation, and a_t_b is b's origin in frame a.
 ## Install
 
 ```
-uv sync --extra dev
+uv sync
 ```
+
+The `dev` and `gpu` dependency groups are defaults. So a plain `uv sync`, or any
+`uv run`, brings every machine to the full declared environment. The CUDA solve
+stack installs wherever its Linux markers apply. Nothing goes into the venv by
+hand. Use `uv run --no-sync` only for timed benchmark runs, so that no run spends
+its wall clock on dependency resolution.
 
 Pulls `gtsam>=4.3a0` (the alpha is the only release with cp312 wheels), `numpy`,
 `scipy`, `rerun-sdk`, `tyro`, `telemetry-parser`, `opencv-python`,
