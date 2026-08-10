@@ -8,6 +8,8 @@ import gtsam
 import numpy as np
 import scipy.sparse as sp
 
+from specialist.vi_ba.symbols import LANDMARK_CHAR
+
 __all__ = ["SparseSystem", "assert_backend", "_lm"]
 
 # gtsam's LevenbergMarquardtParams defaults.
@@ -15,7 +17,6 @@ _LAMBDA_INITIAL = 1e-5
 _LAMBDA_FACTOR = 10.0
 _LAMBDA_UPPER_BOUND = 1e5
 
-_LANDMARK_CHAR = "l"
 _LANDMARK_DIM = 3
 
 
@@ -33,7 +34,7 @@ class SparseSystem:
     for k in self.keys:
       dim = zero.at(k).shape[0]
       self.offsets[k] = (off, dim)
-      is_landmark = chr(gtsam.Symbol(k).chr()) == _LANDMARK_CHAR
+      is_landmark = chr(gtsam.Symbol(k).chr()) == LANDMARK_CHAR
       (landmark_cols if is_landmark else state_cols).extend(range(off, off + dim))
       off += dim
     self.n_cols = off

@@ -16,6 +16,11 @@ class CameraSummary:
   anchor_obs: int
   bounding_box_diagonal: float
   path_length: float
+  # Reprojection RMSE in pixels over the whole take, per lens.
+  front_rmse: float = float("nan")
+  rear_rmse: float = float("nan")
+  # Base tag the tracker is solved against; which arm carries it varies per take.
+  base_tag_id: int = -1
 
 
 @dataclass(frozen=True)

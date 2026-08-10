@@ -6,13 +6,13 @@ import subprocess
 from collections.abc import Iterable
 from pathlib import Path
 
+import numpy as np
 import pyarrow as pa
 import pyarrow.compute as pc
 from rerun.experimental import Chunk, LazyChunkStream, Mp4Reader, Mp4TranscodeOptions
 
 from specialist.loader.audio_sync import resolve_ffmpeg
-
-_NS = 1_000_000_000
+from specialist.record import schema
 
 
 def normalize_h264(src: Path, dst: Path) -> Path:
@@ -40,44 +40,96 @@ def normalize_h264(src: Path, dst: Path) -> Path:
 
 def _shift_chunk(
   chunk: Chunk,
-  timeline: str,
   shift_ns: int,
-  window_ns: tuple[int, int] | None,
+  window_ns: tuple[int, int],
+  period_ns: float,
+  stride: int,
 ) -> Iterable[Chunk]:
-  if chunk.is_static or timeline not in chunk.timeline_names:
+  if chunk.is_static or schema.TIMELINE not in chunk.timeline_names:
     return [chunk]
   batch = chunk.to_record_batch()
-  index = batch.schema.get_field_index(timeline)
+  index = batch.schema.get_field_index(schema.TIMELINE)
   shifted = pc.add(batch.column(index), pa.scalar(shift_ns, type=pa.duration("ns")))
-  if window_ns is not None:
-    # GOP granularity: a boundary group stays whole and may spill past the window.
-    values = [v.value for v in shifted]
-    if not values:
-      return []
-    if max(values) < window_ns[0] or min(values) > window_ns[1]:
-      return []
+  # GOP-granular trim: a group may spill past the window to keep every in-window frame.
+  values = [v.value for v in shifted]
+  if not values or max(values) < window_ns[0] or min(values) > window_ns[1]:
+    return []
   batch = batch.set_column(index, batch.schema.field(index), shifted)
-  return Chunk.from_record_batch(batch, index=timeline, entity_path=chunk.entity_path)
+  # Bucket by session-clock frame number, so every tracker's panel shows one instant.
+  session_frames = np.asarray([round(v / period_ns) for v in values], dtype=np.int64)
+  batch = batch.append_column(
+    pa.field(schema.KEYFRAME_TIMELINE, pa.int64()),
+    pa.array(schema.keyframe_index(session_frames, stride), type=pa.int64()),
+  )
+  return Chunk.from_record_batch(
+    batch,
+    index=[schema.TIMELINE, schema.KEYFRAME_TIMELINE],
+    entity_path=chunk.entity_path,
+  )
+
+
+def _stream_metadata(mp4: Path, entity_path: str) -> tuple[float, int]:
+  """The stream's frame period (ns) from its own PTS, and its keyframe-marker count."""
+  pts: list[int] = []
+  markers = 0
+  for chunk in (
+    Mp4Reader(
+      mp4,
+      timeline_name=schema.TIMELINE,
+      entity_path=entity_path,
+      transcode=Mp4TranscodeOptions(ffmpeg_override=resolve_ffmpeg()),
+    )
+    .stream()
+    .to_chunks()
+  ):
+    if chunk.is_static or schema.TIMELINE not in chunk.timeline_names:
+      continue
+    batch = chunk.to_record_batch()
+    names = batch.schema.names
+    pts.extend(v.value for v in batch.column(names.index(schema.TIMELINE)))
+    if "VideoStream:is_keyframe" in names:
+      flags = batch.column(names.index("VideoStream:is_keyframe")).to_pylist()
+      markers += sum(1 for f in flags if f is not None and len(f) and bool(f[0]))
+  if len(pts) < 2:
+    return float(schema.NS_PER_SECOND), markers
+  return float(np.median(np.diff(np.sort(np.asarray(pts))))), markers
+
+
+def _container_keyframes(mp4: Path) -> int:
+  """The keyframe count from the container's own sample table."""
+  import av
+
+  with av.open(str(mp4)) as container:
+    stream = container.streams.video[0]
+    return sum(1 for p in container.demux(stream) if p.size and p.is_keyframe)
 
 
 def video_chunks(
   mp4: Path,
   entity_path: str,
-  timeline: str,
-  time_shift: float = 0.0,
-  window: tuple[float, float] | None = None,
+  time_shift: float,
+  window: tuple[float, float],
 ) -> LazyChunkStream:
   """The file's video chunks on the session clock, GOP-trimmed to ``window``."""
+  shift_ns = round(time_shift * schema.NS_PER_SECOND)
+  window_ns = (
+    round(window[0] * schema.NS_PER_SECOND),
+    round(window[1] * schema.NS_PER_SECOND),
+  )
+  period_ns, markers = _stream_metadata(mp4, entity_path)
+  sync_samples = _container_keyframes(mp4)
+  if markers != sync_samples:
+    raise RuntimeError(
+      f"{entity_path}: the reader marked {markers} sync samples but the container "
+      f"holds {sync_samples}; the recording would not be randomly accessible"
+    )
+  stride = schema.keyframe_stride(schema.NS_PER_SECOND / period_ns)
   stream = Mp4Reader(
     mp4,
-    timeline_name=timeline,
+    timeline_name=schema.TIMELINE,
     entity_path=entity_path,
     transcode=Mp4TranscodeOptions(ffmpeg_override=resolve_ffmpeg()),
   ).stream()
-  if time_shift == 0.0 and window is None:
-    return stream
-  shift_ns = round(time_shift * _NS)
-  window_ns = None
-  if window is not None:
-    window_ns = (round(window[0] * _NS), round(window[1] * _NS))
-  return stream.flat_map(lambda c: _shift_chunk(c, timeline, shift_ns, window_ns))
+  return stream.flat_map(
+    lambda c: _shift_chunk(c, shift_ns, window_ns, period_ns, stride)
+  )

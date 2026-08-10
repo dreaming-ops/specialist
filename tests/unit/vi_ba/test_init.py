@@ -77,17 +77,28 @@ def test_pick_init_pair_finds_widest_with_min_shared() -> None:
     1: {0: np.zeros(2), 1: np.zeros(2), 2: np.zeros(2), 3: np.zeros(2)},
     2: {0: np.zeros(2), 4: np.zeros(2)},
   }
-  last, n_shared = pick_init_pair(tracks, n_keyframes=5, min_shared=2)
-  assert (last, n_shared) == (2, 2)
+  first, last, n_shared = pick_init_pair(tracks, n_keyframes=5, min_shared=2)
+  assert (first, last, n_shared) == (0, 2, 2)
 
 
 def test_pick_init_pair_falls_back_to_best_when_below_threshold() -> None:
   tracks: dict[int, dict[int, Float64Array]] = {
     0: {0: np.zeros(2), 1: np.zeros(2)},
   }
-  last, n_shared = pick_init_pair(tracks, n_keyframes=3, min_shared=10)
-  assert last == 1
+  first, last, n_shared = pick_init_pair(tracks, n_keyframes=3, min_shared=10)
+  assert (first, last) == (0, 1)
   assert n_shared == 1
+
+
+def test_pick_init_pair_slides_its_base_past_a_barren_opening() -> None:
+  """Keyframe 0 shares only one track; keyframe 1 onward carries a qualifying pair."""
+  tracks: dict[int, dict[int, Float64Array]] = {
+    0: {0: np.zeros(2), 1: np.zeros(2)},
+    1: {1: np.zeros(2), 2: np.zeros(2), 3: np.zeros(2)},
+    2: {1: np.zeros(2), 2: np.zeros(2), 3: np.zeros(2)},
+  }
+  first, last, n_shared = pick_init_pair(tracks, n_keyframes=4, min_shared=2)
+  assert (first, last, n_shared) == (1, 3, 2)
 
 
 def test_interpolate_camera_poses_handles_mid_window_init_pair() -> None:

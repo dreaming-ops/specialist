@@ -92,12 +92,9 @@ def _per_kf_rejected_keypoints(
 
 
 def _rms(values: list[float]) -> float:
-  """Root-mean-square of ``values``; NaN when empty."""
-  return float(np.sqrt(np.mean(np.square(values)))) if values else float("nan")
-
-
-def _aggregate_rmse_for_print(per_kf: list[float]) -> float:
-  return _rms([v for v in per_kf if np.isfinite(v)])
+  """Root-mean-square over the finite entries; NaN when there are none."""
+  finite = [v for v in values if np.isfinite(v)]
+  return float(np.sqrt(np.mean(np.square(finite)))) if finite else float("nan")
 
 
 def _project_tag_axes_per_kf(
@@ -133,6 +130,7 @@ def _project_tag_axes_per_kf(
 
 def _build_tracker_outputs(
   camera: PreparedCamera,
+  base_tag_id: int,
   poses: list[gtsam.Pose3],
   result: OptimizeResult,
   keys: CameraKeys,
@@ -142,24 +140,27 @@ def _build_tracker_outputs(
   cross_obs: list[CrossSighting],
   anchor_corners_by_tag: dict[int, Float64Array],
   base_tag_corners_world: dict[str, list[Float64Array]],
-  audio_offset: float,
 ) -> tuple[CameraVizData, CameraSummary]:
-  """One camera's Rerun payload from the solved values."""
-  front_points = points_from_values(
-    result.values, keys.front_landmark_key, camera.name, landmark_keep[0]
-  )
-  rear_points = points_from_values(
-    result.values, keys.rear_landmark_key, camera.name, landmark_keep[1]
-  )
+  """One camera's Rerun payload and summary line from the solved values."""
   # Post-bundle map cull: it cleans the map, RMSE and overlay, never the poses.
   front_points, front_reproj_per_kf, front_rmse_per_kf = cull_and_reproject(
-    front_points, camera.front_tracks_tri, poses, camera.front_lens
+    points_from_values(
+      result.values, keys.front_landmark_key, camera.name, landmark_keep[0]
+    ),
+    camera.front_tracks,
+    poses,
+    camera.front_lens,
   )
   rear_points, rear_reproj_per_kf, rear_rmse_per_kf = cull_and_reproject(
-    rear_points, camera.rear_tracks_tri, poses, camera.rear_lens
+    points_from_values(
+      result.values, keys.rear_landmark_key, camera.name, landmark_keep[1]
+    ),
+    camera.rear_tracks,
+    poses,
+    camera.rear_lens,
   )
-  front_rmse = _aggregate_rmse_for_print(front_rmse_per_kf)
-  rear_rmse = _aggregate_rmse_for_print(rear_rmse_per_kf)
+  front_rmse = _rms(front_rmse_per_kf)
+  rear_rmse = _rms(rear_rmse_per_kf)
   bbox_diagonal = bounding_box_diagonal(poses)
   summary = CameraSummary(
     name=camera.name,
@@ -167,6 +168,9 @@ def _build_tracker_outputs(
     anchor_obs=len(anchored_keyframes(camera)),
     bounding_box_diagonal=bbox_diagonal,
     path_length=path_length(poses),
+    front_rmse=front_rmse,
+    rear_rmse=rear_rmse,
+    base_tag_id=base_tag_id,
   )
   rear_note = f" rear_rmse={rear_rmse:.2f}px" if np.isfinite(rear_rmse) else ""
   print(
@@ -199,10 +203,11 @@ def _build_tracker_outputs(
   ]
   highrate_times = highrate_positions = highrate_quats = highrate_vels = None
   if camera.imu is not None and biases_final:
+    # The propagated series keeps the IMU sample times and never resamples.
     hr_t, hr_p, hr_q, hr_v = propagate_highrate(
       poses, camera.keyframe_times, velocities_final, biases_final, camera.imu
     )
-    highrate_times = hr_t - audio_offset
+    highrate_times = hr_t
     highrate_positions = hr_p
     highrate_quats = hr_q
     highrate_vels = hr_v
@@ -213,7 +218,7 @@ def _build_tracker_outputs(
       solved = np.asarray(camera.joint_angles[joint], dtype=np.float64)
       n_j = min(len(kf_t), len(solved))
       pinned = pin_angles_to_keyframes(f_times, f_angles, kf_t[:n_j], solved[:n_j])
-      joint_frame_angles[joint] = (f_times - audio_offset, pinned)
+      joint_frame_angles[joint] = (f_times, pinned)
   anchor_lines, cross_lines = _factor_observation_lines(
     camera,
     poses,
@@ -225,7 +230,8 @@ def _build_tracker_outputs(
   viz_data = CameraVizData(
     name=camera.name,
     body_poses=poses,
-    keyframe_times=np.asarray(camera.keyframe_times, dtype=np.float64) - audio_offset,
+    keyframe_times=np.asarray(camera.keyframe_times, dtype=np.float64),
+    keyframe_frames=np.asarray(camera.keyframe_frames, dtype=np.int64),
     front_points=front_points,
     rear_points=rear_points,
     front_keypoints=camera.front_keypoints,
@@ -293,12 +299,11 @@ def _base_tag_corners_world(
 
 @dataclass(frozen=True)
 class RunOutputs:
-  """A solved run's per-camera payloads and summaries, anchors and audio offsets."""
+  """A solved run's per-camera payloads and summaries, and its solved anchor poses."""
 
   viz_trackers: list[CameraVizData]
   per_tracker: list[CameraSummary]
   world_T_anchor: dict[int, gtsam.Pose3]
-  audio_offset_by_tracker: dict[str, float]
 
 
 def build_run_outputs(
@@ -309,12 +314,11 @@ def build_run_outputs(
   landmark_keep: LandmarkKeep,
   args: Args,
   cross_obs: list[CrossSighting],
-  audio_offsets: list[float],
   reference_anchor: gtsam.Pose3,
   reference_tag_id: int,
   secondary_anchor_world: dict[int, gtsam.Pose3],
 ) -> RunOutputs:
-  """Each camera's payload from one solved joint graph."""
+  """Each camera's payload from one solved graph, on the base recording's clock."""
   world_T_anchor = {reference_tag_id: reference_anchor, **secondary_anchor_world}
   anchor_corners_by_tag = {
     tag_id: tag_corners_in_frame(pose, args.anchor.tag_size)
@@ -324,16 +328,16 @@ def build_run_outputs(
     cameras, optimized_body_poses, args.gripper.tag_size
   )
   tag_sizes = _tag_size_by_id(args)
-  audio_offset_by_tracker = {t.name: audio_offsets[i] for i, t in enumerate(cameras)}
   by_observer: dict[str, list[CrossSighting]] = {t.name: [] for t in cameras}
   for sighting in cross_obs:
     by_observer[sighting.observer].append(sighting)
 
   viz_trackers: list[CameraVizData] = []
   per_tracker: list[CameraSummary] = []
-  for t in cameras:
+  for t, base_tag_id in zip(cameras, args.base_tag_ids, strict=True):
     viz_data, summary = _build_tracker_outputs(
       t,
+      base_tag_id=base_tag_id,
       poses=optimized_body_poses[t.name],
       result=result,
       keys=keys,
@@ -343,13 +347,7 @@ def build_run_outputs(
       cross_obs=by_observer[t.name],
       anchor_corners_by_tag=anchor_corners_by_tag,
       base_tag_corners_world=base_tag_corners,
-      audio_offset=audio_offset_by_tracker[t.name],
     )
     viz_trackers.append(viz_data)
     per_tracker.append(summary)
-  return RunOutputs(
-    viz_trackers,
-    per_tracker,
-    world_T_anchor,
-    audio_offset_by_tracker,
-  )
+  return RunOutputs(viz_trackers, per_tracker, world_T_anchor)

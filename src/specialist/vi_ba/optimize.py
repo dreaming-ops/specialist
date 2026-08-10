@@ -57,7 +57,7 @@ def optimize_graph(
   max_iterations: int,
   gpu: GpuMode = "off",
 ) -> OptimizeResult:
-  """LM solve; raises on a non-finite initial error, or a ``"require"`` GPU failure."""
+  """Run LM; raise on a non-finite initial error or a failed ``gpu="require"`` solve."""
   initial_error = float(graph.error(initial_values))
   if not np.isfinite(initial_error):
     raise RuntimeError(

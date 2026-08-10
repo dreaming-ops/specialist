@@ -17,17 +17,18 @@ __all__ = [
   "GripperCfg",
   "ImuCfg",
   "SolverCfg",
-  "WindowCfg",
   "validate",
 ]
-
 
 GpuMode = Literal["require", "auto", "off"]
 
 
 @dataclass
 class FrontendCfg:
+  # ORB features per frame for revisit matching.
   orb_n_features: int = 4000
+  # Target count of live flow-tracked corners.
+  max_corners: int = 4000
   # Run DIS optical flow on the GPU, falling back loudly to cv2 without torch/CUDA.
   gpu_flow: bool = True
 
@@ -82,6 +83,7 @@ class ImuCfg:
 class AnchorCfg:
   # Static wall-tag ids; the first is the reference anchor that pins the world gauge.
   tag_ids: tuple[int, ...]
+
   tag_size: float = 0.1
 
   # The anchor's four metric corners reproject into the bundle and pin absolute scale.
@@ -112,60 +114,50 @@ class SolverCfg:
 
 
 @dataclass
-class WindowCfg:
-  # Seconds of clip to process; None = the full capture.
-  duration: float | None
-  master_start: float = 0.0
+class Args:
+  """One run; the base recording carries the session id, window and camera slots."""
+
+  base: Path
+  anchor: AnchorCfg
   # Keyframe stride in frames, a multiple of the ~0.1 s lattice; 0 picks the lattice.
   keyframe_every: int = 0
 
-
-@dataclass
-class Args:
-  """One run's full configuration: inputs, window, tag ids and per-stage knobs."""
-
-  input_insvs: tuple[Path, ...]
-  window: WindowCfg
-  anchor: AnchorCfg
   output_dir: Path = Path("logs")
-  slots: tuple[str, ...] = ()  # auto-derive ("tracker_0", "tracker_1", ...)
-  # The base recording's id, shared by the track layer; a fresh uuid when unset.
-  session_id: str | None = None
   urdf_path: Path | None = None
   open_viewer: bool = True
+  # Replace this session's existing estimate and viz layers; off refuses.
+  overwrite: bool = False
   # One id per tracker; cross-tracker disambiguation needs distinct ids.
   base_tag_ids: tuple[int, ...] = ()
   # Per-tracker finger tag ids; 0 disables that tracker's finger.
   left_finger_tag_ids: tuple[int, ...] = ()
   right_finger_tag_ids: tuple[int, ...] = ()
+
   frontend: FrontendCfg = field(default_factory=FrontendCfg)
   imu: ImuCfg = field(default_factory=ImuCfg)
   gripper: GripperCfg = field(default_factory=GripperCfg)
   solver: SolverCfg = field(default_factory=SolverCfg)
 
 
-def validate(args: Args) -> None:
-  """Raise ``ValueError`` when the run configuration breaks an invariant."""
-  if not args.input_insvs:
-    raise ValueError("at least one .insv input required")
+def validate(args: Args, n_trackers: int) -> None:
+  """Check every run-configuration invariant before any prep starts."""
   if args.solver.max_iterations < 1:
     raise ValueError(
       f"--solver.max-iterations must be positive, got {args.solver.max_iterations}"
     )
   if not args.base_tag_ids:
     raise ValueError(
-      f"--base-tag-ids must be supplied (one per input, got "
-      f"{len(args.input_insvs)} inputs)"
+      f"--base-tag-ids must be supplied (one per tracker, got {n_trackers} cameras)"
     )
   for field_name, ids in (
     ("base_tag_ids", args.base_tag_ids),
     ("left_finger_tag_ids", args.left_finger_tag_ids),
     ("right_finger_tag_ids", args.right_finger_tag_ids),
   ):
-    if ids and len(ids) != len(args.input_insvs):
+    if ids and len(ids) != n_trackers:
       raise ValueError(
         f"{field_name} length ({len(ids)}) must match "
-        f"input_insvs ({len(args.input_insvs)})"
+        f"the recording's cameras ({n_trackers})"
       )
   if len(set(args.base_tag_ids)) != len(args.base_tag_ids):
     raise ValueError(

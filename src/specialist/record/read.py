@@ -11,13 +11,22 @@ import numpy.typing as npt
 from rerun.experimental import Chunk, RrdReader
 
 from specialist.record import schema
+from specialist.record.session import newest_values
 from specialist.vi_ba.geometry import quats_to_matrices
 
 Float64Array = npt.NDArray[np.float64]
 
-__all__ = ["TrackRun", "read_track"]
+__all__ = [
+  "TrackRun",
+  "check_frame_alignment",
+  "read_track",
+]
 
-_NS = 1e-9
+# Past this, a keyframe pairs its overlays with the wrong video frame.
+_ALIGNMENT_TOLERANCE = 1e-3
+
+_KEYFRAMES_SUFFIX = f"/{schema.BODY_KEYFRAMES}"
+_BASE_TAG_SUFFIX = f"/{schema.BASE_TAG}"
 
 
 @dataclass(frozen=True)
@@ -31,90 +40,88 @@ class TrackRun:
   body_T_base_tag_by_tracker: dict[str, Float64Array]  # (4, 4), identity if absent
 
 
-def _column_values(chunk: Chunk, component: str) -> list[Any] | None:
-  batch = chunk.to_record_batch()
-  names = batch.schema.names
-  if component not in names:
-    return None
-  return list(batch.column(names.index(component)))
-
-
 def _pose_rows(chunk: Chunk) -> tuple[Float64Array, Float64Array, Float64Array]:
   """(times, translations, quats_xyzw) of one temporal Transform3D chunk."""
   batch = chunk.to_record_batch()
   names = batch.schema.names
-  times = np.array(
-    [v.value * _NS for v in batch.column(names.index(schema.TIMELINE))],
-    dtype=np.float64,
+
+  def vectors(component: str, width: int) -> Float64Array:
+    # The writer stores one instance per row, so both nesting levels flatten away.
+    values = batch.column(names.index(component))
+    flat = values.flatten().flatten().to_numpy(zero_copy_only=False)
+    out: Float64Array = flat.astype(np.float64).reshape(len(values), width)
+    return out
+
+  return (
+    schema.seconds(batch.column(names.index(schema.TIMELINE))),
+    vectors("Transform3D:translation", 3),
+    vectors("Transform3D:quaternion", 4),
   )
-  translations = np.array(
-    [
-      np.asarray(v, dtype=np.float64).reshape(3)
-      for v in batch.column(names.index("Transform3D:translation")).to_pylist()
-    ]
-  )
-  quats = np.array(
-    [
-      np.asarray(v, dtype=np.float64).reshape(4)
-      for v in batch.column(names.index("Transform3D:quaternion")).to_pylist()
-    ]
-  )
-  return times, translations, quats
+
+
+def _pose_matrix(row: dict[str, Any]) -> Float64Array:
+  """One static Transform3D row as a 4x4 homogeneous pose."""
+  quat = np.asarray(row["Transform3D:quaternion"], dtype=np.float64).reshape(1, 4)
+  pose = np.eye(4)
+  pose[:3, :3] = quats_to_matrices(quat)[0]
+  pose[:3, 3] = np.asarray(row["Transform3D:translation"], dtype=np.float64).reshape(3)
+  return pose
+
+
+def check_frame_alignment(
+  frame_times: dict[str, Float64Array], layer_rrd: Path
+) -> None:
+  """Raises ValueError when a tracker's keyframe times miss its video frame times."""
+  run = read_track(layer_rrd)
+  for tracker, kf_times in run.kf_times_by_tracker.items():
+    if tracker not in frame_times:
+      raise ValueError(f"{tracker} has no video frame times")
+    times = frame_times[tracker]
+    positions = np.searchsorted(times, kf_times)
+    lo = times[np.clip(positions - 1, 0, len(times) - 1)]
+    hi = times[np.clip(positions, 0, len(times) - 1)]
+    nearest = np.minimum(np.abs(kf_times - lo), np.abs(kf_times - hi))
+    worst = float(nearest.max())
+    if worst > _ALIGNMENT_TOLERANCE:
+      raise ValueError(
+        f"{tracker}: keyframe times miss the video frames by up to "
+        f"{worst * 1e3:.2f} ms (tolerance {_ALIGNMENT_TOLERANCE * 1e3:.2f} ms)"
+      )
 
 
 def read_track(rrd_path: Path) -> TrackRun:
   """Load the track layer's keyframe poses, names, and base-tag frames."""
-  reader = RrdReader(str(rrd_path))
-  times_by_tracker: dict[str, list[Float64Array]] = {}
-  translations_by_tracker: dict[str, list[Float64Array]] = {}
-  quats_by_tracker: dict[str, list[Float64Array]] = {}
+  store = RrdReader(str(rrd_path)).store()
+  paths = store.schema().entity_paths()
+  kf_paths = [p for p in paths if p.endswith(_KEYFRAMES_SUFFIX)]
+  rows_by_tracker: dict[str, list[tuple[Float64Array, ...]]] = {}
+  keyframe_stream = store.stream().filter(
+    content=kf_paths,
+    components=["Transform3D:translation", "Transform3D:quaternion"],
+  )
+  for chunk in keyframe_stream.to_chunks() if kf_paths else ():
+    tracker = chunk.entity_path.strip("/").removesuffix(_KEYFRAMES_SUFFIX)
+    rows_by_tracker.setdefault(tracker, []).append(_pose_rows(chunk))
   base_tag_by_tracker: dict[str, Float64Array] = {}
-  slots: list[str] = []
-
-  for chunk in reader.store().stream().to_chunks():
-    path = chunk.entity_path
-    if path == "/__properties/run":
-      names = _column_values(chunk, "slots")
-      if names:
-        first = names[0]
-        slots = [str(n) for n in first.as_py()]
-      continue
-    if path.endswith("/body_keyframes"):
-      tracker = path.strip("/").removesuffix("/body_keyframes")
-      t, p, q = _pose_rows(chunk)
-      times_by_tracker.setdefault(tracker, []).append(t)
-      translations_by_tracker.setdefault(tracker, []).append(p)
-      quats_by_tracker.setdefault(tracker, []).append(q)
-      continue
-    if path.endswith("/body/base_tag") and chunk.is_static:
-      tracker = path.strip("/").removesuffix("/body/base_tag")
-      batch = chunk.to_record_batch()
-      names_ = batch.schema.names
-      if "Transform3D:translation" not in names_:
-        continue
-      t_col = batch.column(names_.index("Transform3D:translation")).to_pylist()
-      q_col = batch.column(names_.index("Transform3D:quaternion")).to_pylist()
-      translation = np.asarray(t_col[0], dtype=np.float64).reshape(3)
-      quat = np.asarray(q_col[0], dtype=np.float64).reshape(1, 4)
-      pose = np.eye(4)
-      pose[:3, :3] = quats_to_matrices(quat)[0]
-      pose[:3, 3] = translation
-      base_tag_by_tracker[tracker] = pose
+  for path in (p for p in paths if p.endswith(_BASE_TAG_SUFFIX)):
+    # No component projection: it can drop the chunk holding the winning row.
+    stream = store.stream().filter(content=path, is_static=True)
+    row = newest_values(stream.to_chunks())
+    if "Transform3D:translation" in row:
+      tracker = path.strip("/").removesuffix(_BASE_TAG_SUFFIX)
+      base_tag_by_tracker[tracker] = _pose_matrix(row)
 
   kf_times = {}
   kf_rotations = {}
   kf_translations = {}
-  for tracker, chunks_times in times_by_tracker.items():
-    times = np.concatenate(chunks_times)
+  for tracker, rows in rows_by_tracker.items():
+    times, translations, quats = (np.concatenate(c) for c in zip(*rows, strict=True))
     order = np.argsort(times, kind="stable")
     kf_times[tracker] = times[order]
-    kf_translations[tracker] = np.concatenate(translations_by_tracker[tracker])[order]
-    quats = np.concatenate(quats_by_tracker[tracker])[order]
-    kf_rotations[tracker] = quats_to_matrices(quats)
-  if not slots:
-    slots = sorted(kf_times)
+    kf_translations[tracker] = translations[order]
+    kf_rotations[tracker] = quats_to_matrices(quats[order])
   return TrackRun(
-    slots=slots,
+    slots=sorted(kf_times),
     kf_times_by_tracker=kf_times,
     kf_rotations_by_tracker=kf_rotations,
     kf_translations_by_tracker=kf_translations,

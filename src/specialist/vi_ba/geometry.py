@@ -9,7 +9,14 @@ from scipy.spatial.transform import Rotation
 
 Float64Array = npt.NDArray[np.float64]
 
-__all__ = ["bounding_box_diagonal", "max_parallax", "path_length"]
+__all__ = [
+  "bounding_box_diagonal",
+  "matrices_to_quats",
+  "max_parallax",
+  "path_length",
+  "quat_xyzw",
+  "quats_to_matrices",
+]
 
 
 def _canonical(quats: Float64Array) -> Float64Array:

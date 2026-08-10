@@ -1,36 +1,34 @@
-"""``vi_ba.single_camera``: two-lens concurrency, anchor seeds, loop-closure merge."""
+"""``vi_ba.single_camera``: anchor-PnP seeds and the loop-closure landmark merge."""
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
+
 import gtsam
 import numpy as np
-import pytest
 
 from specialist.loader.mei_model import mei_project
 from specialist.vi_ba.build import LensSetup
-from specialist.vi_ba.pipeline import LensFrontendConfig, run_lens_frontend
+from specialist.vi_ba.configs import FrontendCfg
 from specialist.vi_ba.single_camera import (
   _add_revisit_landmarks,
   _anchor_metric_scale,
   _anchor_pose_seed,
-  run_two_concurrently,
 )
+from specialist.vi_ba.tracks import run_lens_frontend
 from tests.frame_fixtures import translating_frames
 from tests.mei_fixtures import narrow_mei_params
 
 
-def test_returns_results_in_order() -> None:
-  a, b = run_two_concurrently(lambda: "a", lambda: 2)
-  assert a == "a"
-  assert b == 2
-
-
-def test_propagates_exceptions() -> None:
-  def boom() -> int:
-    raise ValueError("boom")
-
-  with pytest.raises(ValueError, match="boom"):
-    run_two_concurrently(lambda: 1, boom)
+def _cpu_frontend_cfg() -> FrontendCfg:
+  """A small feature budget and full-resolution cv2 flow, keeping the tests GPU-free."""
+  return FrontendCfg(
+    orb_n_features=300,
+    max_corners=300,
+    gpu_flow=False,
+    flow_scale=1.0,
+    ransac_threshold=3.0,
+  )
 
 
 def _tracks_equal(
@@ -48,16 +46,16 @@ def _tracks_equal(
 
 
 def test_frontend_parallel_matches_serial() -> None:
-  """Concurrent lens frontends yield exactly the serial run's tracks."""
   params = narrow_mei_params()
-  cfg = LensFrontendConfig(n_features=300)
+  cfg = _cpu_frontend_cfg()
   front = translating_frames(6, 2, seed=1)
   rear = translating_frames(6, 3, seed=2)
 
-  (_, pf_tracks), (_, pr_tracks) = run_two_concurrently(
-    lambda: run_lens_frontend(front, params, cfg),
-    lambda: run_lens_frontend(rear, params, cfg),
-  )
+  with ThreadPoolExecutor(max_workers=2) as pool:
+    fut_front = pool.submit(run_lens_frontend, front, params, cfg)
+    fut_rear = pool.submit(run_lens_frontend, rear, params, cfg)
+    _, pf_tracks = fut_front.result()
+    _, pr_tracks = fut_rear.result()
   _, sf_tracks = run_lens_frontend(front, params, cfg)
   _, sr_tracks = run_lens_frontend(rear, params, cfg)
 
@@ -109,23 +107,24 @@ def test_anchor_metric_scale_recovers_scale() -> None:
     )
     for k in range(n)
   ]
-  scale = _anchor_metric_scale(vo_body, anchor_obs, ext, ext)
+  lens = LensSetup(body_T_lens=ext, params=narrow_mei_params())
+  scale = _anchor_metric_scale(vo_body, anchor_obs, lens, lens)
   assert scale is not None
   assert abs(scale - 1.0 / c) < 1e-9
 
 
 def test_anchor_metric_scale_none_when_degenerate() -> None:
   """Fewer than 3 anchored keyframes or a zero-spread trajectory yields ``None``."""
-  ext = gtsam.Pose3()
+  lens = LensSetup(body_T_lens=gtsam.Pose3(), params=narrow_mei_params())
   two = {k: {"front": gtsam.Pose3()} for k in range(2)}
-  assert _anchor_metric_scale([gtsam.Pose3()] * 2, two, ext, ext) is None
+  assert _anchor_metric_scale([gtsam.Pose3()] * 2, two, lens, lens) is None
   # Three anchored views but the VO is stationary → zero spread → None.
   stationary = [gtsam.Pose3()] * 3
   obs = {
     k: {"front": gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(0.1 * k, 0.0, 0.5)).inverse()}
     for k in range(3)
   }
-  assert _anchor_metric_scale(stationary, obs, ext, ext) is None
+  assert _anchor_metric_scale(stationary, obs, lens, lens) is None
 
 
 def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:

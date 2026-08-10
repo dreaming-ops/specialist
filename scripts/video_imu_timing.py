@@ -18,9 +18,9 @@ if __package__ in (None, ""):  # `python scripts/x.py` puts scripts/ itself firs
   sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from scripts._probe import finalize_probe, verdict
 from specialist.loader.audio_sync import MIN_PEAK_RATIO, correlation_offset
+from specialist.loader.capture import probe_capture
 from specialist.loader.parse_insv import load_insv
 from specialist.vi_ba.features import detect_corners
-from specialist.vi_ba.pipeline import probe_capture
 
 Float64Array = npt.NDArray[np.float64]
 UInt8Array = npt.NDArray[np.uint8]

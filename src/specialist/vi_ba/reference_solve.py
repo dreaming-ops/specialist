@@ -1,4 +1,4 @@
-"""Joint VI-BA solve: landmark cull-reoptimize, then secondary-anchor re-estimates."""
+"""Joint VI-BA solve with a landmark cull, retried per candidate reference anchor."""
 
 from __future__ import annotations
 
@@ -6,9 +6,9 @@ from dataclasses import dataclass, replace
 
 import gtsam
 import numpy as np
-import numpy.typing as npt
 
 from specialist.vi_ba.compose import (
+  _FINGER_JOINTS,
   CameraKeys,
   CrossSighting,
   LandmarkKeep,
@@ -21,8 +21,6 @@ from specialist.vi_ba.landmark_cull import cull_outlier_landmarks
 from specialist.vi_ba.optimize import OptimizeResult, optimize_graph
 from specialist.vi_ba.single_camera import PreparedCamera
 from specialist.vi_ba.tag_detection import tag_corners_in_frame
-
-Float64Array = npt.NDArray[np.float64]
 
 __all__ = [
   "ReferenceSolve",
@@ -104,10 +102,8 @@ def _solve_with_cull_reoptimize(
     r_pts_1 = points_from_values(
       result.values, keys.rear_landmark_key, t.name, t.rear_points
     )
-    front_keep = cull_outlier_landmarks(
-      f_pts_1, t.front_tracks_tri, poses_1, t.front_lens
-    )
-    rear_keep = cull_outlier_landmarks(r_pts_1, t.rear_tracks_tri, poses_1, t.rear_lens)
+    front_keep = cull_outlier_landmarks(f_pts_1, t.front_tracks, poses_1, t.front_lens)
+    rear_keep = cull_outlier_landmarks(r_pts_1, t.rear_tracks, poses_1, t.rear_lens)
     landmark_keep[t.name] = (front_keep, rear_keep)
   first = result
   outlier_keys = _outlier_landmark_keys(cameras, keys, landmark_keep)
@@ -286,7 +282,7 @@ def solve_joint(
   args: Args,
   cross_obs: list[CrossSighting],
 ) -> ReferenceSolve:
-  """Solve the joint graph with the first configured tag pinning the world."""
+  """Solve the joint graph with the first enabled tag pinning the world."""
   ref_anchor = align_to_shared_world(cameras, args.anchor.tag_ids)
   return _solve_joint_graph(cameras, keys, args, cross_obs, ref_anchor)
 
@@ -296,7 +292,7 @@ def adopt_ba_refined_estimates(
 ) -> None:
   """Store each camera's solved base-tag pose and joint angles."""
   for t in cameras:
-    for finger_idx, joint_name in ((0, "left_finger"), (1, "right_finger")):
+    for finger_idx, joint_name in enumerate(_FINGER_JOINTS):
       angles = [float("nan")] * t.n_keyframes
       for kf in range(t.n_keyframes):
         tkey = keys.theta_key(t.name, finger_idx, kf)
@@ -306,15 +302,3 @@ def adopt_ba_refined_estimates(
     bt_key = keys.base_tag_key(t.name)
     if result.values.exists(bt_key):
       t.body_T_base_tag = result.values.atPose3(bt_key)
-  # Carry the optimized velocities and biases; the export hands them to IMU propagation.
-  for t in cameras:
-    if not result.values.exists(keys.velocity_key(t.name, 0)):
-      continue
-    t.velocities = [
-      np.asarray(result.values.atVector(keys.velocity_key(t.name, i)))
-      for i in range(t.n_keyframes)
-    ]
-    t.biases = [
-      result.values.atConstantBias(keys.bias_key(t.name, i))
-      for i in range(t.n_keyframes)
-    ]

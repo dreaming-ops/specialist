@@ -24,14 +24,12 @@ Float64Array = npt.NDArray[np.float64]
 def imu_chunks(
   tracker: str,
   insv: InsvData,
-  time_shift: float = 0.0,
-  window: tuple[float, float] | None = None,
+  time_shift: float,
+  window: tuple[float, float],
 ) -> list[Chunk]:
   """Gyro (rad/s) and accel (m/s^2) at native times, trimmed row-exact to ``window``."""
   shifted = insv.imu_timestamps + time_shift
-  keep = np.ones(len(shifted), dtype=bool)
-  if window is not None:
-    keep = (shifted >= window[0]) & (shifted <= window[1])
+  keep = (shifted >= window[0]) & (shifted <= window[1])
   times = rr.TimeColumn(schema.TIMELINE, duration=shifted[keep])
   gyro = insv.gyro[keep]
   return [
@@ -171,10 +169,18 @@ def write_base_recording(
   merged = LazyChunkStream.merge(
     *video_streams, LazyChunkStream.from_iter(sidecar_chunks)
   )
-  store = merged.collect(optimize=OptimizationProfile.OBJECT_STORE)
-  stream = rr.RecordingStream(schema.APPLICATION_ID, recording_id=session_id)
-  stream.save(str(out_path))
-  send_chunks(store, recording=stream)
-  for name, values in properties.items():
-    stream.send_property(name, rr.AnyValues(**values))
-  stream.flush()
+  # Dense `false` rows of `is_keyframe` block GoP rebatching; keep the marker sparse.
+  optimize = dataclasses.replace(OptimizationProfile.OBJECT_STORE, fix_keyframe=True)
+  store = merged.collect(optimize=optimize)
+  partial = out_path.parent / (out_path.name + ".partial")
+  partial.unlink(missing_ok=True)
+  try:
+    with rr.RecordingStream(schema.APPLICATION_ID, recording_id=session_id) as stream:
+      stream.save(str(partial))
+      send_chunks(store, recording=stream)
+      for name, values in properties.items():
+        if values:
+          stream.send_property(name, rr.AnyValues(**values))
+    partial.replace(out_path)
+  finally:
+    partial.unlink(missing_ok=True)

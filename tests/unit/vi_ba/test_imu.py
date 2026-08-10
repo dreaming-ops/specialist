@@ -7,7 +7,6 @@ import numpy as np
 
 from specialist.vi_ba.imu import (
   ImuSamples,
-  factory_imu_bias,
   find_stationary_windows,
   integrate_samples,
   make_preintegration_params,
@@ -44,14 +43,6 @@ def test_constant_gyro_yields_correct_rotation() -> None:
   assert abs(omega[2] - 0.499) < 5e-4
   assert abs(omega[0]) < 1e-3
   assert abs(omega[1]) < 1e-3
-
-
-def test_factory_imu_bias_decodes_metadata_layout() -> None:
-  """Factory layout: 6 floats, gyro biases (rad/s) first, accel (m/s²) last."""
-  numbers = np.array([0.01, -0.02, 0.03, -0.04, 0.05, -0.06])
-  bias = factory_imu_bias(numbers)
-  assert np.allclose(bias.gyroscope(), [0.01, -0.02, 0.03])
-  assert np.allclose(bias.accelerometer(), [-0.04, 0.05, -0.06])
 
 
 def test_slice_samples_at_keyframes_partitions_evenly() -> None:

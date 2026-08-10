@@ -19,7 +19,6 @@ from specialist.vi_ba.configs import (
   AnchorCfg,
   Args,
   SolverCfg,
-  WindowCfg,
 )
 from specialist.vi_ba.features import mask_plane
 from specialist.vi_ba.imu import make_preintegration_params
@@ -132,6 +131,7 @@ def _dummy_camera(
   n = len(body_poses)
   return PreparedCamera(
     name=name,
+    keyframe_frames=np.arange(n, dtype=np.int64) * 3,
     body_poses=body_poses,
     velocities=(
       velocities if velocities is not None else [np.zeros(3) for _ in range(n)]
@@ -140,11 +140,10 @@ def _dummy_camera(
     preintegrated=preintegrated or [],
     front_lens=LensSetup(body_T_lens=front_ext, params=narrow_mei_params()),
     rear_lens=LensSetup(body_T_lens=rear_ext, params=narrow_mei_params()),
-    front_tracks_tri={},
-    rear_tracks_tri={},
+    front_tracks={},
+    rear_tracks={},
     front_points={},
     rear_points={},
-    decoded_width=2880,
     anchor_obs_by_tag=(
       {prep_anchor_tag_id: anchor_obs_per_kf} if anchor_obs_per_kf else {}
     )
@@ -383,8 +382,7 @@ def _pinned_solve_fixture(
     preintegrated=_pim_chain(n, attitude),
   )
   args = Args(
-    input_insvs=(Path("a.insv"),),
-    window=WindowCfg(duration=None),
+    base=Path("session_base.rrd"),
     anchor=AnchorCfg(tag_ids=(1, 5) if with_secondary else (1,)),
     base_tag_ids=(2,),
     solver=SolverCfg(velocity_prior_sigma=0.01, gpu="off"),

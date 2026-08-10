@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gtsam
 import numpy as np
+import pytest
 from gtsam.symbol_shorthand import B, V, X
 
 from specialist.vi_ba.build import (
@@ -18,7 +19,7 @@ from specialist.vi_ba.imu import (
   make_preintegration_params,
 )
 from specialist.vi_ba.optimize import optimize_graph
-from tests.mei_fixtures import pinhole_mei_params, project_point
+from tests.mei_fixtures import front_only_graph, pinhole_mei_params, project_point
 
 _GRAVITY = np.array([0.0, 0.0, -9.81])
 _LENS = LensSetup(body_T_lens=gtsam.Pose3(), params=pinhole_mei_params())
@@ -87,6 +88,21 @@ def test_build_graph_dual_lens_uses_disjoint_landmark_keys() -> None:
   assert values.exists(rear_landmark_key(0))
   # 2 tight priors + 2 front obs + 2 rear obs = 6.
   assert graph.size() == 6
+
+
+def test_optimize_graph_rejects_non_finite_initial_error_before_solving(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  poses = [gtsam.Pose3(), gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(np.nan, 0.0, 0.0))]
+  graph, values = front_only_graph(poses, _LENS, {}, {})
+  assert not np.isfinite(graph.error(values))
+
+  def _no_solve(*args: object, **kwargs: object) -> None:
+    raise AssertionError("the optimizer must not run on a non-finite graph")
+
+  monkeypatch.setattr(gtsam, "LevenbergMarquardtOptimizer", _no_solve)
+  with pytest.raises(RuntimeError, match="not finite"):
+    optimize_graph(graph, values, max_iterations=50)
 
 
 def _stationary_pim() -> gtsam.PreintegratedCombinedMeasurements:

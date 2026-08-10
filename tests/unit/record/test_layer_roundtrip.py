@@ -31,7 +31,7 @@ def _tracker(name: str, offset: float) -> CameraVizData:
   )
 
 
-def _write(tmp_path: Path, session_id: str | None) -> Path:
+def _write(tmp_path: Path, session_id: str) -> Path:
   rrd = tmp_path / "layer.rrd"
   cameras = [_tracker("tracker_0", 0.0), _tracker("tracker_1", 1.0)]
   summary = Summary(
@@ -50,7 +50,6 @@ def _write(tmp_path: Path, session_id: str | None) -> Path:
     viz_trackers=cameras,
     per_tracker=per_tracker,
     world_T_anchor={0: gtsam.Pose3()},
-    audio_offset_by_tracker={"tracker_0": 0.0, "tracker_1": 1.3},
   )
   write_track_layer(
     rrd_path=rrd,
@@ -59,6 +58,8 @@ def _write(tmp_path: Path, session_id: str | None) -> Path:
     reference_tag_id=0,
     anchor_tag_size=0.1,
     session_id=session_id,
+    # -1 disables tag masking; these cameras carry no tag detections anyway.
+    mask_pad_px=-1,
     open_viewer=False,
   )
   return rrd
@@ -91,9 +92,9 @@ def test_layer_identity_and_no_recording_info(tmp_path: Path) -> None:
   reader = RrdReader(str(rrd))
   assert [e.recording_id for e in reader.recordings()] == ["sess_x"]
   chunk_paths = {c.entity_path for c in reader.store().stream().to_chunks()}
-  # No RecordingInfo chunk to collide on merge, yet the named run properties remain.
+  # send_properties=False writes no RecordingInfo chunk to collide on catalog merge.
   assert "/__properties" not in chunk_paths
-  assert "/__properties/run" in chunk_paths
+  assert "/__properties/solver" in chunk_paths
   assert "/__properties/solver" in chunk_paths
   assert "/__properties/quality_tracker_0" in chunk_paths
   # Path parity with the schema builders.
@@ -102,7 +103,7 @@ def test_layer_identity_and_no_recording_info(tmp_path: Path) -> None:
 
 
 def test_velocity_column_lands(tmp_path: Path) -> None:
-  rrd = _write(tmp_path, session_id=None)
+  rrd = _write(tmp_path, session_id="sess_y")
   rows = 0
   for chunk in RrdReader(str(rrd)).store().stream().to_chunks():
     if chunk.entity_path != "/tracker_0/body" or chunk.is_static:

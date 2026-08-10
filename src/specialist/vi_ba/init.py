@@ -16,13 +16,11 @@ from specialist.vi_ba.geometry import max_parallax
 
 Float64Array = npt.NDArray[np.float64]
 
-# Incremental-SfM tuning: parallax, PnP inliers, triangulation residual, passes.
-_SFM_MIN_PARALLAX = float(np.deg2rad(0.6))
-# Minimum parallax the two-view init pair (0, K) must span.
-_SFM_INIT_PAIR_MIN_PARALLAX = float(np.deg2rad(2.0))
-_SFM_MIN_PNP_POINTS = 6
-_SFM_MAX_REPROJ = 0.01
-_SFM_PASSES = 8
+_SFM_MIN_PARALLAX = float(np.deg2rad(0.6))  # to triangulate a track
+_SFM_INIT_PAIR_MIN_PARALLAX = float(np.deg2rad(2.0))  # the bootstrap pair must span
+_SFM_MIN_PNP_POINTS = 6  # inliers to register a keyframe by PnP
+_SFM_MAX_REPROJ = 0.01  # median triangulation residual on the normalized plane
+_SFM_PASSES = 8  # sequential registration passes
 
 
 @dataclass(frozen=True)
@@ -80,26 +78,46 @@ def two_view_essential(
   return R.astype(np.float64), t.flatten().astype(np.float64), int(n_inliers)
 
 
+# Keyframes the init-pair base may slide over when the first has too few tracks.
+_INIT_BASE_SLIDE = 32
+
+
+def _widest_pair_from(
+  tracks: dict[int, dict[int, Float64Array]],
+  first: int,
+  n_keyframes: int,
+  min_shared: int,
+) -> tuple[int, int]:
+  """``(K, shared)`` of the widest ``(first, K)`` pair, else of the one sharing most."""
+  shared_by_last: Counter[int] = Counter()
+  for obs in tracks.values():
+    if first in obs:
+      shared_by_last.update(kf for kf in obs if kf != first)
+
+  for last in range(n_keyframes - 1, first, -1):
+    if shared_by_last[last] >= min_shared:
+      return last, shared_by_last[last]
+  best_last, best_shared = min(first + 1, n_keyframes - 1), 0
+  for last in range(first + 1, n_keyframes):
+    if shared_by_last[last] > best_shared:
+      best_last, best_shared = last, shared_by_last[last]
+  return best_last, best_shared
+
+
 def pick_init_pair(
   tracks: dict[int, dict[int, Float64Array]],
   n_keyframes: int,
   min_shared: int,
-) -> tuple[int, int]:
-  """``(K, n_shared)``: widest ``(0, K)`` with ``min_shared``, else the most shared."""
-  # Keyframe-0 tracks surviving to each keyframe: every pair's shared count at once.
-  shared_by_last: Counter[int] = Counter()
-  for obs in tracks.values():
-    if 0 in obs:
-      shared_by_last.update(kf for kf in obs if kf != 0)
-
-  for last in range(n_keyframes - 1, 0, -1):
-    if shared_by_last[last] >= min_shared:
-      return last, shared_by_last[last]
-  best_last, best_shared = 1, 0
-  for last in range(1, n_keyframes):
-    if shared_by_last[last] > best_shared:
-      best_last, best_shared = last, shared_by_last[last]
-  return best_last, best_shared
+) -> tuple[int, int, int]:
+  """Widest ``(first, K, n_shared)`` with ≥``min_shared`` tracks, else the best seen."""
+  best = (0, min(1, n_keyframes - 1), 0)
+  for first in range(min(_INIT_BASE_SLIDE, max(1, n_keyframes - 1))):
+    last, shared = _widest_pair_from(tracks, first, n_keyframes, min_shared)
+    if shared >= min_shared:
+      return first, last, shared
+    if shared > best[2]:
+      best = (first, last, shared)
+  return best
 
 
 def interpolate_camera_poses(
@@ -171,11 +189,43 @@ def _pnp_bearings(
   return r.astype(np.float64), tvec.reshape(3).astype(np.float64)
 
 
+def _bootstrap_pair(
+  bearings: dict[int, dict[int, Float64Array]],
+  tracks_by_kf: dict[int, list[int]],
+  frames: list[int],
+  min_shared: int,
+) -> tuple[int, int] | None:
+  """Nearest pair with ``min_shared`` tracks and enough parallax, else the widest."""
+  fallback: tuple[int, int] | None = None
+  for base, first in enumerate(frames[:_INIT_BASE_SLIDE]):
+    widest: int | None = None
+    for candidate in frames[base + 1 :]:
+      shared = [tid for tid in tracks_by_kf[first] if candidate in bearings[tid]]
+      if len(shared) < min_shared:
+        continue
+      widest = candidate
+      parallax = float(
+        np.median(
+          [
+            np.arccos(
+              np.clip(bearings[tid][first] @ bearings[tid][candidate], -1.0, 1.0)
+            )
+            for tid in shared
+          ]
+        )
+      )
+      if parallax >= _SFM_INIT_PAIR_MIN_PARALLAX:
+        return first, candidate
+    if widest is not None and fallback is None:
+      fallback = (first, widest)
+  return fallback
+
+
 def incremental_sfm(
   bearings: dict[int, dict[int, Float64Array]],
   min_shared: int = 40,
 ) -> tuple[dict[int, gtsam.Pose3], dict[int, Float64Array]]:
-  """``(lens_poses, landmark_map)`` of incremental monocular SfM, or empty dicts."""
+  """SfM camera poses and landmarks in the bootstrap frame and scale, or empty dicts."""
   cv2.setRNGSeed(0)  # deterministic RANSAC for solvePnP/essential
   frames = sorted({k for tr in bearings.values() for k in tr})
   if len(frames) < 2:
@@ -253,25 +303,10 @@ def incremental_sfm(
       return
     landmark_map[tid] = x
 
-  first = frames[0]
-  last: int | None = None
-  for candidate in frames[1:]:
-    shared = [tid for tid in tracks_by_kf[first] if candidate in bearings[tid]]
-    if len(shared) < min_shared:
-      continue
-    parallax = float(
-      np.median(
-        [
-          np.arccos(np.clip(bearings[tid][first] @ bearings[tid][candidate], -1.0, 1.0))
-          for tid in shared
-        ]
-      )
-    )
-    last = candidate
-    if parallax >= _SFM_INIT_PAIR_MIN_PARALLAX:
-      break
-  if last is None:
+  pair = _bootstrap_pair(bearings, tracks_by_kf, frames, min_shared)
+  if pair is None:
     return {}, {}
+  first, last = pair
   shared = [tid for tid in tracks_by_kf[first] if last in bearings[tid]]
   r_cw, t_cw, _ = two_view_essential(
     np.array([bearings[tid][first] for tid in shared]),

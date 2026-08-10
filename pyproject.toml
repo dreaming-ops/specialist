@@ -12,6 +12,7 @@ dependencies = [
   "scipy>=1.11",
   # The [datafusion] extra is the catalog client's query engine.
   "rerun-sdk[datafusion]>=0.36,<0.37",
+  "av>=13",
   "tyro>=0.9",
   "telemetry-parser>=0.3",
   "opencv-python>=4.10",

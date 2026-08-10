@@ -8,7 +8,7 @@ from rerun.experimental import RrdReader
 
 from specialist.record.layer import write_track_layer
 from specialist.vi_ba.summary import Summary
-from specialist.vi_ba.viz import CameraVizData
+from specialist.vi_ba.viz import CameraVizData, _overlay_index
 from specialist.vi_ba.viz_build import RunOutputs
 
 
@@ -33,7 +33,6 @@ def test_rrd_roundtrip(tmp_path: Path) -> None:
     viz_trackers=cameras,
     per_tracker=[],
     world_T_anchor={0: gtsam.Pose3()},
-    audio_offset_by_tracker={t.name: 0.0 for t in cameras},
   )
   summary = Summary(
     sources=("a.insv",),
@@ -49,6 +48,9 @@ def test_rrd_roundtrip(tmp_path: Path) -> None:
     summary=summary,
     reference_tag_id=0,
     anchor_tag_size=0.1,
+    session_id="sess_viz",
+    # -1 disables tag masking; these cameras carry no tag detections anyway.
+    mask_pad_px=-1,
     open_viewer=False,
   )
   reader = RrdReader(str(rrd))
@@ -65,3 +67,15 @@ def test_rrd_roundtrip(tmp_path: Path) -> None:
   }
   missing = expected - paths
   assert not missing, f"missing entities {sorted(missing)} in {sorted(paths)}"
+
+
+def test_overlay_index_bounds_each_keyframe_to_one_frame() -> None:
+  """Clearing rows sit a frame period after each keyframe, on the video clock alone."""
+  kf_times = np.array([0.0, 0.1, 0.2])
+  kf_col = object()
+  data, clear = _overlay_index(kf_times, 1.0 / 30.0, [], kf_col)  # type: ignore[arg-type]
+  assert len(data) == 2 and data[1] is kf_col
+  assert clear is not None and len(clear) == 1
+  fallback = [object()]
+  same, none = _overlay_index(None, 1.0 / 30.0, fallback, None)  # type: ignore[arg-type]
+  assert same is fallback and none is None

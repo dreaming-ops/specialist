@@ -8,7 +8,7 @@ Usage:
 from __future__ import annotations
 
 import tempfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +16,7 @@ import numpy as np
 import tyro
 
 from specialist.loader.audio_sync import sync_two_captures
+from specialist.loader.capture import capture_duration, probe_capture
 from specialist.loader.parse_insv import load_insv
 from specialist.record import schema
 from specialist.record.base import (
@@ -26,7 +27,6 @@ from specialist.record.base import (
 )
 from specialist.record.video import normalize_h264, video_chunks
 from specialist.vi_ba.configs import ImuCfg
-from specialist.vi_ba.pipeline import capture_duration
 
 
 @dataclass
@@ -34,20 +34,25 @@ class Args:
   """Base-recording conversion of one session."""
 
   # One _00_ master .insv per capture; the first defines the session clock.
-  input_insvs: tuple[Path, ...] = ()
+  input_insvs: tuple[Path, ...]
   # Recording id shared by this session's base recording and track layers.
-  session_id: str = ""
-  # One name per capture; it must match the solve's --slots.
+  session_id: str
+  # One name per capture; the solve reads them back off the recording.
   slots: tuple[str, ...] = ()
+  # Dataset root; the base recording lands as ``base/<session-id>.rrd``.
   output_dir: Path = Path("logs")
   # Seconds to add to each capture's clock, for clips that share no audible event.
   audio_offsets: tuple[float, ...] = ()
-  imu: ImuCfg = field(default_factory=ImuCfg)
+  # Replace an existing base recording.
+  overwrite: bool = False
+
+  # Clamp the session to its first N seconds, for short test conversions.
+  duration: float | None = None
+  # The IMU mounting rotation, stored with each capture's calibration for the solve.
+  body_R_imu: tuple[tuple[float, float, float], ...] = ImuCfg.body_R_imu
 
 
 def main(args: Args) -> None:
-  if not args.input_insvs or not args.session_id:
-    raise SystemExit("--input-insvs and --session-id are required")
   names = (
     list(args.slots)
     if args.slots
@@ -55,7 +60,14 @@ def main(args: Args) -> None:
   )
   if len(names) != len(args.input_insvs):
     raise SystemExit("--slots must match --input-insvs in length")
-  rears = [p.with_name(p.name.replace("_00_", "_10_", 1)) for p in args.input_insvs]
+  out_path = args.output_dir / "base" / f"{args.session_id}.rrd"
+  if out_path.exists() and not args.overwrite:
+    raise SystemExit(
+      f"{out_path} exists; pass --overwrite to replace it (a registered base "
+      f"must then be re-registered with register.py --replace-base "
+      f"{args.session_id}, or its byte-range index goes stale)"
+    )
+  rears = [rear for rear, _, _ in map(probe_capture, args.input_insvs)]
   if args.audio_offsets:
     if len(args.audio_offsets) != len(args.input_insvs):
       raise SystemExit("--audio-offsets needs one value per --input-insvs")
@@ -71,20 +83,18 @@ def main(args: Args) -> None:
         f"peak_ratio={sync.peak_ratio:.2f}"
       )
 
-  # Session window: latest capture start to earliest end, both lenses included.
-  durations = [
-    min(capture_duration(master), capture_duration(rear))
-    for master, rear in zip(args.input_insvs, rears, strict=True)
-  ]
+  durations = [capture_duration(p) for p in args.input_insvs]
   window = (
     max(-off for off in offsets),
     min(dur - off for dur, off in zip(durations, offsets, strict=True)),
   )
+  if args.duration is not None:
+    window = (window[0], min(window[1], window[0] + args.duration))
   print(f"session window: [{window[0]:.3f}, {window[1]:.3f}] s")
 
   video_streams = []
   sidecars = []
-  body_R_imu = np.asarray(args.imu.body_R_imu, dtype=np.float64)
+  body_R_imu = np.asarray(args.body_R_imu, dtype=np.float64)
   with tempfile.TemporaryDirectory(prefix="remux-") as tmp:
     for master, rear, tracker, offset in zip(
       args.input_insvs, rears, names, offsets, strict=True
@@ -96,7 +106,6 @@ def main(args: Args) -> None:
           video_chunks(
             mp4,
             schema.image_entity(tracker, lens),
-            schema.TIMELINE,
             time_shift=-offset,
             window=window,
           )
@@ -106,13 +115,8 @@ def main(args: Args) -> None:
       sidecars += calibration_chunks(tracker, insv, body_R_imu)
 
     properties: dict[str, dict[str, Any]] = {
-      "session": {
-        "session_id": args.session_id,
-        "sources": [p.name for p in args.input_insvs],
-      },
-      "audio_offset": dict(zip(names, offsets, strict=True)),
+      "session": {"sources": [p.name for p in args.input_insvs]},
     }
-    out_path = args.output_dir / "base" / f"{args.session_id}.rrd"
     out_path.parent.mkdir(parents=True, exist_ok=True)
     write_base_recording(out_path, args.session_id, video_streams, sidecars, properties)
   print(f"Wrote {out_path} ({out_path.stat().st_size / 1e6:.1f} MB)")
