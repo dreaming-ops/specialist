@@ -7,6 +7,7 @@ import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypeVar
 
 import cv2
@@ -109,8 +110,18 @@ def _cv2_thread_budget() -> int:
 _FLOW_CHUNK_MAX_PAIRS = 24  # one gpu_flow._MAX_BATCH: all the consumer can be ahead
 
 
+_MEMINFO = Path("/proc/meminfo")
+
+
 def available_ram() -> int:
-  """Available bytes, or the machine total where the platform cannot report them."""
+  """Bytes obtainable without swapping, else free memory, else total physical memory."""
+  try:
+    for line in _MEMINFO.read_text().splitlines():
+      field, _, rest = line.partition(":")
+      if field == "MemAvailable":
+        return int(rest.split()[0]) * 1024
+  except (OSError, ValueError, IndexError):
+    pass
   page = os.sysconf("SC_PAGE_SIZE")
   try:
     return page * os.sysconf("SC_AVPHYS_PAGES")
