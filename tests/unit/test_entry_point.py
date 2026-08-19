@@ -6,7 +6,16 @@ from pathlib import Path
 
 import pytest
 
-_DRIVERS = ("estimate", "convert", "state", "catalog", "imu", "video_imu_timing")
+_DRIVERS = (
+  "estimate",
+  "convert",
+  "state",
+  "catalog",
+  "imu",
+  "video_imu_timing",
+  "convert_mocap",
+  "score_mocap",
+)
 
 
 @pytest.mark.parametrize("name", _DRIVERS)
