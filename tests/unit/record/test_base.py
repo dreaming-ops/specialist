@@ -7,56 +7,11 @@ import numpy as np
 import pytest
 from rerun.experimental import Chunk, RrdReader
 
-from specialist.loader.parse_insv import InsvData, LensIntrinsics
 from specialist.record.base import imu_chunks, write_base_recording
+from tests.record_fixtures import synthetic_insv
 
 # Wide enough to keep every synthetic IMU sample.
 _WHOLE_SESSION = (-10.0, 10.0)
-
-
-def _synthetic_insv() -> InsvData:
-  block = [
-    1.9,  # xi
-    5000.0,
-    5001.0,
-    2970.0,
-    2971.0,  # fx fy cx cy
-    0.5,
-    -0.3,
-    90.0,  # yaw pitch roll deg
-    0.01,
-    0.02,
-    0.03,  # t
-    0.1,
-    -0.05,
-    0.01,
-    0.001,
-    -0.002,  # k1..k3 p1 p2
-    11904.0,
-    5952.0,
-    0.0,  # frame w h unknown
-  ]
-  offset_v3 = np.array([2.0, *block, *block, 0.0])
-  return InsvData(
-    imu_timestamps=np.array([-0.5, 0.0, 0.001, 0.002]),
-    gyro=np.radians([[90.0, 0.0, 0.0]] * 4),
-    accel=np.array([[0.0, 0.0, 9.81]] * 4),
-    intrinsics=LensIntrinsics(
-      camera_matrix=np.eye(3),
-      distortion_coeffs=np.zeros(6),
-      calib_width=11904,
-      calib_height=5952,
-      distortion_model="mei",
-    ),
-    rolling_shutter_readout=0.0157,
-    offset_v3=offset_v3,
-    gyro_calib_numbers=np.array([0.001, 0.002, 0.003, 0.01, 0.02, 0.03]),
-    capture={},
-    exposure_timestamps=np.empty(0),
-    exposure_durations=np.empty(0),
-    ae_timestamps=np.empty(0),
-    ae_stats={},
-  )
 
 
 def _write(tmp_path: Path, chunks: list[Chunk]) -> RrdReader:
@@ -89,7 +44,7 @@ def _column(reader: RrdReader, entity: str, component: str) -> tuple[Any, Any]:
 
 def test_imu_chunks_units_and_shift(tmp_path: Path) -> None:
   reader = _write(
-    tmp_path, imu_chunks("tracker_0", _synthetic_insv(), 0.25, _WHOLE_SESSION)
+    tmp_path, imu_chunks("tracker_0", synthetic_insv(), 0.25, _WHOLE_SESSION)
   )
   times, gyro = _column(reader, "/imu/tracker_0/gyro", "Scalars:scalars")
   assert times[0] == round((-0.5 + 0.25) * 1e9)
@@ -100,7 +55,7 @@ def test_imu_chunks_units_and_shift(tmp_path: Path) -> None:
 
 def test_imu_window_trims_rows(tmp_path: Path) -> None:
   reader = _write(
-    tmp_path, imu_chunks("tracker_0", _synthetic_insv(), 0.0, window=(0.0, 10.0))
+    tmp_path, imu_chunks("tracker_0", synthetic_insv(), 0.0, window=(0.0, 10.0))
   )
   times, _ = _column(reader, "/imu/tracker_0/gyro", "Scalars:scalars")
   assert times and min(times) >= 0
@@ -115,7 +70,7 @@ def test_write_base_recording_failure_leaves_no_final_file(
     raise RuntimeError("mid-write failure")
 
   monkeypatch.setattr("specialist.record.base.send_chunks", explode)
-  chunks = imu_chunks("tracker_0", _synthetic_insv(), 0.0, _WHOLE_SESSION)
+  chunks = imu_chunks("tracker_0", synthetic_insv(), 0.0, _WHOLE_SESSION)
   with pytest.raises(RuntimeError, match="mid-write failure"):
     write_base_recording(out, "s", [], chunks, {})
   assert not out.exists()
@@ -125,7 +80,7 @@ def test_write_base_recording_replaces_a_stale_partial(tmp_path: Path) -> None:
   out = tmp_path / "base.rrd"
   stale = tmp_path / "base.rrd.partial"
   stale.write_bytes(b"leftover from a crashed run")
-  chunks = imu_chunks("tracker_0", _synthetic_insv(), 0.0, _WHOLE_SESSION)
+  chunks = imu_chunks("tracker_0", synthetic_insv(), 0.0, _WHOLE_SESSION)
   write_base_recording(out, "s", [], chunks, {})
   assert not stale.exists()
   assert RrdReader(str(out)).recordings()[0].recording_id == "s"

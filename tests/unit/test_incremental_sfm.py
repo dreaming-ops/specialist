@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from scipy.spatial.transform import Rotation as Rscp
 
 from specialist.vi_ba.init import incremental_sfm
@@ -59,31 +60,29 @@ def _umeyama_ate(src: np.ndarray, dst: np.ndarray) -> np.ndarray:
   return np.linalg.norm((s * (r @ src.T).T + t) - dst, axis=1)
 
 
-def test_recovers_trajectory_noiseless():
+@pytest.mark.parametrize(
+  ("noise", "min_registered", "ate_fraction"),
+  [(0.0, 0.8, 0.02), (1e-3, 0.7, 0.08)],
+)
+def test_recovers_the_trajectory_up_to_a_similarity(
+  noise: float, min_registered: float, ate_fraction: float
+) -> None:
+  """Umeyama-aligned camera centers match truth from exact and from noisy bearings."""
   n = 30
-  bearings, centers, _ = _scene(n_keyframes=n, noise=0.0)
+  bearings, centers, _ = _scene(n_keyframes=n, noise=noise)
   lens_poses, landmark_map = incremental_sfm(bearings)
-  assert len(lens_poses) >= int(0.8 * n), f"only registered {len(lens_poses)}/{n}"
-  assert len(landmark_map) >= 50
+  assert len(lens_poses) >= int(min_registered * n), (
+    f"only registered {len(lens_poses)}/{n}"
+  )
+  if not noise:
+    assert len(landmark_map) >= 50
   ks = sorted(lens_poses)
   rec = np.array([np.asarray(lens_poses[k].translation()) for k in ks])
   ate = _umeyama_ate(rec, centers[ks])
   extent = float(np.linalg.norm(centers.max(0) - centers.min(0)))
-  assert np.median(ate) < 0.02 * extent, (
+  assert np.median(ate) < ate_fraction * extent, (
     f"median ATE {np.median(ate):.4f} of {extent:.3f}"
   )
-
-
-def test_recovers_trajectory_noisy():
-  n = 30
-  bearings, centers, _ = _scene(n_keyframes=n, noise=1e-3)
-  lens_poses, _ = incremental_sfm(bearings)
-  assert len(lens_poses) >= int(0.7 * n)
-  ks = sorted(lens_poses)
-  rec = np.array([np.asarray(lens_poses[k].translation()) for k in ks])
-  ate = _umeyama_ate(rec, centers[ks])
-  extent = float(np.linalg.norm(centers.max(0) - centers.min(0)))
-  assert np.median(ate) < 0.08 * extent
 
 
 def test_no_bootstrap_returns_empty():

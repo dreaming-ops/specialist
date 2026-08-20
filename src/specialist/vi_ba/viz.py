@@ -1,8 +1,9 @@
-"""Columnar Rerun logging of a solved run into the caller's active recording."""
+"""Rerun chunks of a solved run, each handed to the sink of the layer it belongs in."""
 
 from __future__ import annotations
 
 import traceback
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
@@ -13,6 +14,7 @@ import numpy.typing as npt
 import pyarrow as pa
 import rerun as rr
 import rerun.blueprint as rrb
+from rerun.experimental import Chunk
 
 from specialist.record import schema
 from specialist.vi_ba.geometry import matrices_to_quats, quat_xyzw, quats_to_matrices
@@ -41,22 +43,40 @@ _BODY_AXIS_LENGTH = 0.05
 __all__ = [
   "CameraVizData",
   "blueprint_for_names",
-  "log_multi_ba_entities",
+  "solution_chunks",
   "run_blueprint",
 ]
+
+
+Sink = Callable[[Chunk], None]
+
+
+def _send(emit: Sink, entity_path: str, *, indexes: Any, columns: Any) -> None:
+  """One temporal chunk, shaped exactly as the columnar log call was."""
+  emit(Chunk.from_columns(entity_path, indexes=indexes, columns=columns))
+
+
+def _static(emit: Sink, entity_path: str, *columns: Any) -> None:
+  """One static chunk carrying every archetype logged at that entity."""
+  emit(
+    Chunk.from_columns(
+      entity_path, indexes=[], columns=[c for group in columns for c in group]
+    )
+  )
+
+
+def _pose_columns(pose: gtsam.Pose3) -> Any:
+  """A single-row Transform3D column list for one pose."""
+  return rr.Transform3D.columns(
+    translation=np.asarray(pose.translation(), dtype=np.float64)[None, :],
+    quaternion=quat_xyzw(pose.rotation())[None, :],
+  )
 
 
 def _vec3_column(values: Float64Array) -> pa.FixedSizeListArray:
   """An ``(n, 3)`` float array as the arrow column AnyValues can carry."""
   flat = pa.array(np.ascontiguousarray(values, dtype=np.float64).reshape(-1))
   return pa.FixedSizeListArray.from_arrays(flat, 3)
-
-
-def _pose_transform3d(pose: gtsam.Pose3) -> rr.Transform3D:
-  return rr.Transform3D(
-    translation=np.asarray(pose.translation(), dtype=np.float64),
-    quaternion=rr.datatypes.Quaternion(xyzw=quat_xyzw(pose.rotation())),
-  )
 
 
 def _trail_strips(
@@ -67,13 +87,21 @@ def _trail_strips(
   return [traj[start : i + 1] for i, start in enumerate(starts)]
 
 
-def _log_static_points(
-  entity_path: str, points: dict[int, Float64Array], color: tuple[int, int, int]
+def _send_static_points(
+  emit: Sink,
+  entity_path: str,
+  points: dict[int, Float64Array],
+  color: tuple[int, int, int],
 ) -> None:
   if not points:
     return
   xyz = np.asarray(list(points.values()), dtype=np.float64)
-  rr.log(entity_path, rr.Points3D(xyz, radii=0.002, colors=color), static=True)
+  _static(
+    emit,
+    entity_path,
+    rr.Points3D.columns(positions=xyz).partition([len(xyz)]),
+    rr.Points3D.columns(radii=[0.002], colors=[color]),
+  )
 
 
 def _solid_colors(color: tuple[int, int, int], n: int) -> np.ndarray:
@@ -102,6 +130,7 @@ def _overlay_index(
 
 
 def _send_lens_tag_columns(
+  emit: Sink,
   entity_prefix: str,
   tags_per_kf: list[list[TagDetection]],
   index: _OverlayIndex,
@@ -119,7 +148,8 @@ def _send_lens_tag_columns(
   strips = [np.vstack([d.corners, d.corners[:1]]).astype(np.float32) for d in tags]
   data_indexes, clear_indexes = index
   n = len(partition)
-  rr.send_columns(
+  _send(
+    emit,
     f"{entity_prefix}/tags",
     indexes=data_indexes,
     columns=rr.LineStrips2D.columns(
@@ -128,7 +158,8 @@ def _send_lens_tag_columns(
       radii=np.full(len(tags), 5.0, dtype=np.float32),
     ).partition(partition),
   )
-  rr.send_columns(
+  _send(
+    emit,
     f"{entity_prefix}/tags/labels",
     indexes=data_indexes,
     columns=rr.Points2D.columns(
@@ -140,7 +171,8 @@ def _send_lens_tag_columns(
     ).partition(partition),
   )
   if clear_indexes is not None:
-    rr.send_columns(
+    _send(
+      emit,
       f"{entity_prefix}/tags",
       indexes=clear_indexes,
       columns=rr.LineStrips2D.columns(
@@ -149,7 +181,8 @@ def _send_lens_tag_columns(
         radii=np.empty(0, dtype=np.float32),
       ).partition([0] * n),
     )
-    rr.send_columns(
+    _send(
+      emit,
       f"{entity_prefix}/tags/labels",
       indexes=clear_indexes,
       columns=rr.Points2D.columns(
@@ -166,7 +199,8 @@ def _send_lens_tag_columns(
     return
   lo = np.stack([c.min(axis=0) for c in masked]) - float(mask_pad_px)
   hi = np.stack([c.max(axis=0) for c in masked]) + float(mask_pad_px)
-  rr.send_columns(
+  _send(
+    emit,
     f"{entity_prefix}/tags/masked",
     indexes=data_indexes,
     columns=rr.Boxes2D.columns(
@@ -178,7 +212,8 @@ def _send_lens_tag_columns(
     ).partition([int(k.sum()) for k in np.split(keep, np.cumsum(partition)[:-1])]),
   )
   if clear_indexes is not None:
-    rr.send_columns(
+    _send(
+      emit,
       f"{entity_prefix}/tags/masked",
       indexes=clear_indexes,
       columns=rr.Boxes2D.columns(
@@ -192,7 +227,7 @@ def _send_lens_tag_columns(
 
 
 def _log_static_mask_rects(
-  entity_prefix: str, rects: list[tuple[int, int, int, int]]
+  emit: Sink, entity_prefix: str, rects: list[tuple[int, int, int, int]]
 ) -> None:
   if not rects:
     return
@@ -201,20 +236,21 @@ def _log_static_mask_rects(
   for x1, y1, x2, y2 in rects:
     centers.append(np.array([(x1 + x2) * 0.5, (y1 + y2) * 0.5], dtype=np.float32))
     half_sizes.append(np.array([(x2 - x1) * 0.5, (y2 - y1) * 0.5], dtype=np.float32))
-  rr.log(
+  _static(
+    emit,
     f"{entity_prefix}/static_mask",
-    rr.Boxes2D(
+    rr.Boxes2D.columns(
       centers=np.stack(centers),
       half_sizes=np.stack(half_sizes),
       colors=_solid_colors(_REJECTED, len(rects)),
       labels=["STATIC"] * len(rects),
-      show_labels=True,
-    ),
-    static=True,
+    ).partition([len(rects)]),
+    rr.Boxes2D.columns(show_labels=[True]),
   )
 
 
 def _send_point_columns(
+  emit: Sink,
   entity_path: str,
   points_per_kf: list[Float64Array],
   index: _OverlayIndex,
@@ -227,7 +263,8 @@ def _send_point_columns(
     return
   data_indexes, clear_indexes = index
   positions = np.concatenate([kp for kp in points_per_kf if kp.shape[0] > 0])
-  rr.send_columns(
+  _send(
+    emit,
     entity_path,
     indexes=data_indexes,
     columns=rr.Points2D.columns(
@@ -237,7 +274,8 @@ def _send_point_columns(
     ).partition(partition),
   )
   if clear_indexes is not None:
-    rr.send_columns(
+    _send(
+      emit,
       entity_path,
       indexes=clear_indexes,
       columns=rr.Points2D.columns(
@@ -249,6 +287,7 @@ def _send_point_columns(
 
 
 def _send_tag_axes_columns(
+  emit: Sink,
   entity_prefix: str,
   axes_per_kf: list[Float64Array],
   index: _OverlayIndex,
@@ -259,7 +298,8 @@ def _send_tag_axes_columns(
     return
   data_indexes, clear_indexes = index
   rgb = np.array([(255, 0, 0), (0, 255, 0), (0, 0, 255)], dtype=np.uint8)
-  rr.send_columns(
+  _send(
+    emit,
     f"{entity_prefix}/tags/axes",
     indexes=data_indexes,
     columns=rr.LineStrips2D.columns(
@@ -269,7 +309,8 @@ def _send_tag_axes_columns(
     ).partition(partition),
   )
   if clear_indexes is not None:
-    rr.send_columns(
+    _send(
+      emit,
       f"{entity_prefix}/tags/axes",
       indexes=clear_indexes,
       columns=rr.LineStrips2D.columns(
@@ -281,6 +322,7 @@ def _send_tag_axes_columns(
 
 
 def _send_factor_line_columns(
+  emit: Sink,
   entity_path: str,
   lines_per_kf: list[Float64Array],
   indexes: list[rr.TimeColumn],
@@ -292,7 +334,8 @@ def _send_factor_line_columns(
   if total == 0:
     return
   strips = [line.astype(np.float32) for arr in lines_per_kf for line in arr]
-  rr.send_columns(
+  _send(
+    emit,
     entity_path,
     indexes=indexes,
     columns=rr.LineStrips3D.columns(
@@ -304,6 +347,7 @@ def _send_factor_line_columns(
 
 
 def _send_lens_columns(
+  emit: Sink,
   entity_path: str,
   metrics_path: str,
   keypoints: list[Float64Array] | None,
@@ -313,9 +357,10 @@ def _send_lens_columns(
 ) -> None:
   if not keypoints:
     return
-  _send_point_columns(f"{entity_path}/keypoints", keypoints, index, 1.5, color)
+  _send_point_columns(emit, f"{entity_path}/keypoints", keypoints, index, 1.5, color)
   counts = np.asarray([kp.shape[0] for kp in keypoints], dtype=np.float64)
-  rr.send_columns(
+  _send(
+    emit,
     metrics_path,
     indexes=metric_indexes,
     columns=rr.Scalars.columns(scalars=counts),
@@ -324,7 +369,7 @@ def _send_lens_columns(
 
 @dataclass
 class CameraVizData:
-  """One tracker's payload from ``build_run_outputs`` for ``log_multi_ba_entities``."""
+  """One tracker's Rerun payload from ``build_run_outputs`` for ``solution_chunks``."""
 
   name: str
   body_poses: list[gtsam.Pose3] = field(default_factory=list)
@@ -387,7 +432,9 @@ def _gripper_points(data: CameraVizData) -> Float64Array:
   )
 
 
-def _log_anchor(entity: str, world_T_anchor: gtsam.Pose3, tag_size: float) -> None:
+def _send_anchor(
+  emit: Sink, entity: str, world_T_anchor: gtsam.Pose3, tag_size: float
+) -> None:
   half = tag_size / 2.0
   square = np.array(
     [
@@ -399,20 +446,22 @@ def _log_anchor(entity: str, world_T_anchor: gtsam.Pose3, tag_size: float) -> No
     ],
     dtype=np.float64,
   )
-  rr.log(
+  _static(
+    emit,
     f"world/{entity}",
-    _pose_transform3d(world_T_anchor),
-    rr.LineStrips3D([square], colors=_ANCHOR, radii=0.003),
-    static=True,
+    _pose_columns(world_T_anchor),
+    rr.LineStrips3D.columns(strips=[square], colors=[_ANCHOR], radii=[0.003]),
   )
-  rr.log(
+  _static(
+    emit,
     f"world/{entity}/frame",
-    rr.TransformAxes3D(axis_length=half),
-    static=True,
+    rr.TransformAxes3D.columns(axis_length=[half]),
   )
 
 
 def _log_tracker(
+  track: Sink,
+  viz: Sink,
   data: CameraVizData,
   spatial_root: str,
   image_root: str,
@@ -431,17 +480,17 @@ def _log_tracker(
   )
   traj = _gripper_points(data)
 
-  _log_static_points(f"{spatial_root}/landmarks/front", data.front_points, color)
-  _log_static_points(f"{spatial_root}/landmarks/rear", data.rear_points, color)
-  rr.log(
+  _send_static_points(viz, f"{spatial_root}/landmarks/front", data.front_points, color)
+  _send_static_points(viz, f"{spatial_root}/landmarks/rear", data.rear_points, color)
+  _static(
+    track,
     f"{spatial_root}/body",
-    rr.TransformAxes3D(axis_length=_BODY_AXIS_LENGTH),
-    static=True,
+    rr.TransformAxes3D.columns(axis_length=[_BODY_AXIS_LENGTH]),
   )
-  rr.log(
+  _static(
+    viz,
     f"{spatial_root}/body/marker",
-    rr.Points3D(np.zeros((1, 3)), radii=0.002, colors=color),
-    static=True,
+    rr.Points3D.columns(positions=np.zeros((1, 3)), radii=[0.002], colors=[color]),
   )
   for lens_name, lens_pose, lens_mei in (
     ("front", data.front_lens_extrinsic, data.front_lens_mei),
@@ -449,28 +498,22 @@ def _log_tracker(
   ):
     if lens_pose is None:
       continue
-    rr.log(
-      f"{spatial_root}/body/{lens_name}_lens",
-      _pose_transform3d(lens_pose),
-      static=True,
-    )
-    rr.log(
-      f"{spatial_root}/body/{lens_name}_lens",
-      rr.TransformAxes3D(axis_length=_BODY_AXIS_LENGTH),
-      static=True,
-    )
+    lens_columns: list[Any] = [
+      _pose_columns(lens_pose),
+      rr.TransformAxes3D.columns(axis_length=[_BODY_AXIS_LENGTH]),
+    ]
     if lens_mei is not None:
-      rr.log(
-        f"{spatial_root}/body/{lens_name}_lens",
-        rr.AnyValues(**cast("dict[str, Any]", lens_mei)),
-        static=True,
-      )
+      mei = cast("dict[str, Any]", lens_mei)
+      # The MEI field names are data, so the call is keyed dynamically.
+      any_values = cast("Any", rr.AnyValues)
+      lens_columns.append(any_values.columns(**{k: [v] for k, v in mei.items()}))
+    _static(track, f"{spatial_root}/body/{lens_name}_lens", *lens_columns)
   if data.body_T_base_tag is not None:
-    rr.log(
+    _static(
+      track,
       schema.base_tag_entity(data.name),
-      _pose_transform3d(data.body_T_base_tag),
-      rr.TransformAxes3D(axis_length=0.02),
-      static=True,
+      _pose_columns(data.body_T_base_tag),
+      rr.TransformAxes3D.columns(axis_length=[0.02]),
     )
 
   urdf_root_frame: str | None = None
@@ -478,32 +521,36 @@ def _log_tracker(
   if urdf_path is not None:
     try:
       tree = rr.urdf.UrdfTree.from_file_path(
-        str(urdf_path), entity_path_prefix=spatial_root, frame_prefix=frame_prefix
+        str(urdf_path),
+        entity_path_prefix=spatial_root,
+        frame_prefix=frame_prefix,
+        static_transform_entity_path=f"{spatial_root}/tf_static",
       )
-      tree.log_urdf_to_recording()
-      for link in [tree.root_link(), *map(tree.get_joint_child, tree.joints())]:
-        for p in tree.get_collision_geometry_paths(link):
-          rr.log(p, rr.Clear(recursive=True), static=True)
-      urdf_root_frame = (
+      links = [tree.root_link(), *map(tree.get_joint_child, tree.joints())]
+      collision = [p for link in links for p in tree.get_collision_geometry_paths(link)]
+      drawn = {p for link in links for p in tree.get_visual_geometry_paths(link)}
+      drawn.add(f"/{spatial_root.lstrip('/')}/tf_static")
+      model_chunks = tree.stream().drop(content=collision).to_chunks()
+      root_frame = (
         f"{frame_prefix}{tree.root_link().name}"
         if frame_prefix
         else tree.root_link().name
-      )
-      rr.log(
-        f"{spatial_root}/gripper",
-        rr.Transform3D(parent_frame="world", child_frame=urdf_root_frame),
-        static=True,
-      )
-      rr.log(
-        f"{spatial_root}/gripper",
-        rr.TransformAxes3D(axis_length=_BODY_AXIS_LENGTH),
-        static=True,
       )
     except Exception as exc:  # noqa: BLE001 - the URDF model is optional; keep the rest
       traceback.print_exc()
       print(f"  [viz] URDF model skipped ({exc}); logging the trajectory without it")
       tree = None
-      urdf_root_frame = None
+    else:
+      for chunk in model_chunks:
+        # The tree names its own paths, so its meshes are recognized by entity path.
+        (viz if chunk.entity_path in drawn else track)(chunk)
+      urdf_root_frame = root_frame
+      _static(
+        track,
+        f"{spatial_root}/gripper",
+        rr.Transform3D.columns(parent_frame=["world"], child_frame=[urdf_root_frame]),
+        rr.TransformAxes3D.columns(axis_length=[_BODY_AXIS_LENGTH]),
+      )
 
   n = len(data.body_poses)
   if data.keyframe_times is not None:
@@ -537,14 +584,16 @@ def _log_tracker(
   kf_quats = np.stack([quat_xyzw(p.rotation()) for p in data.body_poses])
   if hr is not None:
     hr_times, hr_positions, hr_quats = hr
-    rr.send_columns(
+    _send(
+      track,
       f"{spatial_root}/body",
       indexes=[rr.TimeColumn(schema.TIMELINE, duration=hr_times)],
       columns=rr.Transform3D.columns(translation=hr_positions, quaternion=hr_quats),
     )
     if keyframe_column is not None:
       # Only the exact keyframe states go on the review timeline.
-      rr.send_columns(
+      _send(
+        track,
         f"{spatial_root}/body",
         indexes=[keyframe_column],
         columns=rr.Transform3D.columns(
@@ -552,7 +601,8 @@ def _log_tracker(
         ),
       )
   else:
-    rr.send_columns(
+    _send(
+      track,
       f"{spatial_root}/body",
       indexes=kf_indexes,
       columns=rr.Transform3D.columns(
@@ -560,7 +610,8 @@ def _log_tracker(
       ),
     )
   # The exact BA keyframe poses, kept beside the propagated stream.
-  rr.send_columns(
+  _send(
+    track,
     schema.body_keyframes_entity(data.name),
     indexes=kf_indexes,
     columns=rr.Transform3D.columns(translation=pose_translations, quaternion=kf_quats),
@@ -572,12 +623,14 @@ def _log_tracker(
     velocity = (times, np.stack(data.velocities))
   if velocity is not None:
     velocity_times, velocity_values = velocity
-    rr.send_columns(
+    _send(
+      track,
       f"{spatial_root}/body",
       indexes=[velocity_times],
       columns=rr.AnyValues.columns(velocity=_vec3_column(velocity_values)),
     )
-    rr.send_columns(
+    _send(
+      viz,
       f"metrics/speed/body{metrics_suffix}",
       indexes=[velocity_times],
       columns=rr.Scalars.columns(scalars=np.linalg.norm(velocity_values, axis=1)),
@@ -595,7 +648,8 @@ def _log_tracker(
       world_R_base_tag = world_R_body @ body_R_base_tag
       world_T_base_tag = (world_t_base_tag, world_R_base_tag)
       count = len(world_t_base_tag)
-      rr.send_columns(
+      _send(
+        track,
         f"{spatial_root}/gripper",
         indexes=[rr.TimeColumn(schema.TIMELINE, duration=hr_times)],
         columns=rr.Transform3D.columns(
@@ -606,7 +660,8 @@ def _log_tracker(
         ),
       )
       if keyframe_column is not None:
-        rr.send_columns(
+        _send(
+          track,
           f"{spatial_root}/gripper",
           indexes=[keyframe_column],
           columns=rr.Transform3D.columns(
@@ -619,7 +674,8 @@ def _log_tracker(
           ),
         )
     else:
-      rr.send_columns(
+      _send(
+        track,
         f"{spatial_root}/gripper",
         indexes=kf_indexes,
         columns=rr.Transform3D.columns(
@@ -647,7 +703,8 @@ def _log_tracker(
           ):
             t_times = np.concatenate(([timeline_start], f_times))
             t_angles = np.concatenate(([f_angles[0]], f_angles))
-          rr.send_columns(
+          _send(
+            track,
             f"{spatial_root}/{joint_name}",
             indexes=[rr.TimeColumn(schema.TIMELINE, duration=t_times)],
             columns=joint.compute_transform_columns([float(a) for a in t_angles]),
@@ -660,12 +717,14 @@ def _log_tracker(
               if np.isfinite(v):
                 last_angle = float(v)
               held.append(last_angle)
-            rr.send_columns(
+            _send(
+              track,
               f"{spatial_root}/{joint_name}",
               indexes=[keyframe_column],
               columns=joint.compute_transform_columns(held),
             )
-          rr.send_columns(
+          _send(
+            track,
             f"{spatial_root}/{joint_name}",
             indexes=[rr.TimeColumn(schema.TIMELINE, duration=f_times)],
             columns=rr.AnyValues.columns(angle=np.asarray(f_angles, dtype=np.float64)),
@@ -693,12 +752,14 @@ def _log_tracker(
           clean = [clean[0], *clean]
         else:
           joint_index = times
-        rr.send_columns(
+        _send(
+          track,
           f"{spatial_root}/{joint_name}",
           indexes=[joint_index],
           columns=joint.compute_transform_columns(clean),
         )
-        rr.send_columns(
+        _send(
+          track,
           f"{spatial_root}/{joint_name}",
           indexes=kf_indexes,
           columns=rr.AnyValues.columns(angle=np.asarray(raw_values, dtype=np.float64)),
@@ -718,7 +779,8 @@ def _log_tracker(
     traj_points = traj
     traj_times = times
     traj_trail_times = trail_times
-  rr.send_columns(
+  _send(
+    viz,
     f"{spatial_root}/trajectory",
     indexes=[traj_times],
     columns=rr.LineStrips3D.columns(
@@ -727,7 +789,13 @@ def _log_tracker(
       colors=_solid_colors(color, len(traj_points)),
     ),
   )
-  rr.send_columns(
+  _static(
+    viz,
+    f"{spatial_root}/trajectory",
+    rr.LineStrips3D.columns(radii=[0.002], colors=[color]),
+  )
+  _send(
+    viz,
     f"metrics/distance_from_start{metrics_suffix}",
     indexes=[traj_times],
     columns=rr.Scalars.columns(
@@ -737,6 +805,7 @@ def _log_tracker(
 
   if data.anchor_obs_lines is not None:
     _send_factor_line_columns(
+      viz,
       f"{spatial_root}/factor_lines/anchor",
       data.anchor_obs_lines,
       kf_indexes,
@@ -744,6 +813,7 @@ def _log_tracker(
     )
   if data.cross_tracker_lines is not None:
     _send_factor_line_columns(
+      viz,
       f"{spatial_root}/factor_lines/cross_tracker",
       data.cross_tracker_lines,
       kf_indexes,
@@ -755,6 +825,7 @@ def _log_tracker(
     ("rear", data.rear_keypoints),
   ):
     _send_lens_columns(
+      viz,
       f"{image_root}/{lens_name}",
       f"metrics/n_keypoints/{lens_name}{metrics_suffix}",
       kps,
@@ -769,7 +840,12 @@ def _log_tracker(
     if tags is None:
       continue
     _send_lens_tag_columns(
-      f"{image_root}/{lens_name}", tags, overlay_index, anchor_tag_ids, mask_pad_px
+      viz,
+      f"{image_root}/{lens_name}",
+      tags,
+      overlay_index,
+      anchor_tag_ids,
+      mask_pad_px,
     )
   for lens_name, rejected in (
     ("front", data.front_rejected_keypoints),
@@ -778,6 +854,7 @@ def _log_tracker(
     if rejected is None:
       continue
     _send_point_columns(
+      viz,
       f"{image_root}/{lens_name}/keypoints_rejected",
       rejected,
       overlay_index,
@@ -791,6 +868,7 @@ def _log_tracker(
     if reproj is None:
       continue
     _send_point_columns(
+      viz,
       f"{image_root}/{lens_name}/landmark_reprojection",
       reproj,
       overlay_index,
@@ -803,9 +881,9 @@ def _log_tracker(
   ):
     if axes is None:
       continue
-    _send_tag_axes_columns(f"{image_root}/{lens_name}", axes, overlay_index)
+    _send_tag_axes_columns(viz, f"{image_root}/{lens_name}", axes, overlay_index)
   if data.rear_static_mask_rects:
-    _log_static_mask_rects(f"{image_root}/rear", data.rear_static_mask_rects)
+    _log_static_mask_rects(viz, f"{image_root}/rear", data.rear_static_mask_rects)
   for metric_name, biases in (
     ("gyro_bias", data.gyro_biases),
     ("accel_bias", data.accel_biases),
@@ -813,7 +891,8 @@ def _log_tracker(
     if biases is None:
       continue
     for axis, axis_name in enumerate("xyz"):
-      rr.send_columns(
+      _send(
+        viz,
         f"metrics/{metric_name}/{axis_name}{metrics_suffix}",
         indexes=kf_indexes,
         columns=rr.Scalars.columns(
@@ -826,7 +905,8 @@ def _log_tracker(
   ):
     if rmse is None:
       continue
-    rr.send_columns(
+    _send(
+      viz,
       f"metrics/rmse/{lens_name}{metrics_suffix}",
       indexes=kf_indexes,
       columns=rr.Scalars.columns(scalars=np.asarray(rmse, dtype=np.float64)),
@@ -924,7 +1004,9 @@ def run_blueprint(cameras: list[CameraVizData]) -> rrb.Blueprint:
   return blueprint_for_names([t.name for t in cameras], floor_z)
 
 
-def log_multi_ba_entities(
+def solution_chunks(
+  track: Sink,
+  viz: Sink,
   cameras: list[CameraVizData],
   world_T_anchor: dict[int, gtsam.Pose3],
   reference_tag_id: int,
@@ -934,14 +1016,20 @@ def log_multi_ba_entities(
   timeline_start: float | None = None,
   frame_period: float | None = None,
 ) -> None:
-  """Log every entity of a solved run into the caller's active recording."""
-  rr.log("world", rr.ViewCoordinates.RIGHT_HAND_Z_UP, static=True)
-  rr.log("world", rr.Transform3D(child_frame="world"), static=True)
+  """Every entity of a solved run as chunks, sent to the ``track`` or ``viz`` sink."""
+  _static(
+    track,
+    "world",
+    rr.ViewCoordinates.columns(xyz=[rr.components.ViewCoordinates.RIGHT_HAND_Z_UP]),
+    rr.Transform3D.columns(child_frame=["world"]),
+  )
   for tag_id, pose in world_T_anchor.items():
     entity = "anchor_tag" if tag_id == reference_tag_id else f"anchor_tag_{tag_id}"
-    _log_anchor(entity, pose, anchor_tag_size)
+    _send_anchor(track, entity, pose, anchor_tag_size)
   for i, t in enumerate(cameras):
     _log_tracker(
+      track,
+      viz,
       t,
       spatial_root=t.name,
       image_root=schema.image_root(t.name),

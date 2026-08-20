@@ -70,35 +70,28 @@ def test_interpolate_camera_poses_endpoints_and_midpoint() -> None:
   assert np.allclose(poses[2].translation(), (-0.5, 0.0, 0.0), atol=1e-6)
 
 
-def test_pick_init_pair_finds_widest_with_min_shared() -> None:
-  # Keyframes 3 and 4 share one track each with 0, so (0, 2) is widest at min_shared=2.
-  tracks: dict[int, dict[int, Float64Array]] = {
-    0: {0: np.zeros(2), 1: np.zeros(2), 2: np.zeros(2)},
-    1: {0: np.zeros(2), 1: np.zeros(2), 2: np.zeros(2), 3: np.zeros(2)},
-    2: {0: np.zeros(2), 4: np.zeros(2)},
-  }
-  first, last, n_shared = pick_init_pair(tracks, n_keyframes=5, min_shared=2)
-  assert (first, last, n_shared) == (0, 2, 2)
+def _tracks(*spans: tuple[int, ...]) -> dict[int, dict[int, Float64Array]]:
+  return {tid: dict.fromkeys(kfs, np.zeros(2)) for tid, kfs in enumerate(spans)}
 
 
-def test_pick_init_pair_falls_back_to_best_when_below_threshold() -> None:
-  tracks: dict[int, dict[int, Float64Array]] = {
-    0: {0: np.zeros(2), 1: np.zeros(2)},
-  }
-  first, last, n_shared = pick_init_pair(tracks, n_keyframes=3, min_shared=10)
-  assert (first, last) == (0, 1)
-  assert n_shared == 1
-
-
-def test_pick_init_pair_slides_its_base_past_a_barren_opening() -> None:
-  """Keyframe 0 shares only one track; keyframe 1 onward carries a qualifying pair."""
-  tracks: dict[int, dict[int, Float64Array]] = {
-    0: {0: np.zeros(2), 1: np.zeros(2)},
-    1: {1: np.zeros(2), 2: np.zeros(2), 3: np.zeros(2)},
-    2: {1: np.zeros(2), 2: np.zeros(2), 3: np.zeros(2)},
-  }
-  first, last, n_shared = pick_init_pair(tracks, n_keyframes=4, min_shared=2)
-  assert (first, last, n_shared) == (1, 3, 2)
+@pytest.mark.parametrize(
+  ("tracks", "n_keyframes", "min_shared", "expected"),
+  [
+    # Pairs (0, 3) and (0, 4) share one track each, so (0, 2) is the widest with two.
+    (_tracks((0, 1, 2), (0, 1, 2, 3), (0, 4)), 5, 2, (0, 2, 2)),
+    # Nothing reaches the threshold, so the best pair found stands anyway.
+    (_tracks((0, 1)), 3, 10, (0, 1, 1)),
+    # Keyframe 0 shares only one track; keyframe 1 onward carries a qualifying pair.
+    (_tracks((0, 1), (1, 2, 3), (1, 2, 3)), 4, 2, (1, 3, 2)),
+  ],
+)
+def test_pick_init_pair_takes_the_widest_qualifying_pair(
+  tracks: dict[int, dict[int, Float64Array]],
+  n_keyframes: int,
+  min_shared: int,
+  expected: tuple[int, int, int],
+) -> None:
+  assert pick_init_pair(tracks, n_keyframes, min_shared) == expected
 
 
 def test_interpolate_camera_poses_handles_mid_window_init_pair() -> None:
@@ -236,6 +229,11 @@ def _lens_arrays(poses: list[gtsam.Pose3]) -> tuple[Float64Array, Float64Array]:
   return rotations, centers
 
 
+def _bearings_to(poses: list[gtsam.Pose3], xyz: Float64Array) -> list[Float64Array]:
+  """The unit bearing each pose sees ``xyz`` along."""
+  return [_unit(np.asarray(pose.transformTo(gtsam.Point3(*xyz)))) for pose in poses]
+
+
 def test_triangulate_track_multiview_recovers_short_baseline() -> None:
   """A short-baseline, ten-view landmark at 1.2 m triangulates to within 1 mm."""
   xyz_truth = np.array([0.05, 0.02, 1.2])
@@ -245,11 +243,9 @@ def test_triangulate_track_multiview_recovers_short_baseline() -> None:
     gtsam.Pose3(gtsam.Rot3.Rodrigues(0.0, 0.02 * t, 0.0), gtsam.Point3(t, 0.0, 0.0))
     for t in ts
   ]
-  bearings = []
-  for pose in poses:
-    p_cam = np.asarray(pose.transformTo(gtsam.Point3(*xyz_truth)))
-    bearings.append(p_cam / np.linalg.norm(p_cam))
-  xyz_rec = triangulate_track_multiview(np.asarray(bearings), *_lens_arrays(poses))
+  xyz_rec = triangulate_track_multiview(
+    np.asarray(_bearings_to(poses, xyz_truth)), *_lens_arrays(poses)
+  )
   assert xyz_rec is not None
   assert np.allclose(xyz_rec, xyz_truth, atol=1e-3)
 
@@ -270,12 +266,8 @@ def test_triangulate_track_multiview_skips_bad_bearings_but_succeeds() -> None:
   good_poses = [
     gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(t, 0.0, 0.0)) for t in (0.0, 0.1, 0.2)
   ]
-  good_bearings = []
-  for pose in good_poses:
-    p_cam = np.asarray(pose.transformTo(gtsam.Point3(*xyz_truth)))
-    good_bearings.append(p_cam / np.linalg.norm(p_cam))
   # Add one garbage bearing (z near 0).
-  bearings = good_bearings + [np.array([1.0, 0.0, 0.001])]
+  bearings = _bearings_to(good_poses, xyz_truth) + [np.array([1.0, 0.0, 0.001])]
   poses = good_poses + [gtsam.Pose3()]
   xyz_rec = triangulate_track_multiview(np.asarray(bearings), *_lens_arrays(poses))
   assert xyz_rec is not None
@@ -289,11 +281,10 @@ def test_triangulate_track_multiview_is_geometric_closest_point() -> None:
     gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(t, 0.0, 0.0)) for t in (-0.2, 0.0, 0.25)
   ]
   rng = np.random.default_rng(0)
-  bearings = []
-  for pose in poses:
-    p_cam = np.asarray(pose.transformTo(gtsam.Point3(*truth)))
-    b = p_cam / np.linalg.norm(p_cam) + 0.01 * rng.standard_normal(3)  # skew
-    bearings.append(b / np.linalg.norm(b))
+  # Perturb each ray so no point lies on all three.
+  bearings = [
+    _unit(b + 0.01 * rng.standard_normal(3)) for b in _bearings_to(poses, truth)
+  ]
   xyz = triangulate_track_multiview(np.asarray(bearings), *_lens_arrays(poses))
   assert xyz is not None
   grad = np.zeros(3)

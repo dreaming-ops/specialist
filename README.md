@@ -44,15 +44,16 @@ uv run pytest
 ## Run
 
 A session goes through three steps. The raw captures convert once into a base
-recording; every solve reads that recording and writes a track layer beside
-it; registration puts both on a catalog. Records are laid out layer-first —
+recording; every solve reads that recording and writes its two layers beside
+it; registration puts them all on a catalog. Records are laid out layer-first —
 one directory per layer, one file per session — so a whole layer registers
 with one glob and any layer can be refetched or regenerated without touching
 the rest:
 
 ```
 base/<session-id>.rrd    # remuxed per-lens video, IMU, calibration, clock shifts
-track/<session-id>.rrd   # the solve: trajectories, landmarks, joint angles
+track/<session-id>.rrd   # the solve's answers: poses, joint angles
+viz/<session-id>.rrd     # what is only drawn: ribbon, overlays, meshes
 mocap/<session-id>.rrd   # ground-truth layer (eval branch)
 ```
 
@@ -91,13 +92,16 @@ A single tracker is the same command with one id per list and no cross-tracker
 factors. `--keyframe-every` overrides the automatic ~0.10 s keyframe stride,
 and `--no-open-viewer` keeps a headless box from spawning one.
 
-The run writes `logs/track/<session-id>.rrd`, a track layer sharing the base
-recording's id: trajectories, keyframe poses, landmarks, finger joint angles,
-the solved anchor poses, and the run summary. Re-running a session refuses to
-overwrite its track unless `--overwrite` is passed, so point experimental runs
-at their own `--output-dir`. It spawns a viewer on the way out; to re-open a layer later,
-load it beside its base — the shared id merges the two — with
-`uv run rerun logs/base/<session-id>.rrd logs/track/<session-id>.rrd`.
+The run writes two layers sharing the base recording's id:
+`logs/track/<session-id>.rrd` carries what a consumer reads — body poses,
+keyframe poses, finger joint angles, the solved anchor poses
+and the run summary — and `logs/viz/<session-id>.rrd` carries what is only
+drawn, the trajectory ribbon, the image overlays, the landmarks, the robot
+meshes and the diagnostic scalars. Re-running a session refuses to overwrite
+either unless `--overwrite` is passed, so point experimental runs at their own
+`--output-dir`. It spawns a viewer on the way out; to re-open a session later,
+load the layers beside their base — the shared id merges them — with
+`uv run rerun logs/base/<id>.rrd logs/track/<id>.rrd logs/viz/<id>.rrd`.
 
 **3. Register** (optional) the pair on a Rerun catalog, which installs the
 standard dashboard as the catalog dataset default. A layer whose recording id matches
@@ -122,13 +126,14 @@ src/specialist/
 │                tag_detection, landmark_cull, highrate,
 │                geometry, configs, summary, viz + viz_build
 ├── record/      the rrd data layer — schema (entity paths), base + video
-│                (session recording), layer (track), session + frames +
-│                read (reading them back), offset_v3 (factory lens calibration)
+│                (session recording), layer (track and viz layers), session +
+│                frames + read (reading them back), offset_v3 (factory lens
+│                calibration)
 └── loader/      parse_insv, mei_model, capture, audio_sync
 
 scripts/
 ├── convert.py          captures → one session base recording
-├── track.py            the VI-BA driver (N ≥ 1 cameras) → track layer
+├── track.py            the VI-BA driver (N ≥ 1 cameras) → track + viz layers
 ├── register.py         a layer-first dataset root → a Rerun catalog dataset
 ├── imu.py              IMU rate / noise / Allan-deviation probe
 ├── video_imu_timing.py video↔IMU clock + rolling-shutter probe

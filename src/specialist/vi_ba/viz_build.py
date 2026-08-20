@@ -142,7 +142,6 @@ def _build_tracker_outputs(
   base_tag_corners_world: dict[str, list[Float64Array]],
 ) -> tuple[CameraVizData, CameraSummary]:
   """One camera's Rerun payload and summary line from the solved values."""
-  # Post-bundle map cull: it cleans the map, RMSE and overlay, never the poses.
   front_points, front_reproj_per_kf, front_rmse_per_kf = cull_and_reproject(
     points_from_values(
       result.values, keys.front_landmark_key, camera.name, landmark_keep[0]

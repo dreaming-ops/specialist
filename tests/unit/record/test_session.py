@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import subprocess
 from pathlib import Path
 
 import gtsam
 import numpy as np
 import pytest
+from rerun.experimental import RrdReader
 
-from specialist.loader.audio_sync import resolve_ffmpeg
-from specialist.loader.parse_insv import InsvData, LensIntrinsics
 from specialist.record.base import (
   calibration_chunks,
+  exposure_chunks,
   imu_chunks,
   write_base_recording,
 )
@@ -26,6 +25,7 @@ from specialist.record.session import (
 )
 from specialist.record.video import normalize_h264, video_chunks
 from specialist.vi_ba.configs import ImuCfg
+from tests.record_fixtures import encode_clip, synthetic_insv
 
 _FPS = 30
 # The rear lens starts a frame before the front and ends two frames after it.
@@ -36,95 +36,25 @@ _REAR_SHIFT = -1.0 / _FPS
 _WINDOW = (-1.0, 10.0)
 
 
-def _synthetic_insv() -> InsvData:
-  block = [
-    1.9,  # xi
-    5000.0,
-    5001.0,
-    2970.0,
-    2971.0,  # fx fy cx cy
-    0.5,
-    -0.3,
-    90.0,  # yaw pitch roll deg
-    0.01,
-    0.02,
-    0.03,  # t
-    0.1,
-    -0.05,
-    0.01,
-    0.001,
-    -0.002,  # k1..k3 p1 p2
-    11904.0,
-    5952.0,
-    0.0,  # frame w h unknown
-  ]
-  offset_v3 = np.array([2.0, *block, *block, 0.0])
-  return InsvData(
-    imu_timestamps=np.array([-0.5, 0.0, 0.001, 0.002]),
-    gyro=np.radians([[90.0, 0.0, 0.0]] * 4),
-    accel=np.array([[0.0, 0.0, 9.81]] * 4),
-    intrinsics=LensIntrinsics(
-      camera_matrix=np.eye(3),
-      distortion_coeffs=np.zeros(6),
-      calib_width=11904,
-      calib_height=5952,
-      distortion_model="mei",
-    ),
-    rolling_shutter_readout=0.0157,
-    offset_v3=offset_v3,
-    gyro_calib_numbers=np.array([0.001, 0.002, 0.003, 0.01, 0.02, 0.03]),
-    capture={},
-    exposure_timestamps=np.empty(0),
-    exposure_durations=np.empty(0),
-    ae_timestamps=np.empty(0),
-    ae_stats={},
-  )
-
-
-def _encode_clip(path: Path, n_frames: int) -> Path:
-  """A tiny H.264 clip of several GOPs whose decode order is presentation order."""
-  subprocess.run(
-    [
-      resolve_ffmpeg(),
-      "-y",
-      "-loglevel",
-      "error",
-      "-f",
-      "lavfi",
-      "-i",
-      f"testsrc=duration={n_frames / _FPS}:size=64x64:rate={_FPS}",
-      "-c:v",
-      "libx264",
-      "-pix_fmt",
-      "yuv420p",
-      "-bf",
-      "0",
-      "-g",
-      "5",
-      str(path),
-    ],
-    check=True,
-  )
-  return path
-
-
 @pytest.fixture(scope="module")
 def base_rrd(tmp_path_factory: pytest.TempPathFactory) -> Path:
   tmp = tmp_path_factory.mktemp("session")
-  insv = _synthetic_insv()
+  insv = synthetic_insv()
   streams = []
   for lens, n_frames, shift in (
     ("front", _FRONT_FRAMES, 0.0),
     ("rear", _REAR_FRAMES, _REAR_SHIFT),
   ):
-    clip = _encode_clip(tmp / f"{lens}.mp4", n_frames)
+    clip = encode_clip(tmp / f"{lens}.mp4", n_frames, rate=_FPS, gop=5)
     clean = normalize_h264(clip, tmp / f"{lens}_clean.mp4")
     streams.append(
       video_chunks(clean, f"image/tracker_0/{lens}", time_shift=shift, window=_WINDOW)
     )
-  sidecars = imu_chunks(
-    "tracker_0", insv, time_shift=0.0, window=_WINDOW
-  ) + calibration_chunks("tracker_0", insv, np.asarray(ImuCfg().body_R_imu))
+  sidecars = (
+    imu_chunks("tracker_0", insv, time_shift=0.0, window=_WINDOW)
+    + exposure_chunks("tracker_0", insv, time_shift=0.0, window=_WINDOW)
+    + calibration_chunks("tracker_0", insv, np.asarray(ImuCfg().body_R_imu))
+  )
   out = tmp / "base.rrd"
   write_base_recording(
     out,
@@ -235,7 +165,7 @@ def test_decoded_shape_and_lens_setups(base_rrd: Path) -> None:
   session = SessionRecording(base_rrd)
   assert session.decoded_shape("tracker_0") == (64, 64)
   front, rear = session.lens_setups("tracker_0", 64)
-  expected = parse_offset_v3(_synthetic_insv().offset_v3)
+  expected = parse_offset_v3(synthetic_insv().offset_v3)
   scale = 2 * 64 / expected.front.frame_width
   assert front.params.fx == pytest.approx(expected.front.fx * scale)
   assert front.params.cx == pytest.approx(expected.front.cx * scale)
@@ -264,7 +194,7 @@ def test_imu_comes_back_in_si_without_reconversion(base_rrd: Path) -> None:
 
 def test_imu_calibration_roundtrips(base_rrd: Path) -> None:
   session = SessionRecording(base_rrd)
-  insv = _synthetic_insv()
+  insv = synthetic_insv()
   numbers = insv.gyro_calib_numbers
   expected = gtsam.imuBias.ConstantBias(numbers[3:6], numbers[0:3])
   bias = session.factory_bias("tracker_0")
@@ -278,3 +208,23 @@ def test_imu_calibration_roundtrips(base_rrd: Path) -> None:
     session.body_R_imu("tracker_0"), np.asarray(ImuCfg().body_R_imu), atol=1e-12
   )
   assert session.rolling_shutter_readout("tracker_0") == pytest.approx(0.0157)
+
+
+def test_capture_telemetry_reaches_the_base(base_rrd: Path) -> None:
+  """Identity, factory pinhole, exposure and AE reports all ride the base recording."""
+  rows: dict[str, int] = {}
+  columns: dict[str, set[str]] = {}
+  for chunk in RrdReader(str(base_rrd)).store().stream().to_chunks():
+    e = chunk.entity_path
+    rows[e] = rows.get(e, 0) + chunk.num_rows
+    batch_names = chunk.to_record_batch().schema.names
+    columns.setdefault(e, set()).update(
+      n.split(":")[-1] for n in batch_names if n not in chunk.timeline_names
+    )
+  cap = "/calibration/tracker_0/capture"
+  assert {"serial_number", "camera_type", "fw_version", "photo_rot"} <= columns[cap]
+  pin = "/calibration/tracker_0/factory_pinhole"
+  assert {"camera_matrix", "distortion_coeffs", "distortion_model"} <= columns[pin]
+  assert rows["/image/tracker_0/exposure"] == 3
+  assert rows["/image/tracker_0/ae"] == 2
+  assert "iso_value" in columns["/image/tracker_0/ae"]
