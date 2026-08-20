@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections import Counter
 from dataclasses import dataclass
 
@@ -12,7 +13,7 @@ import numpy.typing as npt
 from scipy.spatial.transform import Rotation as Rscp
 from scipy.spatial.transform import Slerp
 
-from specialist.vi_ba.geometry import max_parallax
+from specialist.vi_ba.geometry import max_parallax, translation
 
 Float64Array = npt.NDArray[np.float64]
 
@@ -21,6 +22,12 @@ _SFM_INIT_PAIR_MIN_PARALLAX = float(np.deg2rad(2.0))  # the bootstrap pair must 
 _SFM_MIN_PNP_POINTS = 6  # inliers to register a keyframe by PnP
 _SFM_MAX_REPROJ = 0.01  # median triangulation residual on the normalized plane
 _SFM_PASSES = 8  # sequential registration passes
+# Keyframes an init-pair search may slide its base over.
+_INIT_BASE_SLIDE = 32
+# Cheirality bound on a unit bearing's z and on a view depth (m).
+_MIN_CHEIRALITY_Z = 0.05
+# Visual-odometry pose-spike rejection (``reject_vo_pose_outliers``).
+_VO_REJECT_FACTOR = 8.0  # residual/median-step ratio marking a PnP teleport
 
 
 @dataclass(frozen=True)
@@ -36,14 +43,70 @@ __all__ = [
   "Alignment",
   "apply_alignment_to_poses",
   "body_poses_from_lens_poses",
+  "fill_lens_poses",
   "gravity_alignment_rotation",
   "incremental_sfm",
   "interpolate_camera_poses",
   "pick_init_pair",
+  "reject_vo_pose_outliers",
   "triangulate_track_multiview",
   "two_view_essential",
   "visual_inertial_align",
 ]
+
+
+def reject_vo_pose_outliers(
+  lens_poses: dict[int, gtsam.Pose3],
+) -> tuple[dict[int, gtsam.Pose3], list[int]]:
+  """Drop incremental-SfM keyframes whose camera center is a local spike."""
+  kept = dict(lens_poses)
+  removed: list[int] = []
+  for _ in range(len(lens_poses)):
+    kfs = sorted(kept)
+    if len(kfs) < 5:
+      break
+    centers = {kf: translation(kept[kf]) for kf in kfs}
+    steps = [
+      float(np.linalg.norm(centers[kfs[i + 1]] - centers[kfs[i]]))
+      / (kfs[i + 1] - kfs[i])
+      for i in range(len(kfs) - 1)
+    ]
+    median_step = float(np.median(steps))
+    if median_step < 1e-12:
+      break
+    worst_kf: int | None = None
+    worst_residual = 0.0
+    for i in range(1, len(kfs) - 1):
+      prev_kf, kf, next_kf = kfs[i - 1], kfs[i], kfs[i + 1]
+      frac = (kf - prev_kf) / (next_kf - prev_kf)
+      interpolated = (1.0 - frac) * centers[prev_kf] + frac * centers[next_kf]
+      residual = float(np.linalg.norm(centers[kf] - interpolated))
+      if residual > worst_residual:
+        worst_residual, worst_kf = residual, kf
+    if worst_kf is not None and worst_residual > _VO_REJECT_FACTOR * median_step:
+      del kept[worst_kf]
+      removed.append(worst_kf)
+    else:
+      break
+  return kept, sorted(removed)
+
+
+def fill_lens_poses(
+  lens_poses: dict[int, gtsam.Pose3], n_keyframes: int
+) -> list[gtsam.Pose3]:
+  """Every keyframe's camera pose, gaps interpolated on SE(3) and held at the ends."""
+  reg = sorted(lens_poses)
+  out: list[gtsam.Pose3] = []
+  for k in range(n_keyframes):
+    after = bisect_left(reg, k)
+    lo, hi = reg[max(after - 1, 0)], reg[min(after, len(reg) - 1)]
+    pa, pb = lens_poses[lo], lens_poses[hi]
+    if hi in (k, lo):
+      out.append(pb)
+    else:
+      f = (k - lo) / (hi - lo)
+      out.append(pa.compose(gtsam.Pose3.Expmap(f * gtsam.Pose3.Logmap(pa.between(pb)))))
+  return out
 
 
 def two_view_essential(
@@ -76,10 +139,6 @@ def two_view_essential(
     raise RuntimeError("essential matrix failed on the init pair")
   n_inliers, R, t, _ = cv2.recoverPose(E, norm_a, norm_b)
   return R.astype(np.float64), t.flatten().astype(np.float64), int(n_inliers)
-
-
-# Keyframes the init-pair base may slide over when the first has too few tracks.
-_INIT_BASE_SLIDE = 32
 
 
 def _widest_pair_from(
@@ -248,11 +307,9 @@ def incremental_sfm(
     tid: np.asarray(list(obs.values()), dtype=np.float64)
     for tid, obs in bearings.items()
   }
-  poses: dict[int, tuple[Float64Array, Float64Array]] = {}
   landmark_map: dict[int, Float64Array] = {}
 
   def register(k: int, r_cw: Float64Array, t_cw: Float64Array) -> None:
-    poses[k] = (r_cw, t_cw)
     i = frame_index[k]
     rotations[i] = r_cw
     translations[i] = t_cw
@@ -320,7 +377,7 @@ def incremental_sfm(
   for _pass in range(_SFM_PASSES):
     progress = False
     for k in frames:
-      if k in poses:
+      if registered[frame_index[k]]:
         continue
       tids = [tid for tid in tracks_by_kf[k] if tid in landmark_map]
       if len(tids) < _SFM_MIN_PNP_POINTS:
@@ -338,14 +395,12 @@ def incremental_sfm(
     if not progress:
       break
 
-  lens_poses = {
-    k: gtsam.Pose3(gtsam.Rot3(r.T), -r.T @ t) for k, (r, t) in poses.items()
-  }
+  lens_poses: dict[int, gtsam.Pose3] = {}
+  for k, i in frame_index.items():
+    if registered[i]:
+      r_wc = rotations[i].T
+      lens_poses[k] = gtsam.Pose3(gtsam.Rot3(r_wc), -r_wc @ translations[i])
   return lens_poses, landmark_map
-
-
-# Cheirality bound on a unit bearing's z and on a view depth (m).
-_MIN_CHEIRALITY_Z = 0.05
 
 
 def triangulate_track_multiview(
@@ -498,8 +553,7 @@ def apply_alignment_to_poses(
   r = rot.matrix()
   return [
     gtsam.Pose3(
-      gtsam.Rot3(r @ p.rotation().matrix()),
-      r @ (alignment.scale * np.asarray(p.translation(), dtype=np.float64)),
+      gtsam.Rot3(r @ p.rotation().matrix()), r @ (alignment.scale * translation(p))
     )
     for p in body_poses
   ], rot

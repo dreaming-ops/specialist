@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 import gtsam
 import numpy as np
 import numpy.typing as npt
@@ -10,13 +12,36 @@ from scipy.spatial.transform import Rotation
 Float64Array = npt.NDArray[np.float64]
 
 __all__ = [
+  "average_pose",
   "bounding_box_diagonal",
   "matrices_to_quats",
   "max_parallax",
   "path_length",
   "quat_xyzw",
   "quats_to_matrices",
+  "rotate_about_z",
+  "translation",
 ]
+
+
+def translation(pose: gtsam.Pose3) -> Float64Array:
+  return np.asarray(pose.translation(), dtype=np.float64)
+
+
+def average_pose(
+  poses: list[gtsam.Pose3], reduce: Literal["mean", "median"]
+) -> gtsam.Pose3:
+  """``reduce`` over the translations and the rotation logs about the first pose."""
+  ref_rot = poses[0].rotation()
+  translations = np.stack([translation(p) for p in poses])
+  logs = np.stack([gtsam.Rot3.Logmap(ref_rot.between(p.rotation())) for p in poses])
+  if reduce == "mean":
+    delta_log, center = np.mean(logs, axis=0), np.mean(translations, axis=0)
+  else:
+    delta_log, center = np.median(logs, axis=0), np.median(translations, axis=0)
+  return gtsam.Pose3(
+    ref_rot.compose(gtsam.Rot3.Expmap(delta_log)), gtsam.Point3(*center)
+  )
 
 
 def _canonical(quats: Float64Array) -> Float64Array:
@@ -42,6 +67,20 @@ def quats_to_matrices(quaternions: Float64Array) -> Float64Array:
 def matrices_to_quats(matrices: Float64Array) -> Float64Array:
   """Batch rotation matrices to xyzw quaternions, ``(n, 3, 3) -> (n, 4)``."""
   out: Float64Array = _canonical(Rotation.from_matrix(matrices).as_quat())
+  return out
+
+
+def rotate_about_z(points: Float64Array, angles: Float64Array) -> Float64Array:
+  """Every angle's ``Rz(angle) @ point``: ``(..., 3)`` points against ``(n,)``
+  angles gives ``(n, ..., 3)``."""
+  pts = np.asarray(points, dtype=np.float64)
+  cos = np.cos(angles).reshape((-1,) + (1,) * (pts.ndim - 1))
+  sin = np.sin(angles).reshape(cos.shape)
+  x, y, z = pts[..., 0], pts[..., 1], pts[..., 2]
+  out: Float64Array = np.stack(
+    [cos * x - sin * y, sin * x + cos * y, np.broadcast_to(z, cos.shape[:1] + z.shape)],
+    axis=-1,
+  )
   return out
 
 

@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from specialist.loader.mei_model import MeiParams, mei_project
-from specialist.vi_ba.build import LensSetup
+from specialist.vi_ba.build import LensChannel, LensSetup
 from specialist.vi_ba.compose import (
   CameraKeys,
   _bfs_world_alignments,
@@ -28,12 +28,12 @@ from specialist.vi_ba.reference_solve import (
 )
 from specialist.vi_ba.single_camera import (
   PreparedCamera,
-  _build_non_anchor_tag_masks,
   _choose_prep_anchor,
-  _print_anchor_geometry,
 )
+from specialist.vi_ba.symbols import LANDMARK_CHAR
 from specialist.vi_ba.tag_detection import (
   TagDetection,
+  non_anchor_tag_masks,
   tag_center_bearing,
   tag_corners_in_frame,
 )
@@ -70,7 +70,7 @@ def test_masks_unmask_exactly_the_configured_anchor_ids(
   """Configured anchor tags stay unmasked; every other tag region is masked."""
   frames = [np.zeros((60, 90), dtype=np.uint8)]
   tags = [[_tag(1, 15.0, 30.0), _tag(0, 45.0, 30.0), _tag(7, 75.0, 30.0)]]
-  blocked = _build_non_anchor_tag_masks(frames[0].shape[:2], tags, anchor_ids, 2)
+  blocked = non_anchor_tag_masks(frames[0].shape[:2], tags, anchor_ids, 2)
   plane = mask_plane(frames[0].shape[:2], blocked[0])
   for x, value in zip((15, 45, 75), expected, strict=True):
     assert plane[30, x] == value
@@ -138,12 +138,18 @@ def _dummy_camera(
     ),
     biases=biases or [],
     preintegrated=preintegrated or [],
-    front_lens=LensSetup(body_T_lens=front_ext, params=narrow_mei_params()),
-    rear_lens=LensSetup(body_T_lens=rear_ext, params=narrow_mei_params()),
-    front_tracks={},
-    rear_tracks={},
-    front_points={},
-    rear_points={},
+    front=LensChannel(
+      lens="front",
+      setup=LensSetup(body_T_lens=front_ext, params=narrow_mei_params()),
+      tags=(
+        front_tags_per_kf if front_tags_per_kf is not None else [[] for _ in range(n)]
+      ),
+    ),
+    rear=LensChannel(
+      lens="rear",
+      setup=LensSetup(body_T_lens=rear_ext, params=narrow_mei_params()),
+      tags=[[] for _ in range(n)],
+    ),
     anchor_obs_by_tag=(
       {prep_anchor_tag_id: anchor_obs_per_kf} if anchor_obs_per_kf else {}
     )
@@ -154,15 +160,6 @@ def _dummy_camera(
     | (extra_anchor_locals or {}),
     body_T_base_tag=None,
     keyframe_times=np.zeros(n),
-    front_keypoints=[],
-    rear_keypoints=[],
-    front_tags_per_kf=(
-      front_tags_per_kf if front_tags_per_kf is not None else [[] for _ in range(n)]
-    ),
-    rear_tags_per_kf=[[] for _ in range(n)],
-    front_rejected={},
-    rear_rejected={},
-    rear_static_mask_rects=[],
     finger_reproj={},
     left_finger_tag_id=0,
     right_finger_tag_id=0,
@@ -173,6 +170,10 @@ def _lens_T_tag(
   body: gtsam.Pose3, body_T_lens: gtsam.Pose3, world_T_tag: gtsam.Pose3
 ) -> gtsam.Pose3:
   return body.compose(body_T_lens).inverse().compose(world_T_tag)
+
+
+def _prep_poses(cameras: list[PreparedCamera]) -> dict[str, list[gtsam.Pose3]]:
+  return {t.name: t.body_poses for t in cameras}
 
 
 def _front_obs(
@@ -202,7 +203,7 @@ def test_secondary_anchor_seed_matches_world_tag_pose() -> None:
     _dummy_camera("a", bodies_a, {5: obs_a}, front_ext, rear_ext),
     _dummy_camera("b", bodies_b, {5: obs_b}, front_ext, rear_ext),
   ]
-  seed = _secondary_anchor_seed(cameras, 5)
+  seed = _secondary_anchor_seed(cameras, 5, _prep_poses(cameras))
   assert seed is not None
   assert np.allclose(seed.matrix(), world_T_tag.matrix(), atol=1e-9)
 
@@ -215,14 +216,14 @@ def test_secondary_anchor_seed_median_ignores_outlier_sighting() -> None:
   obs = _front_obs(bodies, ext, world_T_tag)
   obs[2] = {"front": _lens_T_tag(bodies[2], ext, _pose(1.5, 0.0, 0.0, 5.0, -3.0, 2.0))}
   camera = _dummy_camera("a", bodies, {5: obs}, ext, ext)
-  seed = _secondary_anchor_seed([camera], 5)
+  seed = _secondary_anchor_seed([camera], 5, _prep_poses([camera]))
   assert seed is not None
   assert np.allclose(seed.matrix(), world_T_tag.matrix(), atol=1e-9)
 
 
 def test_secondary_anchor_seed_none_when_unseen() -> None:
   camera = _dummy_camera("a", [gtsam.Pose3()], {}, gtsam.Pose3(), gtsam.Pose3())
-  assert _secondary_anchor_seed([camera], 7) is None
+  assert _secondary_anchor_seed([camera], 7, _prep_poses([camera])) is None
 
 
 def _obs_at_kfs(n_kfs: int) -> dict[int, dict[str, gtsam.Pose3]]:
@@ -277,7 +278,7 @@ def test_secondary_anchor_seed_includes_prep_reference_observations() -> None:
   camera = _dummy_camera(
     "b", bodies, {}, ext, ext, prep_anchor_tag_id=5, anchor_obs_per_kf=obs
   )
-  seed = _secondary_anchor_seed([camera], 5)
+  seed = _secondary_anchor_seed([camera], 5, _prep_poses([camera]))
   assert seed is not None
   assert np.allclose(seed.matrix(), world_T_tag.matrix(), atol=1e-9)
 
@@ -291,10 +292,10 @@ def test_secondary_anchor_seed_uses_pose_override() -> None:
   drift = _pose(0.0, 0.0, 0.1, 0.3, -0.2, 0.1)
   prep_bodies = [drift.compose(p) for p in true_bodies]
   camera = _dummy_camera("a", prep_bodies, {5: obs}, ext, ext)
-  drifted = _secondary_anchor_seed([camera], 5)
+  drifted = _secondary_anchor_seed([camera], 5, _prep_poses([camera]))
   assert drifted is not None
   assert not np.allclose(drifted.matrix(), world_T_tag.matrix(), atol=1e-3)
-  seed = _secondary_anchor_seed([camera], 5, body_poses_by_tracker={"a": true_bodies})
+  seed = _secondary_anchor_seed([camera], 5, {"a": true_bodies})
   assert seed is not None
   assert np.allclose(seed.matrix(), world_T_tag.matrix(), atol=1e-9)
 
@@ -393,7 +394,7 @@ def _pinned_solve_fixture(
 def _assert_no_corner_point_variables(values: gtsam.Values) -> None:
   """Solved values hold no landmark points; freed corners have their own symbol char."""
   key_chars = {gtsam.Symbol(k).chr() for k in values.keys()}
-  assert ord("A") not in key_chars
+  assert ord(LANDMARK_CHAR) not in key_chars
 
 
 def test_pinned_solve_reestimates_secondary_pose(
@@ -401,7 +402,7 @@ def test_pinned_solve_reestimates_secondary_pose(
 ) -> None:
   """From a seed off the true secondary pose, the post-solve re-estimate lands on it."""
   cameras, keys, args, world_T_ref, world_T_sec = _pinned_solve_fixture(True)
-  seed = _secondary_anchor_seed(cameras, 5)
+  seed = _secondary_anchor_seed(cameras, 5, _prep_poses(cameras))
   assert seed is not None
   true_t = np.asarray(world_T_sec.translation(), dtype=np.float64)
   seed_err = float(np.linalg.norm(np.asarray(seed.translation()) - true_t))
@@ -454,22 +455,3 @@ def test_anchored_keyframes_union_over_all_anchors() -> None:
     anchor_obs_per_kf={0: {"front": gtsam.Pose3()}, 1: {"front": gtsam.Pose3()}},
   )
   assert anchored_keyframes(camera) == {0, 1, 2}
-
-
-def test_anchor_geometry_print_is_observational(
-  capsys: pytest.CaptureFixture[str],
-) -> None:
-  """The geometry line keeps inputs, returns nothing and skips unsighted anchors."""
-  ext = gtsam.Pose3()
-  world_T_tag = _pose(0.0, 0.0, 0.0, 0.1, 0.0, 0.9)
-  det = _project_tag(ext, narrow_mei_params(), world_T_tag, 5, 0.1)
-  lens = LensSetup(body_T_lens=ext, params=narrow_mei_params())
-  lens_sides = (("front", lens, [[det]], [np.eye(3)]),)
-  obs = {0: {"front": world_T_tag}}
-  before = {kf: dict(sides) for kf, sides in obs.items()}
-  assert _print_anchor_geometry("a", 5, lens_sides, obs) is None
-  out = capsys.readouterr().out
-  assert "anchor 5 geometry" in out
-  assert obs == before
-  _print_anchor_geometry("a", 7, lens_sides, {})
-  assert "anchor 7" not in capsys.readouterr().out

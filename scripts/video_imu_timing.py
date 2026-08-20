@@ -65,8 +65,8 @@ def read_lens_grays(
   video_path: Path, lens: Literal["front", "rear"], *, max_frames: int
 ) -> tuple[list[UInt8Array], Float64Array, float]:
   """Gray frames, their container times and the fps of ``video_path`` or, for ``rear``, its ``_10_`` sibling."""
-  rear_path, fps, _ = probe_capture(video_path)
-  path = video_path if lens == "front" else rear_path
+  capture = probe_capture(video_path)
+  path = video_path if lens == "front" else capture.rear_path
   cap = cv2.VideoCapture(str(path))
   if not cap.isOpened():
     raise RuntimeError(f"OpenCV failed to open {path}")
@@ -81,7 +81,7 @@ def read_lens_grays(
       times.append(cap.get(cv2.CAP_PROP_POS_MSEC) * 1e-3)
   finally:
     cap.release()
-  return grays, np.asarray(times, dtype=np.float64), fps
+  return grays, np.asarray(times, dtype=np.float64), capture.fps
 
 
 def _flow_magnitudes(grays: list[UInt8Array], args: TimingArgs) -> Float64Array:

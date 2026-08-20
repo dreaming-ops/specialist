@@ -21,12 +21,11 @@ from specialist.vi_ba.compose import (
   anchored_keyframes,
   cross_tracker_observations,
 )
-from specialist.vi_ba.configs import Args, validate
+from specialist.vi_ba.configs import Args, CameraArgs, validate
 from specialist.vi_ba.features import set_precompute_concurrency
 from specialist.vi_ba.gpu_lm import assert_backend
 from specialist.vi_ba.reference_solve import adopt_ba_refined_estimates, solve_joint
 from specialist.vi_ba.single_camera import (
-  CameraArgs,
   PreparedCamera,
   cameras_that_fit,
   prepare_camera,
@@ -60,6 +59,22 @@ def _stage_timer() -> Callable[[str], None]:
   return mark
 
 
+def _print_capture_diagnostics(
+  cameras: list[PreparedCamera],
+  optimized_body_poses: dict[str, list[gtsam.Pose3]],
+) -> None:
+  """Print the maximum keyframe-to-keyframe speed."""
+  print("\n=== max kf-to-kf speed (real motion if IMU agrees) ===")
+  for t in cameras:
+    poses = optimized_body_poses[t.name]
+    pts = np.array([np.asarray(p.translation(), dtype=np.float64) for p in poses])
+    kf_t = np.asarray(t.keyframe_times, dtype=np.float64)
+    dt = np.diff(kf_t)
+    speed = np.linalg.norm(np.diff(pts, axis=0), axis=1) / np.where(dt > 0, dt, 1.0)
+    i = int(np.argmax(speed))
+    print(f"  [{t.name}] max={speed[i]:.2f} m/s at kf {i}→{i + 1} (t={kf_t[i]:.2f}s)")
+
+
 def _non_default_flags(args: object, prefix: str = "") -> list[str]:
   """Every non-default value of a defaulted field, dotted through the nested configs."""
   out: list[str] = []
@@ -77,22 +92,6 @@ def _non_default_flags(args: object, prefix: str = "") -> list[str]:
     if value != default:
       out.append(f"{prefix}{spec.name}={value}")
   return out
-
-
-def _print_capture_diagnostics(
-  cameras: list[PreparedCamera],
-  optimized_body_poses: dict[str, list[gtsam.Pose3]],
-) -> None:
-  """Print the maximum keyframe-to-keyframe speed."""
-  print("\n=== max kf-to-kf speed (real motion if IMU agrees) ===")
-  for t in cameras:
-    poses = optimized_body_poses[t.name]
-    pts = np.array([np.asarray(p.translation(), dtype=np.float64) for p in poses])
-    kf_t = np.asarray(t.keyframe_times, dtype=np.float64)
-    dt = np.diff(kf_t)
-    speed = np.linalg.norm(np.diff(pts, axis=0), axis=1) / np.where(dt > 0, dt, 1.0)
-    i = int(np.argmax(speed))
-    print(f"  [{t.name}] max={speed[i]:.2f} m/s at kf {i}→{i + 1} (t={kf_t[i]:.2f}s)")
 
 
 def main(args: Args) -> None:
@@ -114,11 +113,14 @@ def main(args: Args) -> None:
   mark = _stage_timer()
   print(f"session {session.session_id}: cameras {list(names)}")
 
+  # The per-tracker id lists pair with the recording's names in sorted order.
   left_finger_ids = args.left_finger_tag_ids or (0,) * len(names)
   right_finger_ids = args.right_finger_tag_ids or (0,) * len(names)
   specs = list(
     zip(names, args.base_tag_ids, left_finger_ids, right_finger_ids, strict=True)
   )
+  for name, base_tag_id, left_id, right_id in specs:
+    print(f"  {name}: base tag {base_tag_id}, finger tags {left_id}/{right_id}")
 
   # Resolve the URDF once: the finger joint-angle factors and the viz overlay share it.
   urdf_path = _resolve_urdf_path(args.urdf_path)
@@ -152,8 +154,9 @@ def main(args: Args) -> None:
       print(f"\n=== prep tracker {name!r} FAILED: {exc!r} ===", flush=True)
       raise
     print(
-      f"  kf={tracker.n_keyframes}  anchor_obs={len(anchored_keyframes(tracker))}  "
-      f"front_pts={len(tracker.front_points)}  rear_pts={len(tracker.rear_points)}  "
+      f"  [{name}] kf={tracker.n_keyframes}  "
+      f"anchor_obs={len(anchored_keyframes(tracker))}  "
+      f"front_pts={len(tracker.front.points)}  rear_pts={len(tracker.rear.points)}  "
       f"body_T_base_tag={'yes' if tracker.body_T_base_tag else 'no'}"
     )
     return tracker

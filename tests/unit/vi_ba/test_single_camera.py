@@ -1,4 +1,4 @@
-"""``vi_ba.single_camera``: anchor-PnP seeds and the loop-closure landmark merge."""
+"""``vi_ba.single_camera`` and the revisit landmark merge of ``vi_ba.tracks``."""
 
 from __future__ import annotations
 
@@ -11,11 +11,10 @@ from specialist.loader.mei_model import mei_project
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.configs import FrontendCfg
 from specialist.vi_ba.single_camera import (
-  _add_revisit_landmarks,
   _anchor_metric_scale,
   _anchor_pose_seed,
 )
-from specialist.vi_ba.tracks import run_lens_frontend
+from specialist.vi_ba.tracks import add_revisit_landmarks, run_lens_frontend
 from tests.frame_fixtures import translating_frames
 from tests.mei_fixtures import narrow_mei_params
 
@@ -151,27 +150,25 @@ def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:
 
   fp_rel: dict[int, np.ndarray] = {}
   fk_rel: dict[int, dict[int, np.ndarray]] = {7: {0: np.array([1.0, 1.0])}}
-  _add_revisit_landmarks(
+  add_revisit_landmarks(
     fp_rel,
     fk_rel,
     {99: dict(obs)},
     body_poses,
     lens,
-    min_track_length=2,
-    max_landmark_depth=5.0,
+    FrontendCfg(min_track_length=2, max_landmark_depth=5.0),
     slot="t",
     anchor_kfs={1, 4},
   )
   fp_all: dict[int, np.ndarray] = {}
   fk_all: dict[int, dict[int, np.ndarray]] = {}
-  _add_revisit_landmarks(
+  add_revisit_landmarks(
     fp_all,
     fk_all,
     {99: dict(obs)},
     body_poses,
     lens,
-    min_track_length=2,
-    max_landmark_depth=5.0,
+    FrontendCfg(min_track_length=2, max_landmark_depth=5.0),
     slot="t",
   )
 

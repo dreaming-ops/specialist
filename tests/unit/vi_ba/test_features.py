@@ -80,11 +80,8 @@ def test_match_pair_empty_descriptors_returns_empty() -> None:
 
 
 def test_essential_ransac_with_few_points_returns_all_false() -> None:
-  pts = np.array([[0.0, 0.0], [1.0, 1.0]])  # < 8 points
-  bearings = np.array([[0.0, 0.0, 1.0], [0.1, 0.1, 1.0]])
-  inliers = essential_ransac_inliers(
-    pts, pts, bearings, bearings, threshold_px=3.0, fx=500.0
-  )
+  bearings = np.array([[0.0, 0.0, 1.0], [0.1, 0.1, 1.0]])  # < 8 correspondences
+  inliers = essential_ransac_inliers(bearings, bearings, threshold_px=3.0, fx=500.0)
   assert inliers.shape == (2,)
   assert inliers.dtype == bool
   assert not inliers.any()
@@ -94,69 +91,43 @@ def _synthetic_correspondence_pair(
   rng: np.random.Generator,
   n_inliers: int,
   n_outliers: int,
-  fx: float = 500.0,
-) -> tuple[Float64Array, Float64Array, Float64Array, Float64Array]:
-  """Return (pts_a, pts_b, bearings_a, bearings_b) for a known x-translation."""
+) -> tuple[Float64Array, Float64Array]:
+  """Return (bearings_a, bearings_b) for a known x-translation."""
   # 3D points in camera A's frame, z > 0.
   pts3d = rng.uniform(-0.5, 0.5, size=(n_inliers, 3))
   pts3d[:, 2] = rng.uniform(1.5, 3.0, size=n_inliers)
   # Camera B is translated along +x by 0.2 m in camera A's frame.
   pts3d_b = pts3d - np.array([0.2, 0.0, 0.0])
 
-  def _to_pts_and_bearings(
-    p: Float64Array,
-  ) -> tuple[Float64Array, Float64Array]:
-    bearings = p / np.linalg.norm(p, axis=1, keepdims=True)
-    norm = p[:, :2] / p[:, 2:3]
-    pts = fx * norm + np.array([320.0, 240.0])
-    return pts, bearings
+  def _unit_rows(p: Float64Array) -> Float64Array:
+    bearings: Float64Array = p / np.linalg.norm(p, axis=1, keepdims=True)
+    return bearings
 
-  pts_a, bears_a = _to_pts_and_bearings(pts3d)
-  pts_b, bears_b = _to_pts_and_bearings(pts3d_b)
+  bears_a, bears_b = _unit_rows(pts3d), _unit_rows(pts3d_b)
 
-  # Append outliers: random pixel pairs with random bearings.
   if n_outliers > 0:
-    out_pts_a = rng.uniform(100, 500, size=(n_outliers, 2))
-    out_pts_b = rng.uniform(100, 500, size=(n_outliers, 2))
-    # Random unit bearings.
-    out_bears_a = rng.normal(size=(n_outliers, 3))
-    out_bears_a /= np.linalg.norm(out_bears_a, axis=1, keepdims=True)
-    out_bears_b = rng.normal(size=(n_outliers, 3))
-    out_bears_b /= np.linalg.norm(out_bears_b, axis=1, keepdims=True)
-    pts_a = np.vstack([pts_a, out_pts_a])
-    pts_b = np.vstack([pts_b, out_pts_b])
-    bears_a = np.vstack([bears_a, out_bears_a])
-    bears_b = np.vstack([bears_b, out_bears_b])
+    bears_a = np.vstack([bears_a, _unit_rows(rng.normal(size=(n_outliers, 3)))])
+    bears_b = np.vstack([bears_b, _unit_rows(rng.normal(size=(n_outliers, 3)))])
 
-  return pts_a, pts_b, bears_a, bears_b
+  return bears_a, bears_b
 
 
 def test_essential_ransac_selects_inliers_over_outliers() -> None:
   rng = np.random.default_rng(2)
-  pts_a, pts_b, bears_a, bears_b = _synthetic_correspondence_pair(
-    rng, n_inliers=30, n_outliers=10
-  )
-  inliers = essential_ransac_inliers(
-    pts_a, pts_b, bears_a, bears_b, threshold_px=1.5, fx=500.0
-  )
+  bears_a, bears_b = _synthetic_correspondence_pair(rng, n_inliers=30, n_outliers=10)
+  inliers = essential_ransac_inliers(bears_a, bears_b, threshold_px=1.5, fx=500.0)
   assert inliers.shape == (40,)
   assert inliers[:30].sum() >= 25
   assert inliers[30:].sum() <= 4
 
 
 def test_chain_tracks_two_frames_one_match() -> None:
-  frames = [
-    Frame(
-      keypoints=np.array([[10.0, 10.0], [20.0, 20.0]]),
-      descriptors=np.zeros((2, 32), dtype=np.uint8),
-    ),
-    Frame(
-      keypoints=np.array([[11.0, 11.0], [21.0, 19.0]]),
-      descriptors=np.zeros((2, 32), dtype=np.uint8),
-    ),
+  keypoints = [
+    np.array([[10.0, 10.0], [20.0, 20.0]]),
+    np.array([[11.0, 11.0], [21.0, 19.0]]),
   ]
   matches = [np.array([[0, 1]], dtype=np.int64)]
-  tracks = chain_tracks(frames, matches)
+  tracks = chain_tracks(keypoints, matches)
   assert len(tracks) == 1
   tid = next(iter(tracks))
   assert set(tracks[tid].keys()) == {0, 1}
@@ -165,18 +136,12 @@ def test_chain_tracks_two_frames_one_match() -> None:
 
 
 def test_chain_tracks_three_frames_chain_through_shared_keypoint() -> None:
-  frames = [
-    Frame(
-      keypoints=np.array([[0.0, 0.0], [100.0, 100.0]]),
-      descriptors=np.zeros((2, 32), dtype=np.uint8),
-    )
-    for _ in range(3)
-  ]
+  keypoints = [np.array([[0.0, 0.0], [100.0, 100.0]]) for _ in range(3)]
   matches = [
     np.array([[0, 0]], dtype=np.int64),  # f0→f1
     np.array([[0, 0]], dtype=np.int64),  # f1→f2
   ]
-  tracks = chain_tracks(frames, matches)
+  tracks = chain_tracks(keypoints, matches)
   assert len(tracks) == 1
   tid = next(iter(tracks))
   assert set(tracks[tid].keys()) == {0, 1, 2}
@@ -184,18 +149,12 @@ def test_chain_tracks_three_frames_chain_through_shared_keypoint() -> None:
 
 def test_chain_tracks_unrelated_pairs_produce_separate_tracks() -> None:
   # f0→f1 pairs kp0 with kp0 and f1→f2 pairs kp1 with kp0, so the tracks do not chain.
-  frames = [
-    Frame(
-      keypoints=np.array([[0.0, 0.0], [1.0, 1.0]]),
-      descriptors=np.zeros((2, 32), dtype=np.uint8),
-    )
-    for _ in range(3)
-  ]
+  keypoints = [np.array([[0.0, 0.0], [1.0, 1.0]]) for _ in range(3)]
   matches = [
     np.array([[0, 0]], dtype=np.int64),
     np.array([[1, 0]], dtype=np.int64),
   ]
-  tracks = chain_tracks(frames, matches)
+  tracks = chain_tracks(keypoints, matches)
   assert len(tracks) == 2
   lengths = sorted(len(obs) for obs in tracks.values())
   assert lengths == [2, 2]
@@ -306,7 +265,7 @@ def test_flow_falls_back_to_cv2_when_the_gpu_stream_fails_mid_lens(
 
   assert "GPU DIS lost" in capsys.readouterr().out
   assert len(recovered) == len(expected)
-  assert sum(f.keypoints.shape[0] for f in recovered) > 0
+  assert sum(pts.shape[0] for pts in recovered) > 0
 
 
 class _CountingFrames(Sequence[np.ndarray]):
@@ -326,8 +285,6 @@ class _CountingFrames(Sequence[np.ndarray]):
 
 def test_flow_reads_each_frame_a_bounded_number_of_times() -> None:
   """The camera's walk plus the flow pairs read each frame at most three times."""
-  from specialist.vi_ba import features
-
   rng = np.random.default_rng(0)
   frames = _CountingFrames(
     [rng.integers(0, 255, (64, 64), dtype=np.uint8) for _ in range(6)]

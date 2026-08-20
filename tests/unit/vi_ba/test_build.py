@@ -8,6 +8,7 @@ import pytest
 from gtsam.symbol_shorthand import B, V, X
 
 from specialist.vi_ba.build import (
+  LensChannel,
   LensSetup,
   build_vi_graph,
   front_landmark_key,
@@ -37,12 +38,8 @@ def _imu_only_graph(
     velocities=velocities,
     biases=biases,
     preintegrated=preintegrated,
-    front=_LENS,
-    front_tracks={},
-    front_points={},
-    rear=_LENS,
-    rear_tracks={},
-    rear_points={},
+    front=LensChannel(lens="front", setup=_LENS),
+    rear=LensChannel(lens="rear", setup=_LENS),
     sigma=1.0,
   )
 
@@ -72,12 +69,10 @@ def test_build_graph_dual_lens_uses_disjoint_landmark_keys() -> None:
   graph, values = build_vi_graph(
     body_poses=poses,
     preintegrated=None,
-    front=lens,
-    front_tracks=front_tracks,
-    front_points={0: xyz_front},
-    rear=lens,
-    rear_tracks=rear_tracks,
-    rear_points={0: xyz_rear},
+    front=LensChannel(
+      lens="front", setup=lens, tracks=front_tracks, points={0: xyz_front}
+    ),
+    rear=LensChannel(lens="rear", setup=lens, tracks=rear_tracks, points={0: xyz_rear}),
     sigma=1.0,
     weak_pose_sigmas=(0.3,) * 6,
     anchor_last_pose=True,

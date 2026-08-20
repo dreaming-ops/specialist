@@ -14,7 +14,7 @@ import numpy.typing as npt
 from pupil_apriltags import Detector
 
 from specialist.loader.mei_model import MeiParams, mei_unproject
-from specialist.vi_ba.features import cpu_budget
+from specialist.vi_ba.features import Rect, cpu_budget
 
 Float64Array = npt.NDArray[np.float64]
 
@@ -28,14 +28,60 @@ _local = threading.local()
 
 __all__ = [
   "TagDetection",
-  "tag_half_angle",
   "lens_T_tag_per_kf",
+  "apply_static_mask_rects",
+  "configure_detector",
   "detect_all_tags",
   "estimate_lens_T_tag",
+  "non_anchor_tag_masks",
   "tag_center_bearing",
   "tag_corners_in_frame",
   "tag_corners_local",
+  "tag_half_angle",
 ]
+
+
+def non_anchor_tag_masks(
+  shape: tuple[int, int],
+  tags_per_kf: list[list[TagDetection]],
+  exclude_tag_ids: set[int],
+  pad_px: int,
+) -> list[list[Rect]]:
+  """Per keyframe, the padded, clipped box of each tag not in ``exclude_tag_ids``."""
+  h, w = shape
+  blocked: list[list[Rect]] = []
+  for tags in tags_per_kf:
+    rects: list[Rect] = []
+    for tag in tags:
+      if int(tag.tag_id) in exclude_tag_ids:
+        continue
+      corners = np.asarray(tag.corners, dtype=np.float64)
+      x0 = max(int(np.floor(corners[:, 0].min())) - pad_px, 0)
+      y0 = max(int(np.floor(corners[:, 1].min())) - pad_px, 0)
+      x1 = min(int(np.ceil(corners[:, 0].max())) + pad_px, w)
+      y1 = min(int(np.ceil(corners[:, 1].max())) + pad_px, h)
+      if x1 > x0 and y1 > y0:
+        rects.append((x0, y0, x1, y1))
+    blocked.append(rects)
+  return blocked
+
+
+def apply_static_mask_rects(
+  blocked: list[list[Rect]], rects: list[Rect], shape: tuple[int, int]
+) -> None:
+  if not rects or not blocked:
+    return
+  h, w = shape
+  for x1, y1, x2, y2 in rects:
+    x1c, y1c = max(0, x1), max(0, y1)
+    x2c, y2c = min(w, x2), min(h, y2)
+    if x2c <= x1c or y2c <= y1c:
+      raise ValueError(
+        f"mask_rear_rects entry {(x1, y1, x2, y2)} is empty after clamping to the "
+        f"{w}x{h} frame — check the coordinate order (x1 y1 x2 y2) and bounds"
+      )
+    for frame_rects in blocked:
+      frame_rects.append((x1c, y1c, x2c, y2c))
 
 
 def configure_detector(parallel: bool) -> None:

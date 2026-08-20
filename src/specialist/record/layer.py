@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+import socket
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import rerun as rr
-import rerun.blueprint as rrb
 from rerun.experimental import (
   Chunk,
   LazyChunkStream,
@@ -21,6 +21,8 @@ from specialist.vi_ba.viz import run_blueprint, solution_chunks
 from specialist.vi_ba.viz_build import RunOutputs
 
 __all__ = ["write_solution_layers"]
+
+_VIEWER_PORT = 9876
 
 
 def _split_group(
@@ -37,28 +39,22 @@ def _split_group(
 
 
 def _send_run_properties(
-  summary: Summary,
-  per_tracker: list[CameraSummary],
-  *streams: rr.RecordingStream | None,
+  summary: Summary, per_tracker: list[CameraSummary], stream: rr.RecordingStream
 ) -> None:
-  """Every summary number, to the layer that keeps them and the viewer watching."""
+  """Every summary number, to the layer that keeps them."""
   run = asdict(summary)
-  sources = list(run.pop("sources"))
-  for stream in streams:
-    if stream is None:
-      continue
-    stream.send_property("session", rr.AnyValues(sources=sources))
+  stream.send_property("session", rr.AnyValues(sources=list(run.pop("sources"))))
+  _split_group(
+    stream, "solver", "run_summary", run, ("cross_tracker_obs", "solver_iterations")
+  )
+  for tracker in per_tracker:
     _split_group(
-      stream, "solver", "run_summary", run, ("cross_tracker_obs", "solver_iterations")
+      stream,
+      f"quality_{tracker.name}",
+      f"run_summary/{tracker.name}",
+      asdict(tracker),
+      ("front_rmse",),
     )
-    for tracker in per_tracker:
-      _split_group(
-        stream,
-        f"quality_{tracker.name}",
-        f"run_summary/{tracker.name}",
-        asdict(tracker),
-        ("front_rmse",),
-      )
 
 
 def _stream(session_id: str) -> rr.RecordingStream:
@@ -67,19 +63,15 @@ def _stream(session_id: str) -> rr.RecordingStream:
   )
 
 
-def _open_viewer(
-  blueprint: rrb.Blueprint, session_id: str
-) -> rr.RecordingStream | None:
-  """A viewer for the run being written, or none if one cannot be opened."""
-  viewer = _stream(session_id)
+def _viewer_sink() -> list[rr.GrpcSink]:
+  """Spawn a viewer and return a sink into it, or none when it cannot be opened."""
   try:
-    viewer.send_blueprint(blueprint, make_active=True, make_default=True)
-    viewer.spawn(connect=False)
-    viewer.connect_grpc()
+    rr.spawn(connect=False)
+    socket.create_connection(("127.0.0.1", _VIEWER_PORT), timeout=5.0).close()
   except Exception as exc:  # noqa: BLE001 - the viewer is optional; the layers are not
     print(f"  [layer] viewer not opened ({exc}); writing the layers without it")
-    return None
-  return viewer
+    return []
+  return [rr.GrpcSink(url=f"rerun+http://127.0.0.1:{_VIEWER_PORT}/proxy")]
 
 
 def write_solution_layers(
@@ -106,28 +98,17 @@ def write_solution_layers(
   for partial in partials.values():
     partial.unlink(missing_ok=True)
 
-  viewer = _open_viewer(blueprint, session_id) if open_viewer else None
+  viewer = _viewer_sink() if open_viewer else []
 
   # Viz chunks stream to the file; track chunks are shaped for the object store.
   kept: list[Chunk] = []
   try:
     with _stream(session_id) as viz_stream:
-      viz_stream.save(str(partials[viz_path]))
+      viz_stream.set_sinks(rr.FileSink(partials[viz_path]), *viewer)
       viz_stream.send_blueprint(blueprint, make_active=True, make_default=True)
-
-      def to_viz(chunk: Chunk) -> None:
-        send_chunks([chunk], recording=viz_stream)
-        if viewer is not None:
-          send_chunks([chunk], recording=viewer)
-
-      def to_track(chunk: Chunk) -> None:
-        kept.append(chunk)
-        if viewer is not None:
-          send_chunks([chunk], recording=viewer)
-
       solution_chunks(
-        to_track,
-        to_viz,
+        kept.append,
+        lambda chunk: send_chunks([chunk], recording=viz_stream),
         outputs.viz_trackers,
         outputs.world_T_anchor,
         reference_tag_id,
@@ -142,13 +123,11 @@ def write_solution_layers(
       optimize=OptimizationProfile.OBJECT_STORE
     )
     with _stream(session_id) as track_stream:
-      track_stream.save(str(partials[track_path]))
+      track_stream.set_sinks(rr.FileSink(partials[track_path]), *viewer)
       send_chunks(store, recording=track_stream)
-      _send_run_properties(summary, outputs.per_tracker, track_stream, viewer)
+      _send_run_properties(summary, outputs.per_tracker, track_stream)
     for path, partial in partials.items():
       partial.replace(path)
   finally:
-    if viewer is not None:
-      viewer.disconnect()
     for partial in partials.values():
       partial.unlink(missing_ok=True)

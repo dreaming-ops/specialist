@@ -2,11 +2,22 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from pathlib import Path
 
 import cv2
 
-__all__ = ["capture_duration", "probe_capture"]
+__all__ = ["CaptureInfo", "probe_capture"]
+
+
+@dataclass(frozen=True)
+class CaptureInfo:
+  """A capture pair's probe; ``duration`` is the seconds both lens files cover."""
+
+  rear_path: Path
+  fps: float
+  width: int
+  duration: float
 
 
 def _video_props(path: Path, *props: int) -> list[float]:
@@ -18,10 +29,14 @@ def _video_props(path: Path, *props: int) -> list[float]:
   return values
 
 
-def probe_capture(video_path: Path) -> tuple[Path, float, int]:
-  """Rear-lens path, container fps and width; RuntimeError unless square and paired."""
-  raw_w, raw_h, fps = _video_props(
-    video_path, cv2.CAP_PROP_FRAME_WIDTH, cv2.CAP_PROP_FRAME_HEIGHT, cv2.CAP_PROP_FPS
+def probe_capture(video_path: Path) -> CaptureInfo:
+  """Probe both lens files; raises RuntimeError on a non-square master or no sibling."""
+  raw_w, raw_h, fps, front_frames = _video_props(
+    video_path,
+    cv2.CAP_PROP_FRAME_WIDTH,
+    cv2.CAP_PROP_FRAME_HEIGHT,
+    cv2.CAP_PROP_FPS,
+    cv2.CAP_PROP_FRAME_COUNT,
   )
   width, height = int(raw_w), int(raw_h)
   rear_path = video_path.with_name(video_path.name.replace("_00_", "_10_", 1))
@@ -30,18 +45,10 @@ def probe_capture(video_path: Path) -> tuple[Path, float, int]:
       f"{video_path.name} ({width}x{height}) is not a square per-lens master "
       f"with sibling {rear_path.name}"
     )
-  return rear_path, fps, width
-
-
-def _shared_frame_count(front_path: Path, rear_path: Path) -> int:
-  """Frames present in both lens files; one file can end a frame early."""
-  return min(
-    int(_video_props(path, cv2.CAP_PROP_FRAME_COUNT)[0])
-    for path in (front_path, rear_path)
+  rear_frames = _video_props(rear_path, cv2.CAP_PROP_FRAME_COUNT)[0]
+  return CaptureInfo(
+    rear_path=rear_path,
+    fps=fps,
+    width=width,
+    duration=min(int(front_frames), int(rear_frames)) / fps,
   )
-
-
-def capture_duration(video_path: Path) -> float:
-  """Seconds decodable from a capture, bounded by the shorter lens file."""
-  rear_path, fps, _ = probe_capture(video_path)
-  return _shared_frame_count(video_path, rear_path) / fps

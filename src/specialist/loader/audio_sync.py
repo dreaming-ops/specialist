@@ -52,7 +52,7 @@ def resolve_ffmpeg() -> str:
     import imageio_ffmpeg
 
     return str(imageio_ffmpeg.get_ffmpeg_exe())
-  except Exception:  # noqa: BLE001 - any import/resolution failure falls through
+  except Exception:  # any import or resolution failure falls through
     pass
   on_path = shutil.which("ffmpeg")
   if on_path is not None:

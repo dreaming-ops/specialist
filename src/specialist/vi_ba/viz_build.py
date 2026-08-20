@@ -67,8 +67,8 @@ def _factor_observation_lines(
   """Per-keyframe ``(n, 2, 3)`` lens-to-corner lines to anchors and base tags."""
   anchor_by_kf: dict[int, list[tuple[LensSetup, Float64Array]]] = {}
   for tag_id, corners_world in anchor_corners_by_tag.items():
-    for lens, kf, _det in anchor_sightings(observer, tag_id, max_half_angle):
-      anchor_by_kf.setdefault(kf, []).append((lens, corners_world))
+    for ch, kf, _det in anchor_sightings(observer, tag_id, max_half_angle):
+      anchor_by_kf.setdefault(kf, []).append((ch.setup, corners_world))
   cross_by_kf: dict[int, list[tuple[LensSetup, Float64Array]]] = {}
   for s in cross_obs_for_observer:
     owner_corners = base_tag_corners_world.get(s.owner, [])
@@ -142,24 +142,35 @@ def _build_tracker_outputs(
   base_tag_corners_world: dict[str, list[Float64Array]],
 ) -> tuple[CameraVizData, CameraSummary]:
   """One camera's Rerun payload and summary line from the solved values."""
-  front_points, front_reproj_per_kf, front_rmse_per_kf = cull_and_reproject(
-    points_from_values(
-      result.values, keys.front_landmark_key, camera.name, landmark_keep[0]
-    ),
-    camera.front_tracks,
-    poses,
-    camera.front_lens,
-  )
-  rear_points, rear_reproj_per_kf, rear_rmse_per_kf = cull_and_reproject(
-    points_from_values(
-      result.values, keys.rear_landmark_key, camera.name, landmark_keep[1]
-    ),
-    camera.rear_tracks,
-    poses,
-    camera.rear_lens,
-  )
-  front_rmse = _rms(front_rmse_per_kf)
-  rear_rmse = _rms(rear_rmse_per_kf)
+  lenses: dict[str, LensVizData] = {}
+  lens_rmse: dict[str, list[float]] = {}
+  for channel, landmark_key, keep in (
+    (camera.front, keys.front_landmark_key, landmark_keep[0]),
+    (camera.rear, keys.rear_landmark_key, landmark_keep[1]),
+  ):
+    points, reprojections, rmse_per_kf = cull_and_reproject(
+      points_from_values(result.values, landmark_key, camera.name, keep),
+      channel.tracks,
+      poses,
+      channel.setup,
+    )
+    lens_rmse[channel.lens] = rmse_per_kf
+    lenses[channel.lens] = LensVizData(
+      points=points,
+      keypoints=channel.keypoints,
+      rejected_keypoints=_per_kf_rejected_keypoints(
+        channel.rejected, camera.n_keyframes
+      ),
+      landmark_reprojections=reprojections,
+      tag_detections=channel.tags,
+      tag_axes=_project_tag_axes_per_kf(channel.tags, channel.setup, tag_size_by_id),
+      rmse_per_kf=rmse_per_kf,
+      body_T_lens=channel.setup.body_T_lens,
+      mei={k: float(v) for k, v in asdict(channel.setup.params).items()},
+      static_mask_rects=channel.static_mask_rects,
+    )
+  front_rmse = _rms(lens_rmse["front"])
+  rear_rmse = _rms(lens_rmse["rear"])
   bbox_diagonal = bounding_box_diagonal(poses)
   summary = CameraSummary(
     name=camera.name,
@@ -180,39 +191,6 @@ def _build_tracker_outputs(
     base_tag_poses = [p.compose(camera.body_T_base_tag) for p in poses]
   else:
     base_tag_poses = poses
-  lenses = {
-    "front": LensVizData(
-      points=front_points,
-      keypoints=camera.front_keypoints,
-      rejected_keypoints=_per_kf_rejected_keypoints(
-        camera.front_rejected, camera.n_keyframes
-      ),
-      landmark_reprojections=front_reproj_per_kf,
-      tag_detections=camera.front_tags_per_kf,
-      tag_axes=_project_tag_axes_per_kf(
-        camera.front_tags_per_kf, camera.front_lens, tag_size_by_id
-      ),
-      rmse_per_kf=front_rmse_per_kf,
-      body_T_lens=camera.front_lens.body_T_lens,
-      mei={k: float(v) for k, v in asdict(camera.front_lens.params).items()},
-    ),
-    "rear": LensVizData(
-      points=rear_points,
-      keypoints=camera.rear_keypoints,
-      rejected_keypoints=_per_kf_rejected_keypoints(
-        camera.rear_rejected, camera.n_keyframes
-      ),
-      landmark_reprojections=rear_reproj_per_kf,
-      tag_detections=camera.rear_tags_per_kf,
-      tag_axes=_project_tag_axes_per_kf(
-        camera.rear_tags_per_kf, camera.rear_lens, tag_size_by_id
-      ),
-      rmse_per_kf=rear_rmse_per_kf,
-      body_T_lens=camera.rear_lens.body_T_lens,
-      mei={k: float(v) for k, v in asdict(camera.rear_lens.params).items()},
-      static_mask_rects=camera.rear_static_mask_rects,
-    ),
-  }
   biases_final = [
     result.values.atConstantBias(keys.bias_key(camera.name, i))
     for i in range(camera.n_keyframes)

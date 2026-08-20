@@ -5,13 +5,17 @@ from __future__ import annotations
 import itertools
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
+
+if TYPE_CHECKING:
+  from specialist.record.session import SessionRecording
 
 __all__ = [
   "AnchorCfg",
   "Args",
+  "CameraArgs",
   "FrontendCfg",
   "GpuMode",
   "GripperCfg",
@@ -57,8 +61,6 @@ class FrontendCfg:
   # Re-match ORB features between nearby non-adjacent keyframes to rejoin broken tracks.
   revisit: bool = True
 
-  loop_closure_max_dist: float = 0.1
-  loop_closure_min_kf_gap: int = 15
   # Triangulate the revisit landmarks from the anchor-covisible views alone.
   anchored_revisit: bool = True
   # Cap on triangulated landmarks per lens, keeping the longest tracks.
@@ -104,6 +106,25 @@ class SolverCfg:
 
 
 @dataclass
+class CameraArgs:
+  """One camera's ``prepare_camera`` configuration."""
+
+  session: SessionRecording
+  slot: str  # the camera's slot in the base recording
+  base_tag_id: int
+  anchor: AnchorCfg
+  keyframe_every: int  # 0 = auto (round(fps/10))
+  urdf_path: Path | None  # gripper URDF for finger joint kinematics
+  # 0 disables the corresponding URDF revolute joint angle recovery.
+  left_finger_tag_id: int
+  right_finger_tag_id: int
+  frontend: FrontendCfg
+  gripper: GripperCfg
+  # Set when siblings prepare concurrently; gates per-thread AprilTag detectors.
+  parallel_siblings: bool = False
+
+
+@dataclass
 class Args:
   """One run; the base recording carries the session id, window and camera slots."""
 
@@ -117,6 +138,7 @@ class Args:
   open_viewer: bool = True
   # Replace this session's existing estimate and viz layers; off refuses.
   overwrite: bool = False
+
   # One id per tracker; cross-tracker disambiguation needs distinct ids.
   base_tag_ids: tuple[int, ...] = ()
   # Per-tracker finger tag ids; 0 disables that tracker's finger.
