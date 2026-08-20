@@ -85,12 +85,12 @@ def optimize_graph(
         raise RuntimeError(
           f"gpu solver required but its backend cannot load: {exc}"
         ) from exc
-      print(f"  [LM call] gpu backend unavailable ({exc}); using gtsam", flush=True)
+      print(f"  [warn] [solve] gpu backend unavailable ({exc}); using gtsam")
     except Exception:
       if gpu == "require":
         raise
       traceback.print_exc()
-      print("  [LM call] gpu solve failed; using gtsam", flush=True)
+      print("  [warn] [solve] gpu solve failed; using gtsam")
   if values is None:
     params = gtsam.LevenbergMarquardtParams()
     params.setMaxIterations(max_iterations)
@@ -102,9 +102,8 @@ def optimize_graph(
     iterations = int(optimizer.iterations())
     final_error = float(optimizer.error())
   print(
-    f"  [LM call] {iterations} iters in {time.perf_counter() - begin:.1f}s, "
-    f"error {initial_error:.0f} -> {final_error:.0f}{note}",
-    flush=True,
+    f"  [solve] {iterations} iters in {time.perf_counter() - begin:.1f}s, "
+    f"error {initial_error:.0f} -> {final_error:.0f}{note}"
   )
   return OptimizeResult(
     values=values,

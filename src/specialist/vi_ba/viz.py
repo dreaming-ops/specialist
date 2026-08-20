@@ -553,7 +553,9 @@ def _urdf_model(
     root_frame = f"{data.name}_{tree.root_link().name}"
   except Exception as exc:  # noqa: BLE001 - the URDF model is optional; keep the rest
     traceback.print_exc()
-    print(f"  [viz] URDF model skipped ({exc}); logging the trajectory without it")
+    print(
+      f"  [warn] [viz] URDF model skipped ({exc}); logging the trajectory without it"
+    )
     return None
   for chunk in model_chunks:
     # The tree names its own paths, so its meshes are recognized by entity path.

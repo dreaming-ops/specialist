@@ -69,7 +69,7 @@ def _viewer_sink() -> list[rr.GrpcSink]:
     rr.spawn(connect=False)
     socket.create_connection(("127.0.0.1", _VIEWER_PORT), timeout=5.0).close()
   except Exception as exc:  # noqa: BLE001 - the viewer is optional; the layers are not
-    print(f"  [layer] viewer not opened ({exc}); writing the layers without it")
+    print(f"  [warn] [layer] viewer not opened ({exc}); writing the layers without it")
     return []
   return [rr.GrpcSink(url=f"rerun+http://127.0.0.1:{_VIEWER_PORT}/proxy")]
 

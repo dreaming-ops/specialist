@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import sys
 import time
 from collections import Counter
 from collections.abc import Callable
@@ -39,7 +40,7 @@ def _resolve_urdf_path(explicit: Path | None) -> Path | None:
 
     return Path(get_urdf_path("specialist_handheld"))
   except ImportError as exc:  # headless env without the gripper-URDF package
-    print(f"  gripper URDF unavailable ({exc}); finger joint factors disabled")
+    print(f"  [warn] [gripper] URDF unavailable ({exc}); finger joint factors disabled")
     return None
 
 
@@ -49,7 +50,7 @@ def _stage_timer() -> Callable[[str], None]:
   def mark(stage: str) -> None:
     nonlocal last
     now = time.perf_counter()
-    print(f"  [{stage}] +{now - last:.1f}s")
+    print(f"  [timing] {stage} +{now - last:.1f}s")
     last = now
 
   return mark
@@ -91,6 +92,8 @@ def _non_default_flags(args: object, prefix: str = "") -> list[str]:
 
 
 def main(args: Args) -> None:
+  # Line buffering shows each line as it prints when stdout goes to a file.
+  sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
   session = SessionRecording(args.base)
   names = tuple(session.slots)
   validate(args, len(names))
@@ -147,10 +150,10 @@ def main(args: Args) -> None:
       )
     except Exception as exc:
       # Name the failure at once: the traceback waits for sibling decodes to finish.
-      print(f"\n=== prep tracker {name!r} FAILED: {exc!r} ===", flush=True)
+      print(f"\n=== prep tracker {name!r} FAILED: {exc!r} ===")
       raise
     print(
-      f"  [{name}] kf={tracker.n_keyframes}  "
+      f"  [{name}/prep] kf={tracker.n_keyframes}  "
       f"anchor_obs={len(anchored_keyframes(tracker))}  "
       f"front_pts={len(tracker.front.points)}  rear_pts={len(tracker.rear.points)}  "
       f"body_T_base_tag={'yes' if tracker.body_T_base_tag else 'no'}"
@@ -166,18 +169,15 @@ def main(args: Args) -> None:
   mark("cameras prepared")
 
   cross_obs = cross_sightings(cameras, list(args.base_tag_ids), args.gripper.tag_size)
-  print(f"cross-tracker observations: {len(cross_obs)}")
+  print(f"[graph] cross-tracker observations: {len(cross_obs)}")
   if cross_obs:
     by_pair = Counter((sighting.observer, sighting.owner) for sighting in cross_obs)
     for (obs_t, own_t), n in sorted(by_pair.items()):
-      print(f"  {obs_t} → {own_t}: {n}")
+      print(f"  [graph] {obs_t} → {own_t}: {n}")
   mark("cross-tracker obs assembled")
 
   keys = CameraKeys(list(names))
   solve = solve_joint(cameras, keys, args, cross_obs)
-  print(
-    f"\nshared world: anchor t={np.asarray(solve.world_T_ref_anchor.translation())}"
-  )
   mark("joint LM (cull-reoptimize)")
 
   adopt_ba_refined_estimates(cameras, solve.result, keys)

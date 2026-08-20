@@ -8,6 +8,7 @@ Usage:
 from __future__ import annotations
 
 import functools
+import sys
 import tempfile
 from collections import Counter
 from dataclasses import dataclass
@@ -97,6 +98,7 @@ def register_batch(
 
 
 def main(args: Args) -> None:
+  sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
   base_files, layer_files = dataset_layers(args.root)
   bases = {p: recording_id(p) for p in base_files}
 
@@ -114,7 +116,7 @@ def main(args: Args) -> None:
     base = base_by_id.get(layers[path])
     if base is None:
       print(
-        f"WARNING: {path.name} attaches to already-registered base "
+        f"[warn] {path.name} attaches to already-registered base "
         f"{layers[path]}; frame alignment NOT checked (restore that base "
         "under the root to verify)"
       )

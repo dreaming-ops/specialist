@@ -365,7 +365,7 @@ def _add_all_anchor_corner_factors(
     max_half_angle=args.anchor.max_half_angle,
     graph=graph,
   )
-  print(f"anchor corner reprojection: {n_ref} anchor sightings")
+  print(f"[graph] anchor corner reprojection: {n_ref} sightings")
   sec_prior = gtsam.noiseModel.Isotropic.Sigma(
     3, args.anchor.secondary_corner_prior_sigma
   )
@@ -389,7 +389,7 @@ def _add_all_anchor_corner_factors(
       max_half_angle=args.anchor.max_half_angle,
       graph=graph,
     )
-    print(f"secondary anchor {tag_id} corner reprojection: {n_sec} sightings")
+    print(f"[graph] secondary anchor {tag_id} corner reprojection: {n_sec} sightings")
 
 
 def _add_gripper_factors(
@@ -615,7 +615,7 @@ def assemble_joint_graph(
   )
   poses_smoothed, velocities_smoothed = _add_smoothness_priors(cameras, keys, graph)
   print(
-    f"reprojection factors: base-tag {base_tags}, finger {fingers}, "
+    f"[graph] reprojection factors: base-tag {base_tags}, finger {fingers}, "
     f"cross base {cross_base}, cross finger {cross_finger}; smoothness priors: "
     f"pose {poses_smoothed}, velocity {velocities_smoothed}"
   )

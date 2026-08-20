@@ -349,12 +349,9 @@ def _seed_body_poses(
   )
   sfm_cams, vo_outliers = reject_vo_pose_outliers(sfm_cams)
   if vo_outliers:
-    print(f"  [{slot}] visual-odometry rejected {len(vo_outliers)} rotation-spike kfs")
+    print(f"  [{slot}/vo] rejected {len(vo_outliers)} rotation-spike kfs")
   if _enough_registered(len(sfm_cams), n_keyframes, cfg.vo_min_registered_ratio):
-    print(
-      f"  [{slot}] visual-odometry init: registered "
-      f"{len(sfm_cams)}/{n_keyframes} keyframes"
-    )
+    print(f"  [{slot}/vo] registered {len(sfm_cams)}/{n_keyframes} keyframes")
     filled = fill_lens_poses(sfm_cams, n_keyframes)
     return body_poses_from_lens_poses(filled, front.setup.body_T_lens), False
 
@@ -364,13 +361,13 @@ def _seed_body_poses(
   if anchor_seed is not None:
     n_anchor_kf = sum("front" in sides for sides in anchor_obs_per_kf.values())
     print(
-      f"  [{slot}] visual-odometry starved ({len(sfm_cams)}/{n_keyframes}); "
+      f"  [{slot}/vo] starved ({len(sfm_cams)}/{n_keyframes}); "
       f"anchor-pose init from {n_anchor_kf} anchor keyframes"
     )
     return anchor_seed, True
   print(
-    f"  [{slot}] visual-odometry init: only {len(sfm_cams)}/{n_keyframes} "
-    f"keyframes registered — using straight-line init"
+    f"  [{slot}/vo] only {len(sfm_cams)}/{n_keyframes} "
+    f"keyframes registered; using straight-line init"
   )
   init_ch, (init_first, init_last, init_shared) = max(
     (
@@ -382,7 +379,7 @@ def _seed_body_poses(
   if init_shared < 8:
     raise RuntimeError(f"{slot}: no lens has ≥8 shared tracks (best={init_shared})")
   if init_first:
-    print(f"  [{slot}] init pair based at keyframe {init_first}", flush=True)
+    print(f"  [{slot}/vo] init pair based at keyframe {init_first}")
   shared = [
     obs for obs in init_ch.kept.values() if init_first in obs and init_last in obs
   ]
@@ -435,7 +432,7 @@ def _align_visual_inertial(
   # Gravity takes the stationary IMU reading exactly; the weighted pin holds it only near.
   if gravity_world_initial is not None:
     alignment = replace(alignment, gravity_world=gravity_world_initial)
-  print(f"  [{slot}] VI scale={alignment.scale:.4f}")
+  print(f"  [{slot}/vi] scale={alignment.scale:.4f}")
   body_poses, world_R_prealign = apply_alignment_to_poses(
     body_poses_prealign, alignment
   )
@@ -605,7 +602,7 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   if prep_anchor_tag_id != reference_tag_id:
     n_ref = len(obs_by_tag.get(reference_tag_id, {}))
     print(
-      f"  [{slot}] prep reference anchor: tag {prep_anchor_tag_id} "
+      f"  [{slot}/anchor] prep reference: tag {prep_anchor_tag_id} "
       f"({len(anchor_obs_per_kf)} sighted keyframes vs {n_ref} for "
       f"tag {reference_tag_id})"
     )
@@ -617,7 +614,12 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     masks = tag_masks(shape, ch.tags)
     apply_static_mask_rects(masks, ch.static_mask_rects, shape)
     ch.keypoints, tracks = run_lens_frontend(
-      frames, ch.setup.params, args.frontend, masks=masks, band=frames.band
+      frames,
+      ch.setup.params,
+      args.frontend,
+      masks=masks,
+      label=f"{slot}/{ch.lens}",
+      band=frames.band,
     )
     ch.kept = {
       t: o for t, o in tracks.items() if len(o) >= args.frontend.min_track_length
@@ -728,7 +730,7 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     }
 
   v_max = float(max(np.linalg.norm(v) for v in velocities))
-  print(f"  [{slot}] VIO LSQ |v|max={v_max:.2f} m/s")
+  print(f"  [{slot}/vi] LSQ |v|max={v_max:.2f} m/s")
   biases = [bias0 for _ in range(n_keyframes)]
 
   body_T_base_tag, finger_reproj, finger_frame_angles = recover_gripper_tags(

@@ -428,7 +428,7 @@ def test_single_anchor_takes_single_solve_branch(
   out = capsys.readouterr().out
   assert solve.secondary_anchor_world == {}
   assert all(np.isnan(v) for v in solve.worst_secondary_move)
-  assert out.count("solve 1:") == 1
+  assert out.count(" iters in ") == 1
   _assert_no_corner_point_variables(solve.result.values)
 
 

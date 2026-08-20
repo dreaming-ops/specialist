@@ -257,7 +257,7 @@ def test_flow_falls_back_to_cv2_when_the_gpu_stream_fails_mid_lens(
 
   expected, _ = features.dis_flow_track(frames, max_corners=40)
   original = features._select_flow_iter
-  features._select_flow_iter = lambda _frames, _gpu: dies_on_the_third_pair
+  features._select_flow_iter = lambda _frames, _gpu, _label: dies_on_the_third_pair
   try:
     recovered, _ = features.dis_flow_track(frames, max_corners=40, gpu_flow=True)
   finally:

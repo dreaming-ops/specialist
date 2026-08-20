@@ -52,6 +52,8 @@ def run_lens_frontend(
   params: MeiParams,
   cfg: FrontendCfg,
   masks: list[list[Rect]] | None = None,
+  *,
+  label: str | None = None,
   band: int | None = None,
 ) -> tuple[list[Float64Array], dict[int, dict[int, Float64Array]]]:
   """One lens's per-frame keypoints and tracks from DIS flow and essential RANSAC."""
@@ -63,6 +65,7 @@ def run_lens_frontend(
     masks=masks,
     gpu_flow=cfg.gpu_flow,
     flow_scale=cfg.flow_scale,
+    label=label,
     band=band,
   )
 
@@ -86,8 +89,9 @@ def run_lens_frontend(
   n_kp = sum(len(k) for k in keypoints)
   n_match = sum(int(m.shape[0]) for m in matches_between)
   n_in = sum(int(f.shape[0]) for f in filtered)
+  scope = f"{label}/frontend" if label else "frontend"
   print(
-    f"  [frontend funnel] keypoints={n_kp} matched={n_match} "
+    f"  [{scope}] funnel keypoints={n_kp} matched={n_match} "
     f"ransac_inliers={n_in} chained_tracks={len(tracks)}"
   )
   return keypoints, tracks
@@ -302,7 +306,4 @@ def add_revisit_landmarks(
   )
   points.update(revisit_pts)
   kept.update(revisits)
-  print(
-    f"  [{slot}] loop closure: +{len(revisit_pts)} landmarks "
-    f"from {len(revisits)} revisit tracks"
-  )
+  print(f"  [{slot}/revisit] +{len(revisit_pts)} landmarks from {len(revisits)} tracks")

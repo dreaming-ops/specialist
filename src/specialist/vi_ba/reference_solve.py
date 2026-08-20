@@ -80,18 +80,13 @@ def _solve_with_cull_reoptimize(
   gpu: GpuMode,
 ) -> tuple[OptimizeResult, LandmarkKeep]:
   """Re-solved result and each camera's kept tracks after an outlier-landmark cull."""
-  print(f"\njoint graph: {graph.size()} factors, {values.size()} variables")
+  print(f"\n[graph] joint graph: {graph.size()} factors, {values.size()} variables")
   result = optimize_graph(
     graph,
     values,
     max_iterations=min(max_iterations, _PRECULL_MAX_ITERATIONS),
     gpu=gpu,
   )
-  print(
-    f"  solve 1: error {result.initial_error:.1f} → {result.final_error:.1f} "
-    f"({result.iterations} iters)"
-  )
-
   poses_by_camera = _solved_body_poses(cameras, keys, result.values)
   landmark_keep: LandmarkKeep = {}
   for t in cameras:
@@ -123,10 +118,7 @@ def _solve_with_cull_reoptimize(
       initial_error=first.initial_error,
       iterations=first.iterations + result.iterations,
     )
-    print(
-      f"  cull-reoptimize: dropped {len(outlier_keys)} outlier landmarks, "
-      f"error → {result.final_error:.1f} ({result.iterations} iters)"
-    )
+    print(f"  [solve] cull-reoptimize dropped {len(outlier_keys)} outlier landmarks")
   return result, landmark_keep
 
 
@@ -161,7 +153,7 @@ def _seed_secondary_anchors(
   for tag_id in args.anchor.tag_ids[1:]:
     seed = _secondary_anchor_seed(cameras, tag_id, prep_poses)
     if seed is None:
-      print(f"anchor {tag_id}: no PnP sighting; skipped")
+      print(f"[anchor] tag {tag_id}: no PnP sighting; skipped")
       continue
     world[tag_id] = seed
   return world
@@ -241,12 +233,12 @@ def _solve_joint_graph(
     estimate = _secondary_anchor_seed(cameras, tag_id, solved_poses)
     assert estimate is not None  # seeding required a sighting; obs never shrink
     dt, dr = _secondary_pose_move(seed[tag_id], estimate)
-    weak = dt > _ANCHOR_CONSISTENCY_TRANS or dr > _ANCHOR_CONSISTENCY_ROT
-    note = "  WARNING: weak sighting geometry this take" if weak else ""
     print(
-      f"  secondary anchor {tag_id}: post-solve re-estimate moved "
-      f"{dt * 1000:.1f}mm / {np.degrees(dr):.2f}deg{note}"
+      f"  [anchor] secondary anchor {tag_id}: post-solve re-estimate moved "
+      f"{dt * 1000:.1f}mm / {np.degrees(dr):.2f}deg"
     )
+    if dt > _ANCHOR_CONSISTENCY_TRANS or dr > _ANCHOR_CONSISTENCY_ROT:
+      print(f"  [warn] [anchor] tag {tag_id} sighting geometry is weak this take")
     resolved[tag_id] = estimate
     moves[tag_id] = (dt, dr)
   return ReferenceSolve(

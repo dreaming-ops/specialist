@@ -165,6 +165,7 @@ def _verdict(summary: ImuSummary) -> str:
 
 
 def main(args: ImuArgs) -> None:
+  sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
   data = load_insv(args.input_insv)
 
   ts = data.imu_timestamps

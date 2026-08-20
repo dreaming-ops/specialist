@@ -193,8 +193,8 @@ def recover_gripper_tags(
     )
     if reproj is None:
       print(
-        f"  [warn] finger tag {finger_id} ({joint_name}) never detected in the "
-        f"rear keyframes; its angle stays unsolved"
+        f"  [warn] [gripper] finger tag {finger_id} ({joint_name}) never detected "
+        f"in the rear keyframes; its angle stays unsolved"
       )
     else:
       finger_reproj[joint_name] = reproj

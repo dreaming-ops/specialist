@@ -33,8 +33,6 @@ def finalize_probe(
   log_fn()
   rr.disconnect()
 
-  payload = json.dumps(asdict(summary), indent=2)
-  json_path.write_text(payload)
-  print(payload)
+  json_path.write_text(json.dumps(asdict(summary), indent=2))
   print(f"\nWrote {rrd_path} and {json_path}")
   print(f"Verdict: {summary.verdict}")

@@ -229,6 +229,7 @@ def _log_to_rerun(
 
 
 def main(args: TimingArgs) -> None:
+  sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
   data = load_insv(args.input_insv)
 
   grays, video_t, fps = read_lens_grays(
