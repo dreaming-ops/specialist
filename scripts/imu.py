@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -11,9 +12,12 @@ import numpy as np
 import numpy.typing as npt
 import rerun as rr
 import tyro
-from _probe import finalize_probe
 
+if __package__ in (None, ""):  # `python scripts/x.py` puts scripts/ itself first
+  sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts._probe import finalize_probe, verdict
 from specialist.loader.parse_insv import InsvData, load_insv
+from specialist.vi_ba.imu import ImuSamples, stationary_mask
 
 Float64Array = npt.NDArray[np.float64]
 
@@ -33,7 +37,7 @@ class ImuArgs:
 class StationarySegment:
   start: float
   end: float
-  gyro_sigma: tuple[float, float, float]
+  gyro_sigma: tuple[float, float, float]  # rad/s
   accel_sigma: tuple[float, float, float]
   n_samples: int
 
@@ -43,8 +47,8 @@ class AllanResult:
   axis: str
   taus: list[float]
   adev: list[float]
-  white_noise_density: float
-  bias_instability: float
+  noise_density: float  # rad/s/sqrt(Hz)
+  bias_instability: float  # rad/s
 
 
 @dataclass
@@ -70,14 +74,16 @@ def _build_stationary(
   window: float,
   threshold: float,
 ) -> StationarySegment | None:
+  """Per-axis noise over the longest run of stationary windows, gyro in rad/s."""
   median_dt = float(np.median(np.diff(ts)))
   win = max(8, int(round(window / max(median_dt, 1e-6))))
-  mag = np.linalg.norm(gyro, axis=1)
-  if mag.size < win:
-    return None
-  kernel = np.ones(win) / win
-  mag_smooth = np.convolve(mag, kernel, mode="valid")
-  quiet = mag_smooth < threshold
+  # Gate on the gyro alone; the accel sigma is reported, never thresholded.
+  quiet = stationary_mask(
+    ImuSamples(t=ts, gyro=gyro, accel=accel),
+    window=win,
+    gyro_threshold=threshold,
+    accel_var_threshold=float("inf"),
+  )
   if not quiet.any():
     return None
   # The False padding turns a run touching either end into a normal edge pair.
@@ -85,18 +91,15 @@ def _build_stationary(
   edges = np.flatnonzero(np.diff(padded))
   starts, ends = edges[::2], edges[1::2]
   longest = int(np.argmax(ends - starts))
-  best_start = int(starts[longest])
-  best_len = int(ends[longest] - starts[longest])
-  if best_len < win * 4:
+  if int(ends[longest] - starts[longest]) < 4:
     return None
-  i0 = best_start + win // 2
-  i1 = min(best_start + best_len + win // 2, ts.size)
+  i0, i1 = int(starts[longest]) * win, int(ends[longest]) * win
   g_seg = gyro[i0:i1]
   a_seg = accel[i0:i1]
   return StationarySegment(
     start=float(ts[i0]),
     end=float(ts[i1 - 1]),
-    gyro_sigma=tuple(float(s) for s in g_seg.std(axis=0)),  # type: ignore[arg-type]
+    gyro_sigma=tuple(map(float, g_seg.std(axis=0))),  # type: ignore[arg-type]
     accel_sigma=tuple(float(s) for s in a_seg.std(axis=0)),  # type: ignore[arg-type]
     n_samples=int(i1 - i0),
   )
@@ -114,7 +117,7 @@ def _allan_for_axis(
 
   # At slope -1/2, ADEV(tau) = N / sqrt(tau), so N is in rad/s/sqrt(Hz).
   short_mask = taus < 1.0
-  white_noise_density = (
+  noise_density = (
     float(np.median(adev[short_mask] * np.sqrt(taus[short_mask])))
     if short_mask.any()
     else float("nan")
@@ -127,22 +130,29 @@ def _allan_for_axis(
     axis=axis,
     taus=taus.tolist(),
     adev=adev.tolist(),
-    white_noise_density=white_noise_density,
+    noise_density=noise_density,
     bias_instability=bias_instability,
   )
 
 
-def _log_to_rerun(data: InsvData, allans: list[AllanResult]) -> None:
-  for entity in ("gyro", "accel"):
+def _log_to_rerun(
+  data: InsvData, gyro: Float64Array, allans: list[AllanResult]
+) -> None:
+  times = rr.TimeColumn("imu_time", duration=data.imu_timestamps)
+  triples = np.full(data.imu_timestamps.size, 3)
+  for entity, samples in (("gyro", gyro), ("accel", data.accel)):
     rr.log(f"imu/{entity}", rr.SeriesLines(names=["x", "y", "z"]), static=True)
-  for i, ts in enumerate(data.imu_timestamps):
-    rr.set_time("imu_time", duration=float(ts))
-    rr.log("imu/gyro", rr.Scalars(data.gyro[i].tolist()))
-    rr.log("imu/accel", rr.Scalars(data.accel[i].tolist()))
+    rr.send_columns(
+      f"imu/{entity}",
+      indexes=[times],
+      columns=rr.Scalars.columns(scalars=samples.reshape(-1)).partition(triples),
+    )
   for allan in allans:
-    for tau, val in zip(allan.taus, allan.adev, strict=True):
-      rr.set_time("allan_tau", duration=float(tau))
-      rr.log(f"imu/allan/{allan.axis}", rr.Scalars([float(val)]))
+    rr.send_columns(
+      f"imu/allan/{allan.axis}",
+      indexes=[rr.TimeColumn("allan_tau", duration=allan.taus)],
+      columns=rr.Scalars.columns(scalars=allan.adev),
+    )
 
 
 def _verdict(summary: ImuSummary) -> str:
@@ -151,14 +161,14 @@ def _verdict(summary: ImuSummary) -> str:
     problems.append(f"gap up to {summary.gap_max * 1e3:.1f} ms")
   if summary.rate_jitter > 0.05:
     problems.append(f"rate jitter {summary.rate_jitter:.1%}")
-  return "green" if not problems else "yellow: " + ", ".join(problems)
+  return verdict(problems)
 
 
 def main(args: ImuArgs) -> None:
-  args.output_dir.mkdir(parents=True, exist_ok=True)
   data = load_insv(args.input_insv)
 
   ts = data.imu_timestamps
+  gyro = data.gyro
   dts = np.diff(ts)
   median_dt = float(np.median(dts))
   rate = 1.0 / median_dt if median_dt > 0 else float("nan")
@@ -168,7 +178,7 @@ def main(args: ImuArgs) -> None:
 
   stationary = _build_stationary(
     ts,
-    data.gyro,
+    gyro,
     data.accel,
     window=args.stationary_window,
     threshold=args.stationary_gyro_threshold,
@@ -177,7 +187,7 @@ def main(args: ImuArgs) -> None:
   allans: list[AllanResult] = []
   if stationary is not None and stationary.n_samples > int(rate * 4):
     i0 = int(np.searchsorted(ts, stationary.start))
-    gyro_seg = data.gyro[i0 : i0 + stationary.n_samples]
+    gyro_seg = gyro[i0 : i0 + stationary.n_samples]
     max_tau = min(args.allan_max_tau, stationary.n_samples / rate / 4.0)
     for ax_idx, axis_name in enumerate(("gyro_x", "gyro_y", "gyro_z")):
       allans.append(_allan_for_axis(gyro_seg[:, ax_idx], rate, axis_name, max_tau))
@@ -197,11 +207,7 @@ def main(args: ImuArgs) -> None:
   summary.verdict = _verdict(summary)
 
   finalize_probe(
-    "imu",
-    "specialist.imu_probe",
-    args.output_dir,
-    summary,
-    lambda: _log_to_rerun(data, allans),
+    "imu", args.output_dir, summary, lambda: _log_to_rerun(data, gyro, allans)
   )
 
 

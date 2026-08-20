@@ -8,12 +8,15 @@ import gtsam
 import numpy as np
 import numpy.typing as npt
 
+BoolArray = npt.NDArray[np.bool_]
 Float64Array = npt.NDArray[np.float64]
 
 GRAVITY = 9.81
 GRAVITY_WORLD = (0.0, 0.0, -GRAVITY)
 
 _INITIAL_BIAS_SIGMA = 1e-3
+# Samples per stationarity window: 50 ms of the ~1 kHz IMU.
+_STATIONARY_WINDOW = 50
 
 __all__ = [
   "GRAVITY",
@@ -26,6 +29,7 @@ __all__ = [
   "make_preintegration_params",
   "preintegrate_between_keyframes",
   "slice_samples_at_keyframes",
+  "stationary_mask",
 ]
 
 
@@ -41,28 +45,37 @@ class ImuSamples:
     return int(self.t.shape[0])
 
 
+def stationary_mask(
+  samples: ImuSamples,
+  bias: gtsam.imuBias.ConstantBias | None = None,
+  *,
+  window: int = _STATIONARY_WINDOW,
+  gyro_threshold: float = 0.1,
+  accel_var_threshold: float = 0.05,
+) -> BoolArray:
+  """Per ``window``-sample block, whether the peak gyro norm (rad/s) and the accel
+  variance stay under their thresholds."""
+  blocks = len(samples) // window
+  gyro = samples.gyro[: blocks * window]
+  accel = samples.accel[: blocks * window]
+  if bias is not None:
+    gyro, accel = gyro - bias.gyroscope(), accel - bias.accelerometer()
+  peak = np.linalg.norm(gyro, axis=1).reshape(blocks, window).max(axis=1)
+  variance = accel.reshape(blocks, window, 3).var(axis=1).max(axis=1)
+  quiet: BoolArray = (peak <= gyro_threshold) & (variance <= accel_var_threshold)
+  return quiet
+
+
 def find_stationary_windows(
   samples: ImuSamples,
   bias: gtsam.imuBias.ConstantBias,
 ) -> list[tuple[int, int]]:
-  """Stationary ``(start, end)`` ranges from gyro magnitude and accel variance alone."""
-  window_size = 50
-  gyro_threshold = 0.1
-  accel_var_threshold = 0.05
-  n = len(samples)
-  if n < window_size:
-    return []
-  accel_corr = samples.accel - bias.accelerometer()
-  gyro_corr = samples.gyro - bias.gyroscope()
-  windows: list[tuple[int, int]] = []
-  for start in range(0, n - window_size + 1, window_size):
-    end = start + window_size
-    if np.max(np.linalg.norm(gyro_corr[start:end], axis=1)) > gyro_threshold:
-      continue
-    if float(accel_corr[start:end].var(axis=0).max()) > accel_var_threshold:
-      continue
-    windows.append((start, end))
-  return windows
+  """Ascending ``(start, end)`` ranges of the blocks ``stationary_mask`` passes."""
+  quiet = stationary_mask(samples, bias)
+  return [
+    (int(i) * _STATIONARY_WINDOW, (int(i) + 1) * _STATIONARY_WINDOW)
+    for i in np.flatnonzero(quiet)
+  ]
 
 
 # Continuous-time white-noise densities and bias random walks.

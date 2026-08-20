@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal
@@ -12,8 +13,10 @@ import numpy as np
 import numpy.typing as npt
 import rerun as rr
 import tyro
-from _probe import finalize_probe
 
+if __package__ in (None, ""):  # `python scripts/x.py` puts scripts/ itself first
+  sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from scripts._probe import finalize_probe, verdict
 from specialist.loader.parse_insv import load_insv
 from specialist.vi_ba.pipeline import probe_capture
 
@@ -58,9 +61,9 @@ class TimingSummary:
 
 def read_lens_grays(
   video_path: Path, lens: Literal["front", "rear"], *, max_frames: int
-) -> tuple[list[UInt8Array], Float64Array]:
-  """Gray frames and their container times of ``video_path`` or, for ``rear``, its ``_10_`` sibling."""
-  rear_path, _, _ = probe_capture(video_path)
+) -> tuple[list[UInt8Array], Float64Array, float]:
+  """Gray frames, their container times and the fps of ``video_path`` or, for ``rear``, its ``_10_`` sibling."""
+  rear_path, fps, _ = probe_capture(video_path)
   path = video_path if lens == "front" else rear_path
   cap = cv2.VideoCapture(str(path))
   if not cap.isOpened():
@@ -72,11 +75,11 @@ def read_lens_grays(
       ok, frame = cap.read()
       if not ok:
         break
-      grays.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY))
+      grays.append(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY).astype(np.uint8))
       times.append(cap.get(cv2.CAP_PROP_POS_MSEC) * 1e-3)
   finally:
     cap.release()
-  return grays, np.asarray(times, dtype=np.float64)
+  return grays, np.asarray(times, dtype=np.float64), fps
 
 
 def _flow_magnitudes(grays: list[UInt8Array], args: TimingArgs) -> Float64Array:
@@ -100,7 +103,9 @@ def _flow_magnitudes(grays: list[UInt8Array], args: TimingArgs) -> Float64Array:
       prev_pts = corners(curr)
       prev = curr
       continue
-    next_pts, status, _ = cv2.calcOpticalFlowPyrLK(prev, curr, prev_pts, None)
+    next_pts, status, _ = cv2.calcOpticalFlowPyrLK(
+      prev, curr, prev_pts, np.empty_like(prev_pts)
+    )
     if next_pts is None or status is None:
       mags.append(0.0)
     else:
@@ -212,7 +217,7 @@ def _verdict(summary: TimingSummary) -> str:
       f"RS readout mismatch: {summary.shear.measured_readout * 1e3:.2f} ms vs "
       f"{summary.shear.factory_readout * 1e3:.2f} ms factory"
     )
-  return "green" if not parts else "yellow: " + "; ".join(parts)
+  return verdict(parts)
 
 
 def _log_to_rerun(
@@ -222,24 +227,26 @@ def _log_to_rerun(
   gyro_mag: Float64Array,
   applied_offset: float,
 ) -> None:
-  for t, v in zip(video_t, flow_mag, strict=True):
-    rr.set_time("t", duration=float(t))
-    rr.log("flow/median_magnitude", rr.Scalars([float(v)]))
-  for t, v in zip(imu_t + applied_offset, gyro_mag, strict=True):
-    rr.set_time("t", duration=float(t))
-    rr.log("gyro/magnitude", rr.Scalars([float(v)]))
+  rr.send_columns(
+    "flow/median_magnitude",
+    indexes=[rr.TimeColumn("t", duration=video_t)],
+    columns=rr.Scalars.columns(scalars=flow_mag),
+  )
+  rr.send_columns(
+    "gyro/magnitude",
+    indexes=[rr.TimeColumn("t", duration=imu_t + applied_offset)],
+    columns=rr.Scalars.columns(scalars=gyro_mag),
+  )
 
 
 def main(args: TimingArgs) -> None:
-  args.output_dir.mkdir(parents=True, exist_ok=True)
   data = load_insv(args.input_insv)
 
-  grays, video_t = read_lens_grays(
+  grays, video_t, fps = read_lens_grays(
     args.input_insv, args.lens, max_frames=args.max_frames
   )
   if len(grays) < 5:
     raise RuntimeError(f"only {len(grays)} frames decoded; the capture is too short")
-  fps = 1.0 / float(np.median(np.diff(video_t)))
 
   flow_mag = _flow_magnitudes(grays, args)
   gyro_mag = np.linalg.norm(data.gyro, axis=1)
@@ -271,7 +278,6 @@ def main(args: TimingArgs) -> None:
 
   finalize_probe(
     "video_imu_timing",
-    "specialist.video_imu_timing",
     args.output_dir,
     summary,
     lambda: _log_to_rerun(video_t, flow_mag, data.imu_timestamps, gyro_mag, offset),
