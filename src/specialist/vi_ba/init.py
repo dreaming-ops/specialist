@@ -288,7 +288,7 @@ def incremental_sfm(
       return
     x = np.asarray(x_h[:3] / x_h[3], dtype=np.float64)
     p_cam = np.einsum("vij,j->vi", r_cw, x) + t_cw
-    if int((p_cam[:, 2] > 0.05).sum()) < 2:
+    if int((p_cam[:, 2] > _MIN_CHEIRALITY_Z).sum()) < 2:
       return
     centers = -np.einsum("vji,vj->vi", r_cw, t_cw)
     if max_parallax(centers, x) < _SFM_MIN_PARALLAX:

@@ -123,7 +123,12 @@ class CameraKeys:
     return self._kf_key(_BIAS_CHAR, slot, keyframe_idx)
 
   def _lm_key(self, slot: str, half: int, track_id: int) -> int:
-    """A landmark key in a camera's front (``half=0``) or rear (``half=1``) slot."""
+    """Landmark key in a front or rear slot; raises ValueError on slot overflow."""
+    if not 0 <= track_id < _MAX_LANDMARKS_PER_CAMERA:
+      raise ValueError(
+        f"track id {track_id} does not fit the {_MAX_LANDMARKS_PER_CAMERA}-wide "
+        f"landmark slot for {slot!r}; its key would collide with another slot"
+      )
     return self._slice_key(
       LANDMARK_CHAR, slot, half, _MAX_LANDMARKS_PER_CAMERA, track_id
     )

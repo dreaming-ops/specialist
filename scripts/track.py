@@ -23,6 +23,7 @@ from specialist.vi_ba.compose import (
 )
 from specialist.vi_ba.configs import Args, validate
 from specialist.vi_ba.features import set_precompute_concurrency
+from specialist.vi_ba.gpu_lm import assert_backend
 from specialist.vi_ba.reference_solve import adopt_ba_refined_estimates, solve_joint
 from specialist.vi_ba.single_camera import (
   CameraArgs,
@@ -98,6 +99,9 @@ def main(args: Args) -> None:
   session = SessionRecording(args.base)
   names = tuple(session.slots)
   validate(args, len(names))
+  if args.solver.gpu == "require":
+    # A missing CUDA stack is a hard error in this mode; check it before the prep.
+    assert_backend()
   rrd_path = args.output_dir / "track" / f"{session.session_id}.rrd"
   viz_path = args.output_dir / "viz" / f"{session.session_id}.rrd"
   existing = [p for p in (rrd_path, viz_path) if p.exists()]
@@ -137,7 +141,6 @@ def main(args: Args) -> None:
           left_finger_tag_id=left_id,
           right_finger_tag_id=right_id,
           frontend=args.frontend,
-          imu=args.imu,
           anchor=args.anchor,
           parallel_siblings=concurrent > 1,
           gripper=args.gripper,

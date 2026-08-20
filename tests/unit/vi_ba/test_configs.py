@@ -53,8 +53,13 @@ def test_rejects_nonpositive_solver_iterations() -> None:
 
 
 def test_rejects_empty_anchor_tag_ids() -> None:
-  with pytest.raises(ValueError, match="at least the reference anchor"):
+  with pytest.raises(ValueError, match="at least one anchor"):
     validate(_args(anchor=AnchorCfg(tag_ids=())), n_trackers=1)
+
+
+def test_rejects_a_negative_anchor_tag_id() -> None:
+  with pytest.raises(ValueError, match="must be non-negative"):
+    validate(_args(anchor=AnchorCfg(tag_ids=(1, -1))), n_trackers=1)
 
 
 def test_rejects_duplicate_anchor_tag_ids() -> None:

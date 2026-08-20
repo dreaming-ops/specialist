@@ -20,8 +20,15 @@ def test_auto_targets_tenth_second() -> None:
 
 
 def test_explicit_value_overrides_auto() -> None:
-  assert resolve_keyframe_every(2, 60.0) == 2
+  assert resolve_keyframe_every(12, 60.0) == 12
   assert resolve_keyframe_every(9, 30.0) == 9
+
+
+def test_an_override_off_the_lattice_is_refused() -> None:
+  """A non-divisor stride puts several keyframes in one auto-stride bucket."""
+  for keyframe_every, fps in ((2, 60.0), (4, 60.0), (2, 30.0)):
+    with pytest.raises(ValueError, match="keyframe lattice"):
+      resolve_keyframe_every(keyframe_every, fps)
 
 
 def test_floors_at_one_for_very_low_fps() -> None:

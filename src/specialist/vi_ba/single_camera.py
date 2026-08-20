@@ -28,7 +28,6 @@ from specialist.vi_ba.configs import (
   AnchorCfg,
   FrontendCfg,
   GripperCfg,
-  ImuCfg,
 )
 from specialist.vi_ba.features import (
   Frame,
@@ -104,8 +103,15 @@ __all__ = [
 
 
 def resolve_keyframe_every(keyframe_every: int, fps: float) -> int:
-  """``keyframe_every`` when positive, else the stride nearest a 0.1 s interval."""
-  return keyframe_every if keyframe_every > 0 else schema.keyframe_stride(fps)
+  """The keyframe stride: ``keyframe_every`` when positive, else the ~0.1 s lattice
+  stride; raise when an override is off that lattice."""
+  stride = schema.keyframe_stride(fps)
+  if keyframe_every > 0 and keyframe_every % stride:
+    raise ValueError(
+      f"--keyframe-every {keyframe_every} does not land on the {stride}-frame "
+      f"keyframe lattice at {fps:.2f} fps; use a multiple of {stride}"
+    )
+  return keyframe_every if keyframe_every > 0 else stride
 
 
 def release_freed_memory() -> None:
@@ -148,7 +154,6 @@ class CameraArgs:
   left_finger_tag_id: int
   right_finger_tag_id: int
   frontend: FrontendCfg
-  imu: ImuCfg
   gripper: GripperCfg
   # Set when sibling captures prep at once; it gates per-thread AprilTag detectors.
   parallel_siblings: bool = False
@@ -1006,7 +1011,10 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   front = _LensChannel(setup=front_lens, tags=front_tags_per_kf)
   rear = _LensChannel(setup=rear_lens, tags=rear_tags_per_kf)
   anchor_tag_ids = set(obs_by_tag)
-  static_rects = list(args.frontend.mask_rear_rects)
+  # The rear frontend applies the rects, so a run without rear landmarks records none.
+  static_rects = (
+    list(args.frontend.mask_rear_rects) if args.frontend.rear_landmarks else []
+  )
 
   def run_lens(
     ch: _LensChannel,

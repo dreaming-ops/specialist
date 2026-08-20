@@ -103,7 +103,7 @@ def exposure_chunks(
 
 
 def calibration_chunks(
-  tracker: str, insv: InsvData, body_R_imu: Float64Array
+  tracker: str, insv: InsvData, body_R_imu: Float64Array = BODY_R_IMU
 ) -> list[Chunk]:
   """Each lens's raw-unit MEI intrinsics and body_T_lens, and the IMU mounting."""
   offset_v3 = parse_offset_v3(insv.offset_v3)

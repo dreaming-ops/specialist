@@ -21,7 +21,8 @@ uv sync
 ```
 
 `uv sync`, and any `uv run`, installs the default `dev` and `gpu` groups. The
-`gpu` group is the CUDA solve stack. It installs on Linux only.
+`gpu` group is the CUDA solve stack. It installs on Linux only, and
+`scripts/track.py` exits without it.
 
 `uv sync` also compiles the native MEI factor (`_mei_factor_cpp`). It needs a
 C++17 compiler and `git`. The gtsam wheel ships no headers, so the first build
