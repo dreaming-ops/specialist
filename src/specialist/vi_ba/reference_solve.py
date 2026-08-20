@@ -196,10 +196,10 @@ class ReferenceSolve:
   """Everything the export needs from the joint solve."""
 
   ref_tag_id: int
-  ref_anchor: gtsam.Pose3
+  world_T_ref_anchor: gtsam.Pose3
   result: OptimizeResult
   landmark_keep: LandmarkKeep
-  secondary_world: dict[int, gtsam.Pose3]
+  secondary_anchor_world: dict[int, gtsam.Pose3]
   body_poses: dict[str, list[gtsam.Pose3]]
   # Per secondary anchor, how far its re-estimate moved off its seed (m, rad).
   secondary_moves: dict[int, tuple[float, float]]
@@ -218,16 +218,16 @@ def _solve_joint_graph(
   keys: CameraKeys,
   args: Args,
   cross_obs: list[CrossSighting],
-  ref_anchor: gtsam.Pose3,
+  world_T_ref_anchor: gtsam.Pose3,
 ) -> ReferenceSolve:
-  """Pin ``ref_anchor``, solve, then re-estimate secondary anchors from solved poses."""
+  """Pin the reference anchor, solve, then re-estimate secondaries from solved poses."""
   seed = _seed_secondary_anchors(cameras, args)
   graph, values = assemble_joint_graph(
     cameras,
     keys,
     args,
     cross_obs,
-    tag_corners_in_frame(ref_anchor, args.anchor.tag_size),
+    tag_corners_in_frame(world_T_ref_anchor, args.anchor.tag_size),
     seed,
   )
   result, landmark_keep = _solve_with_cull_reoptimize(
@@ -251,10 +251,10 @@ def _solve_joint_graph(
     moves[tag_id] = (dt, dr)
   return ReferenceSolve(
     ref_tag_id=args.anchor.tag_ids[0],
-    ref_anchor=ref_anchor,
+    world_T_ref_anchor=world_T_ref_anchor,
     result=result,
     landmark_keep=landmark_keep,
-    secondary_world=resolved,
+    secondary_anchor_world=resolved,
     body_poses=solved_poses,
     secondary_moves=moves,
   )
@@ -267,8 +267,8 @@ def solve_joint(
   cross_obs: list[CrossSighting],
 ) -> ReferenceSolve:
   """Solve the joint graph with the first enabled tag pinning the world."""
-  ref_anchor = align_to_shared_world(cameras, args.anchor.tag_ids)
-  return _solve_joint_graph(cameras, keys, args, cross_obs, ref_anchor)
+  world_T_ref_anchor = align_to_shared_world(cameras, args.anchor.tag_ids)
+  return _solve_joint_graph(cameras, keys, args, cross_obs, world_T_ref_anchor)
 
 
 def adopt_ba_refined_estimates(

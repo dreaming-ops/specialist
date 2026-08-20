@@ -56,7 +56,7 @@ def test_base_holds_every_frame_not_just_the_idr_frames(base_rrd: Path) -> None:
   """The recording carries far more samples than IDR frames."""
   video = LensVideo(base_rrd, "tracker_0", "front")
   assert len(video.times) == _FRAMES
-  assert 0 < len(video.keyframes) < _FRAMES
+  assert 0 < len(video.sync_samples) < _FRAMES
 
 
 def test_frame_times_cover_every_sample(base_rrd: Path) -> None:

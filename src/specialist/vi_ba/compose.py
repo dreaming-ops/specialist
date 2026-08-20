@@ -56,7 +56,7 @@ __all__ = [
   "anchor_sightings",
   "anchored_keyframes",
   "assemble_joint_graph",
-  "cross_tracker_observations",
+  "cross_sightings",
   "points_from_values",
 ]
 
@@ -89,20 +89,18 @@ class CameraKeys:
       raise ValueError(f"camera slots must be unique: {list(slots)}")
     self._index = {slot: i for i, slot in enumerate(slots)}
 
-  def _kf_key(self, char: str, slot: str, keyframe_idx: int) -> int:
+  def _kf_key(self, char: str, slot: str, kf: int) -> int:
     """Collision-free key for a per-keyframe variable in one camera's slice."""
-    return int(
-      gtsam.symbol(char, self._index[slot] * _MAX_KEYFRAMES_PER_CAMERA + keyframe_idx)
-    )
+    return int(gtsam.symbol(char, self._index[slot] * _MAX_KEYFRAMES_PER_CAMERA + kf))
 
-  def pose_key(self, slot: str, keyframe_idx: int) -> int:
-    return self._kf_key(_POSE_CHAR, slot, keyframe_idx)
+  def pose_key(self, slot: str, kf: int) -> int:
+    return self._kf_key(_POSE_CHAR, slot, kf)
 
-  def velocity_key(self, slot: str, keyframe_idx: int) -> int:
-    return self._kf_key(_VEL_CHAR, slot, keyframe_idx)
+  def velocity_key(self, slot: str, kf: int) -> int:
+    return self._kf_key(_VEL_CHAR, slot, kf)
 
-  def bias_key(self, slot: str, keyframe_idx: int) -> int:
-    return self._kf_key(_BIAS_CHAR, slot, keyframe_idx)
+  def bias_key(self, slot: str, kf: int) -> int:
+    return self._kf_key(_BIAS_CHAR, slot, kf)
 
   def _lm_key(self, slot: str, half: int, track_id: int) -> int:
     """Landmark key in a front or rear slot; raises ValueError on slot overflow."""
@@ -121,10 +119,10 @@ class CameraKeys:
   def rear_landmark_key(self, slot: str, track_id: int) -> int:
     return self._lm_key(slot, 1, track_id)
 
-  def theta_key(self, slot: str, finger_idx: int, keyframe_idx: int) -> int:
+  def theta_key(self, slot: str, finger_idx: int, kf: int) -> int:
     """Key for a finger joint angle at ``kf``; ``finger_idx`` 0 is left, 1 is right."""
     return self._slice_key(
-      _JOINT_ANGLE_CHAR, slot, finger_idx, _MAX_KEYFRAMES_PER_CAMERA, keyframe_idx
+      _JOINT_ANGLE_CHAR, slot, finger_idx, _MAX_KEYFRAMES_PER_CAMERA, kf
     )
 
   def _slice_key(self, char: str, slot: str, half: int, width: int, index: int) -> int:
@@ -214,7 +212,7 @@ class CrossSighting:
   finger: int | None  # None = base tag; 0 = left finger, 1 = right finger
 
 
-def cross_tracker_observations(
+def cross_sightings(
   cameras: list[PreparedCamera],
   base_tag_ids: list[int],
   base_tag_size: float,

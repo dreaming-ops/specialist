@@ -408,7 +408,7 @@ def test_pinned_solve_reestimates_secondary_pose(
   seed_err = float(np.linalg.norm(np.asarray(seed.translation()) - true_t))
   assert seed_err > 0.02
   solve = _solve_joint_graph(cameras, keys, args, [], world_T_ref)
-  world = solve.secondary_world
+  world = solve.secondary_anchor_world
   assert 5 in world
   assert solve.secondary_moves[5] == solve.worst_secondary_move
   final_err = float(np.linalg.norm(np.asarray(world[5].translation()) - true_t))
@@ -426,7 +426,7 @@ def test_single_anchor_takes_single_solve_branch(
   cameras, keys, args, world_T_ref, _sec = _pinned_solve_fixture(False)
   solve = _solve_joint_graph(cameras, keys, args, [], world_T_ref)
   out = capsys.readouterr().out
-  assert solve.secondary_world == {}
+  assert solve.secondary_anchor_world == {}
   assert all(np.isnan(v) for v in solve.worst_secondary_move)
   assert out.count("solve 1:") == 1
   _assert_no_corner_point_variables(solve.result.values)
