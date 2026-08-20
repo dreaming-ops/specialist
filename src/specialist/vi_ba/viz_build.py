@@ -32,7 +32,7 @@ from specialist.vi_ba.tag_detection import (
   estimate_lens_T_tag,
   tag_corners_in_frame,
 )
-from specialist.vi_ba.viz import CameraVizData
+from specialist.vi_ba.viz import CameraVizData, LensVizData
 
 Float64Array = npt.NDArray[np.float64]
 
@@ -180,22 +180,43 @@ def _build_tracker_outputs(
     base_tag_poses = [p.compose(camera.body_T_base_tag) for p in poses]
   else:
     base_tag_poses = poses
+  lenses = {
+    "front": LensVizData(
+      points=front_points,
+      keypoints=camera.front_keypoints,
+      rejected_keypoints=_per_kf_rejected_keypoints(
+        camera.front_rejected, camera.n_keyframes
+      ),
+      landmark_reprojections=front_reproj_per_kf,
+      tag_detections=camera.front_tags_per_kf,
+      tag_axes=_project_tag_axes_per_kf(
+        camera.front_tags_per_kf, camera.front_lens, tag_size_by_id
+      ),
+      rmse_per_kf=front_rmse_per_kf,
+      body_T_lens=camera.front_lens.body_T_lens,
+      mei={k: float(v) for k, v in asdict(camera.front_lens.params).items()},
+    ),
+    "rear": LensVizData(
+      points=rear_points,
+      keypoints=camera.rear_keypoints,
+      rejected_keypoints=_per_kf_rejected_keypoints(
+        camera.rear_rejected, camera.n_keyframes
+      ),
+      landmark_reprojections=rear_reproj_per_kf,
+      tag_detections=camera.rear_tags_per_kf,
+      tag_axes=_project_tag_axes_per_kf(
+        camera.rear_tags_per_kf, camera.rear_lens, tag_size_by_id
+      ),
+      rmse_per_kf=rear_rmse_per_kf,
+      body_T_lens=camera.rear_lens.body_T_lens,
+      mei={k: float(v) for k, v in asdict(camera.rear_lens.params).items()},
+      static_mask_rects=camera.rear_static_mask_rects,
+    ),
+  }
   biases_final = [
     result.values.atConstantBias(keys.bias_key(camera.name, i))
     for i in range(camera.n_keyframes)
   ]
-  front_tag_axes = _project_tag_axes_per_kf(
-    camera.front_tags_per_kf, camera.front_lens, tag_size_by_id
-  )
-  rear_tag_axes = _project_tag_axes_per_kf(
-    camera.rear_tags_per_kf, camera.rear_lens, tag_size_by_id
-  )
-  front_rejected_kp = _per_kf_rejected_keypoints(
-    camera.front_rejected, camera.n_keyframes
-  )
-  rear_rejected_kp = _per_kf_rejected_keypoints(
-    camera.rear_rejected, camera.n_keyframes
-  )
   velocities_final = [
     np.asarray(result.values.atVector(keys.velocity_key(camera.name, i)))
     for i in range(camera.n_keyframes)
@@ -231,41 +252,23 @@ def _build_tracker_outputs(
     body_poses=poses,
     keyframe_times=np.asarray(camera.keyframe_times, dtype=np.float64),
     keyframe_frames=np.asarray(camera.keyframe_frames, dtype=np.int64),
-    front_points=front_points,
-    rear_points=rear_points,
-    front_keypoints=camera.front_keypoints,
-    rear_keypoints=camera.rear_keypoints,
-    front_tag_detections=camera.front_tags_per_kf,
-    rear_tag_detections=camera.rear_tags_per_kf,
+    lenses=lenses,
     velocities=velocities_final,
     gyro_biases=[np.asarray(b.gyroscope(), dtype=np.float64) for b in biases_final],
     accel_biases=[
       np.asarray(b.accelerometer(), dtype=np.float64) for b in biases_final
     ],
-    front_rmse_per_kf=front_rmse_per_kf,
-    rear_rmse_per_kf=rear_rmse_per_kf,
-    front_tag_axes=front_tag_axes,
-    rear_tag_axes=rear_tag_axes,
-    front_landmark_reprojections=front_reproj_per_kf,
-    rear_landmark_reprojections=rear_reproj_per_kf,
-    front_rejected_keypoints=front_rejected_kp,
-    rear_rejected_keypoints=rear_rejected_kp,
-    rear_static_mask_rects=camera.rear_static_mask_rects,
     anchor_obs_lines=anchor_lines,
     cross_tracker_lines=cross_lines,
     urdf_root_poses=base_tag_poses,
     joint_angles=camera.joint_angles or None,
     tcp_in_base_tag=args.gripper.tcp_in_base_tag,
-    front_lens_extrinsic=camera.front_lens.body_T_lens,
-    rear_lens_extrinsic=camera.rear_lens.body_T_lens,
     highrate_times=highrate_times,
     highrate_positions=highrate_positions,
     highrate_quats=highrate_quats,
     highrate_vels=highrate_vels,
     joint_frame_angles=joint_frame_angles or None,
     body_T_base_tag=camera.body_T_base_tag,
-    front_lens_mei={k: float(v) for k, v in asdict(camera.front_lens.params).items()},
-    rear_lens_mei={k: float(v) for k, v in asdict(camera.rear_lens.params).items()},
   )
   return viz_data, summary
 

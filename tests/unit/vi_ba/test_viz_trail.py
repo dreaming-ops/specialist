@@ -1,30 +1,75 @@
-"""The live trajectory strip shows only a trailing time window per keyframe."""
+"""The trajectory ribbon carries one step per sample; the window is the view's."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import gtsam
 import numpy as np
+import rerun as rr
+import rerun.blueprint as rrb
+from rerun.experimental import Chunk, RrdReader
 
-from specialist.vi_ba.viz import _trail_strips
-
-
-def test_strips_window_to_trailing_duration() -> None:
-  traj = np.arange(18, dtype=np.float64).reshape(6, 3)
-  times = np.array([0.0, 1.0, 2.0, 10.0, 11.0, 30.0])
-  strips = _trail_strips(traj, times, duration=2.0)
-  assert len(strips) == 6
-  # Keyframe i always ends its own strip.
-  for i, strip in enumerate(strips):
-    assert np.array_equal(strip[-1], traj[i])
-  # Window [t-2, t]: kf2 keeps kf0..2, kf3 stands alone, kf4 keeps kf3..4.
-  assert np.array_equal(strips[2], traj[0:3])
-  assert np.array_equal(strips[3], traj[3:4])
-  assert np.array_equal(strips[4], traj[3:5])
-  assert np.array_equal(strips[5], traj[5:6])
+from specialist.vi_ba.viz import (
+  CameraVizData,
+  LensVizData,
+  _gripper_streams,
+  _tracker_indexes,
+  _trail_segments,
+  _trajectory_streams,
+  blueprint_for_names,
+  segment_card_blueprint,
+)
 
 
-def test_full_history_when_duration_covers_clip() -> None:
-  traj = np.zeros((4, 3), dtype=np.float64)
-  times = np.array([0.0, 0.5, 1.0, 1.5])
-  strips = _trail_strips(traj, times, duration=100.0)
-  for i, strip in enumerate(strips):
-    assert strip.shape == (i + 1, 3)
+def test_each_sample_carries_the_step_that_reached_it() -> None:
+  """The first step and a step longer than the window stand still."""
+  traj = np.arange(12, dtype=np.float64).reshape(4, 3)
+  segments = _trail_segments(traj, np.array([0.0, 0.1, 5.0, 5.1]), 1.0)
+  assert np.array_equal(segments, np.stack([traj[[0, 0, 2, 2]], traj], axis=1))
+
+
+def test_the_trail_ends_at_the_tcp_on_the_base_tag() -> None:
+  """Each step ends where the body pose carries the base tag's TCP offset."""
+  times = np.linspace(0.0, 0.2, 3)
+  poses = [gtsam.Pose3(gtsam.Rot3(), np.array([0.1 * i, 0.0, 0.0])) for i in range(3)]
+  hr = np.linspace(0.0, 0.2, 5)
+  data = CameraVizData(name="t0", body_poses=poses, keyframe_times=times)
+  data.lenses = {"front": LensVizData()}
+  data.urdf_root_poses = list(poses)
+  data.tcp_in_base_tag = (0.0, 0.0, 0.05)
+  data.highrate_times = hr
+  data.highrate_positions = np.stack([hr, np.zeros(5), np.zeros(5)], axis=1)
+  data.highrate_quats = np.tile(np.array([0.0, 0.0, 0.0, 1.0]), (5, 1))
+  indexes = _tracker_indexes(data, 1.0 / 30.0)
+  world_T_base_tag = _gripper_streams(lambda _: None, data, indexes, "t0_base")
+  assert world_T_base_tag is not None
+  translations, rotations = world_T_base_tag
+  chunks: list[Chunk] = []
+  _trajectory_streams(chunks.append, data, indexes, world_T_base_tag, (1, 2, 3))
+  expected = translations + rotations @ np.asarray(data.tcp_in_base_tag)
+  strips = chunks[0].to_record_batch().column("LineStrips3D:strips").to_pylist()
+  assert np.allclose([s[0][-1] for s in strips], expected)
+
+
+def _ranged(blueprint: rrb.Blueprint, rrd: Path) -> set[str]:
+  """The entity paths the blueprint gives a visible time range."""
+  with rr.RecordingStream("app", recording_id="bp", send_properties=False) as stream:
+    stream.save(str(rrd))
+    stream.send_blueprint(blueprint, make_active=True, make_default=True)
+  reader = RrdReader(str(rrd))
+  columns = reader.store(store=reader.blueprints()[0]).schema().component_columns()
+  return {c.entity_path for c in columns if c.component == "VisibleTimeRanges:ranges"}
+
+
+def test_every_view_that_draws_the_ribbon_sets_the_window(tmp_path: Path) -> None:
+  """The samples carry one step each, so the view sets the visible time range."""
+  views = {
+    "dashboard": blueprint_for_names(["t0"]),
+    "card": segment_card_blueprint(["t0"]),
+  }
+  for name, blueprint in views.items():
+    ranged = _ranged(blueprint, tmp_path / f"{name}.rrd")
+    assert any(p.endswith("overrides/t0/trajectory/visualizers") for p in ranged), (
+      f"{name}: {ranged}"
+    )
