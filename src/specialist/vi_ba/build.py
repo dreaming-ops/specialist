@@ -32,6 +32,7 @@ _BIAS_PRIOR_SIGMA_GYRO = 1.0e-3
 _REAR_LANDMARK_OFFSET = 1_000_000
 
 __all__ = [
+  "add_mei_factor",
   "LensChannel",
   "LensSetup",
   "add_mei_tag_factor",

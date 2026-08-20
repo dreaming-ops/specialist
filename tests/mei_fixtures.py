@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import gtsam
 import numpy as np
-import numpy.typing as npt
 
 from specialist.loader.mei_model import MeiParams, mei_project
 from specialist.vi_ba.build import LensChannel, LensSetup, build_vi_graph
@@ -62,22 +61,3 @@ def front_only_graph(
     weak_pose_sigmas=(0.3,) * 6,
     anchor_last_pose=True,
   )
-
-
-def unit_pixel_noise() -> gtsam.noiseModel.Base:
-  # Isotropic σ=1 px, so whitened == unwhitened.
-  return gtsam.noiseModel.Isotropic.Sigma(2, 1.0)
-
-
-def fd_pose_columns(
-  residual_at, pose: gtsam.Pose3, h: float = 1e-6
-) -> npt.NDArray[np.float64]:
-  """Central finite difference of a residual w.r.t. the Pose3 retract tangent."""
-  cols = []
-  for i in range(6):
-    xi = np.zeros(6)
-    xi[i] = h
-    r_plus = residual_at(pose.retract(xi))
-    r_minus = residual_at(pose.retract(-xi))
-    cols.append((r_plus - r_minus) / (2.0 * h))
-  return np.column_stack(cols)  # 2x6
