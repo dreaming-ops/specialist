@@ -24,10 +24,8 @@ __all__ = [
   "ImuSamples",
   "find_stationary_windows",
   "integrate_samples",
-  "keyframe_delta_rotations",
   "make_preintegration_params",
   "preintegrate_between_keyframes",
-  "slice_samples_at_keyframes",
   "stationary_mask",
 ]
 
@@ -105,42 +103,6 @@ def make_preintegration_params(
   return params
 
 
-def keyframe_delta_rotations(
-  samples: ImuSamples,
-  keyframe_times: Float64Array,
-) -> list[Float64Array]:
-  """Each keyframe's gyro body rotation over ``(t_{k-1}, t_k]``; entry 0 is identity."""
-  deltas: list[Float64Array] = [np.eye(3)]
-  for window in slice_samples_at_keyframes(samples, keyframe_times):
-    delta = np.eye(3)
-    for j in range(len(window) - 1):
-      dt = float(window.t[j + 1] - window.t[j])
-      if dt > 0.0:
-        delta = delta @ gtsam.Rot3.Expmap(window.gyro[j] * dt).matrix()
-    deltas.append(delta)
-  return deltas
-
-
-def slice_samples_at_keyframes(
-  samples: ImuSamples,
-  keyframe_times: Float64Array,
-) -> list[ImuSamples]:
-  """``samples`` split per keyframe pair, window ``i`` over ``(t_i, t_{i+1}]``."""
-  t_kf = np.asarray(keyframe_times, dtype=np.float64)
-  bounds = np.searchsorted(samples.t, t_kf, side="right")
-  out: list[ImuSamples] = []
-  for i in range(len(t_kf) - 1):
-    window = slice(bounds[i], bounds[i + 1])
-    out.append(
-      ImuSamples(
-        t=samples.t[window],
-        gyro=samples.gyro[window],
-        accel=samples.accel[window],
-      )
-    )
-  return out
-
-
 def integrate_samples(
   params: gtsam.PreintegrationCombinedParams,
   samples: ImuSamples,
@@ -168,5 +130,15 @@ def preintegrate_between_keyframes(
   bias: gtsam.imuBias.ConstantBias,
 ) -> list[gtsam.PreintegratedCombinedMeasurements]:
   """One ``PreintegratedCombinedMeasurements`` per consecutive keyframe pair."""
-  per_window = slice_samples_at_keyframes(samples, keyframe_times)
-  return [integrate_samples(params, w, bias) for w in per_window]
+  # Window i holds the samples in (t_i, t_{i+1}].
+  bounds = np.searchsorted(
+    samples.t, np.asarray(keyframe_times, np.float64), side="right"
+  )
+  return [
+    integrate_samples(
+      params,
+      ImuSamples(t=samples.t[a:b], gyro=samples.gyro[a:b], accel=samples.accel[a:b]),
+      bias,
+    )
+    for a, b in zip(bounds[:-1], bounds[1:], strict=True)
+  ]

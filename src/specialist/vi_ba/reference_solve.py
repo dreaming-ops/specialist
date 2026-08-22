@@ -141,7 +141,7 @@ def _secondary_anchor_seed(
         candidates.append(poses[kf].compose(ch.setup.body_T_lens).compose(lens_T_tag))
   if not candidates:
     return None
-  return average_pose(candidates, "median")
+  return average_pose(candidates)
 
 
 def _seed_secondary_anchors(

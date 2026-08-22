@@ -137,7 +137,6 @@ def recover_gripper_tags(
   lens: LensSetup,
   tag_size: float,
   n_keyframes: int,
-  kf_rotations: list[Float64Array],
   tags_per_frame: list[list[TagDetection]],
   frame_times: Float64Array,
 ) -> tuple[
@@ -151,7 +150,6 @@ def recover_gripper_tags(
     tag_id=tags.base,
     tag_size=tag_size,
     params=lens.params,
-    kf_rotations=kf_rotations,
   )
   if not base_tag_obs:
     raise ValueError(
@@ -160,7 +158,7 @@ def recover_gripper_tags(
       f"cross-camera factors would all be silently disabled"
     )
   body_T_base_tag = average_pose(
-    [lens.body_T_lens.compose(p) for p in base_tag_obs.values()], "mean"
+    [lens.body_T_lens.compose(p) for p in base_tag_obs.values()]
   )
 
   finger_reproj: dict[str, FingerReproj] = {}

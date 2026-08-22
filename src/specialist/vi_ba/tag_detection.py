@@ -12,7 +12,7 @@ import gtsam
 import numpy as np
 import numpy.typing as npt
 from pupil_apriltags import Detector
-from specialist_camera import MeiParams, mei_unproject
+from specialist_camera import MeiParams, mei_project, mei_unproject
 from specialist_dataset.fiducials import TAG_FAMILY, tag_corners_local
 
 from specialist.vi_ba.features import Rect, cpu_budget
@@ -164,9 +164,8 @@ def estimate_lens_T_tag(
   corners_px: Float64Array,
   tag_size: float,
   params: MeiParams,
-  prev_cam_T_tag: gtsam.Pose3 | None = None,
 ) -> gtsam.Pose3 | None:
-  """Camera-to-tag pose by planar IPPE PnP; ``prev_cam_T_tag`` picks the candidate."""
+  """``lens_T_tag`` by planar IPPE PnP on the unprojected corners, else ``None``."""
   bearings = mei_unproject(corners_px.astype(np.float64), params)
   if not np.all(np.isfinite(bearings)) or np.any(bearings[:, 2] <= 1e-3):
     return None
@@ -174,16 +173,17 @@ def estimate_lens_T_tag(
   obj = tag_corners_local(tag_size).reshape(-1, 1, 3)
   k = np.eye(3)
   dist = np.zeros(4)
-  n_sols, rvecs, tvecs, _ = cv2.solvePnPGeneric(
+  _, rvecs, tvecs, _ = cv2.solvePnPGeneric(
     obj, normalized, k, dist, flags=cv2.SOLVEPNP_IPPE
   )
-  if n_sols == 0:
-    return None
   poses: list[gtsam.Pose3] = []
   for rvec, tvec in zip(rvecs, tvecs, strict=True):
     rmat, _ = cv2.Rodrigues(rvec)
     t = np.asarray(tvec, dtype=np.float64).reshape(3)
-    poses.append(gtsam.Pose3(gtsam.Rot3(rmat), gtsam.Point3(*t)))
+    if np.all(np.isfinite(rmat)) and np.all(np.isfinite(t)):
+      poses.append(gtsam.Pose3(gtsam.Rot3(rmat), gtsam.Point3(*t)))
+  if not poses:
+    return None
   # Bootstrap cheirality: tag +z must point toward the camera (R[:, 2] · t < 0).
   cheir = [
     p
@@ -192,14 +192,15 @@ def estimate_lens_T_tag(
   ]
   if cheir:
     poses = cheir
-  if prev_cam_T_tag is None or len(poses) == 1:
+  if len(poses) == 1:
     return poses[0]
-  return min(
-    poses,
-    key=lambda p: float(
-      np.linalg.norm(gtsam.Rot3.Logmap(prev_cam_T_tag.rotation().between(p.rotation())))
-    ),
+  local = tag_corners_local(tag_size)
+  points = np.concatenate(
+    [(p.rotation().matrix() @ local.T).T + np.asarray(p.translation()) for p in poses]
   )
+  pixels = mei_project(points, params).reshape(len(poses), 4, 2)
+  rms = np.sqrt(np.mean(np.sum((pixels - corners_px) ** 2, axis=2), axis=1))
+  return poses[int(np.argmin(rms))]
 
 
 def lens_T_tag_per_kf(
@@ -207,37 +208,18 @@ def lens_T_tag_per_kf(
   tag_id: int,
   tag_size: float,
   params: MeiParams,
-  kf_rotations: list[Float64Array],
 ) -> dict[int, gtsam.Pose3]:
-  """``{kf: lens_T_tag}``, IPPE disambiguated by a gyro-propagated prior."""
+  """``{kf: lens_T_tag}`` from pre-detected tag lists."""
   out: dict[int, gtsam.Pose3] = {}
-  prev: gtsam.Pose3 | None = None
-  prev_kf = 0
   for kf, tags in enumerate(tags_per_kf):
-    prior = _rotate_prior(prev, kf_rotations, prev_kf, kf) if prev is not None else None
     for det in tags:
       if det.tag_id != tag_id:
         continue
-      pose = estimate_lens_T_tag(det.corners, tag_size, params, prev_cam_T_tag=prior)
+      pose = estimate_lens_T_tag(det.corners, tag_size, params)
       if pose is not None:
         out[kf] = pose
-        prev = pose
-        prev_kf = kf
         break
   return out
-
-
-def _rotate_prior(
-  prev: gtsam.Pose3,
-  kf_rotations: list[Float64Array],
-  prev_kf: int,
-  kf: int,
-) -> gtsam.Pose3:
-  """Predict a ``lens_T_tag`` prior at ``kf`` from the pose sighted at ``prev_kf``."""
-  acc = np.eye(3)
-  for j in range(prev_kf + 1, kf + 1):
-    acc = kf_rotations[j] @ acc
-  return gtsam.Pose3(gtsam.Rot3(acc), gtsam.Point3(0, 0, 0)).compose(prev)
 
 
 def detect_all_tags(frames: Sequence[np.ndarray]) -> list[list[TagDetection]]:

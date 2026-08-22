@@ -11,7 +11,6 @@ from specialist.vi_ba.imu import (
   integrate_samples,
   make_preintegration_params,
   preintegrate_between_keyframes,
-  slice_samples_at_keyframes,
   stationary_mask,
 )
 
@@ -43,26 +42,6 @@ def test_constant_gyro_yields_correct_rotation() -> None:
   assert abs(omega[2] - 0.499) < 5e-4
   assert abs(omega[0]) < 1e-3
   assert abs(omega[1]) < 1e-3
-
-
-def test_slice_samples_at_keyframes_partitions_evenly() -> None:
-  # 1 kHz samples from t = 0 to t = 3 s, keyframes every 1 s.
-  n = 3000
-  t = np.linspace(0.0, 3.0, n, endpoint=False, dtype=np.float64)
-  samples = ImuSamples(t=t, gyro=np.zeros((n, 3)), accel=np.zeros((n, 3)))
-  keyframes = np.array([0.0, 1.0, 2.0, 3.0])
-  windows = slice_samples_at_keyframes(samples, keyframes)
-  assert len(windows) == 3
-  for w in windows:
-    assert 950 < len(w) < 1050
-
-
-def test_slice_samples_at_keyframes_empty_window() -> None:
-  t = np.array([0.0, 0.5, 1.0])
-  samples = ImuSamples(t=t, gyro=np.zeros((3, 3)), accel=np.zeros((3, 3)))
-  # Keyframes [2, 3] contain no samples.
-  windows = slice_samples_at_keyframes(samples, np.array([2.0, 3.0]))
-  assert len(windows) == 1 and len(windows[0]) == 0
 
 
 def test_preintegrate_between_keyframes_partitions_the_samples() -> None:

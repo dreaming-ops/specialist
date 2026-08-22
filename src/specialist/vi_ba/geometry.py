@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from typing import Literal
-
 import gtsam
 import numpy as np
 import numpy.typing as npt
@@ -26,17 +24,12 @@ def translation(pose: gtsam.Pose3) -> Float64Array:
   return np.asarray(pose.translation(), dtype=np.float64)
 
 
-def average_pose(
-  poses: list[gtsam.Pose3], reduce: Literal["mean", "median"]
-) -> gtsam.Pose3:
-  """``reduce`` over the translations and the rotation logs about the first pose."""
+def average_pose(poses: list[gtsam.Pose3]) -> gtsam.Pose3:
+  """Median translation and median rotation log about the first pose."""
   ref_rot = poses[0].rotation()
   translations = np.stack([translation(p) for p in poses])
   logs = np.stack([gtsam.Rot3.Logmap(ref_rot.between(p.rotation())) for p in poses])
-  if reduce == "mean":
-    delta_log, center = np.mean(logs, axis=0), np.mean(translations, axis=0)
-  else:
-    delta_log, center = np.median(logs, axis=0), np.median(translations, axis=0)
+  delta_log, center = np.median(logs, axis=0), np.median(translations, axis=0)
   return gtsam.Pose3(
     ref_rot.compose(gtsam.Rot3.Expmap(delta_log)), gtsam.Point3(*center)
   )
