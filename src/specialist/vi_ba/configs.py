@@ -75,18 +75,13 @@ class FrontendCfg:
 
 @dataclass
 class AnchorCfg:
-  # Static wall-tag ids; the first is the reference anchor that pins the world gauge.
+  # Static wall-tag ids, each a solved pose; the first names the world frame.
   tag_ids: tuple[int, ...]
 
   tag_size: float = 0.1
 
   # The anchor's four metric corners reproject into the bundle and pin absolute scale.
   corner_reproj_sigma: float = 1.5
-  # Co-optimize secondary anchor corners as points held near the seed by a loose prior.
-  free_secondary: bool = True
-
-  # Sigma (m) of the loose prior holding each freed corner near its seed.
-  secondary_corner_prior_sigma: float = 0.05
   # Drop anchor sightings past this bearing half-angle (rad).
   max_half_angle: float = float(np.deg2rad(75.0))
 

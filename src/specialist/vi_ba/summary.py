@@ -29,6 +29,6 @@ class Summary:
   initial_graph_error: float
   final_graph_error: float
   solver_iterations: int
-  # Worst secondary-anchor move off its seed (meters, radians); NaN when none exists.
-  secondary_anchor_move_translation: float
-  secondary_anchor_move_rotation: float
+  # How far the solve moves the worst anchor off its seed (meters, radians).
+  anchor_move_translation: float
+  anchor_move_rotation: float

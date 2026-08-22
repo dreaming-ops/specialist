@@ -4,7 +4,39 @@ import gtsam
 import numpy as np
 from specialist_dataset.poses import quats_to_matrices
 
-from specialist.vi_ba.geometry import matrices_to_quats, quat_xyzw
+from specialist.vi_ba.geometry import (
+  consensus_pose,
+  matrices_to_quats,
+  quat_xyzw,
+)
+
+
+def _pose(rx: float, ry: float, rz: float, x: float, y: float, z: float) -> gtsam.Pose3:
+  return gtsam.Pose3(gtsam.Rot3.Rodrigues(rx, ry, rz), gtsam.Point3(x, y, z))
+
+
+def test_consensus_keeps_the_agreeing_majority() -> None:
+  truth = _pose(0.1, -0.05, 0.2, 0.3, 0.4, 1.0)
+  rng = np.random.default_rng(0)
+  poses = [
+    gtsam.Pose3(truth.rotation(), truth.translation() + rng.normal(0, 1e-3, 3))
+    for _ in range(20)
+  ]
+  poses += [_pose(1.4, 0.9, -1.2, 0.9, -0.4, 1.6) for _ in range(6)]
+  agreed = consensus_pose(poses)
+  assert agreed is not None
+  assert np.allclose(agreed.matrix(), truth.matrix(), atol=5e-3)
+
+
+def test_consensus_refuses_a_split_pool() -> None:
+  """Two modes of equal weight name two different tags, not one averaged one."""
+  a = _pose(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+  b = _pose(0.8, -0.6, 0.4, 0.5, 0.5, 1.4)
+  assert consensus_pose([a] * 10 + [b] * 10) is None
+
+
+def test_consensus_of_nothing_is_nothing() -> None:
+  assert consensus_pose([]) is None
 
 
 def test_quat_xyzw_is_scipy_order() -> None:

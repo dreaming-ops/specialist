@@ -74,7 +74,7 @@ def test_anchor_pose_seed_reconstructs_metric_body_poses() -> None:
     for k in range(n)
   ]
   # lens_T_tag = (world_T_lens)^-1 with world = tag and world_T_lens = body o ext.
-  anchor_obs = {k: {"front": body[k].compose(ext).inverse()} for k in range(n)}
+  anchor_obs = {k: body[k].compose(ext).inverse() for k in range(n)}
   seed = _anchor_pose_seed(anchor_obs, ext, n)
   assert seed is not None and len(seed) == n
   for k in range(n):
@@ -82,7 +82,7 @@ def test_anchor_pose_seed_reconstructs_metric_body_poses() -> None:
 
 
 def test_anchor_pose_seed_none_when_too_few_anchor_keyframes() -> None:
-  anchor_obs = {0: {"front": gtsam.Pose3()}, 1: {"front": gtsam.Pose3()}}
+  anchor_obs = {0: gtsam.Pose3(), 1: gtsam.Pose3()}
   assert _anchor_pose_seed(anchor_obs, gtsam.Pose3(), 100) is None
 
 
@@ -97,7 +97,7 @@ def test_anchor_metric_scale_recovers_scale() -> None:
     )
     for k in range(n)
   ]
-  anchor_obs = {k: {"front": metric_body[k].compose(ext).inverse()} for k in range(n)}
+  anchor_obs = {k: metric_body[k].compose(ext).inverse() for k in range(n)}
   c = 0.5
   vo_body = [
     gtsam.Pose3(
@@ -107,7 +107,7 @@ def test_anchor_metric_scale_recovers_scale() -> None:
     for k in range(n)
   ]
   lens = LensSetup(body_T_lens=ext, params=narrow_mei_params())
-  scale = _anchor_metric_scale(vo_body, anchor_obs, lens, lens)
+  scale = _anchor_metric_scale(vo_body, anchor_obs, lens)
   assert scale is not None
   assert abs(scale - 1.0 / c) < 1e-9
 
@@ -115,15 +115,15 @@ def test_anchor_metric_scale_recovers_scale() -> None:
 def test_anchor_metric_scale_none_when_degenerate() -> None:
   """Fewer than 3 anchored keyframes or a zero-spread trajectory yields ``None``."""
   lens = LensSetup(body_T_lens=gtsam.Pose3(), params=narrow_mei_params())
-  two = {k: {"front": gtsam.Pose3()} for k in range(2)}
-  assert _anchor_metric_scale([gtsam.Pose3()] * 2, two, lens, lens) is None
+  two = {k: gtsam.Pose3() for k in range(2)}
+  assert _anchor_metric_scale([gtsam.Pose3()] * 2, two, lens) is None
   # Three anchored views but the VO is stationary → zero spread → None.
   stationary = [gtsam.Pose3()] * 3
   obs = {
-    k: {"front": gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(0.1 * k, 0.0, 0.5)).inverse()}
+    k: gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(0.1 * k, 0.0, 0.5)).inverse()
     for k in range(3)
   }
-  assert _anchor_metric_scale(stationary, obs, lens, lens) is None
+  assert _anchor_metric_scale(stationary, obs, lens) is None
 
 
 def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:

@@ -224,6 +224,37 @@ def _cross_lens_point(
   return _into_lens(body_T_lens, p_body)
 
 
+def _anchor_tag_case() -> _Case:
+  """``MeiAnchorTagFactorCpp``, with the wall tag's world pose as a variable."""
+  params = distorted_mei_params(xi=1.9)
+  body_T_lens, c = _small_body_T_lens(), _tag_corner()
+  body = gtsam.Pose3(gtsam.Rot3.RzRyRx(0.07, -0.04, 0.11), gtsam.Point3(0.2, 0.1, 0.0))
+  anchor = gtsam.Pose3(gtsam.Rot3.RzRyRx(0.2, 0.1, -0.05), gtsam.Point3(0.3, 0.1, 1.0))
+  return _Case(
+    name="anchor tag",
+    params=params,
+    make=_maker(
+      _mei_factor_cpp.make_mei_anchor_tag_factor_cpp,
+      (_POSE, _OWN),
+      (body_T_lens, c),
+      params,
+    ),
+    blocks=((_POSE, "pose", 6), (_OWN, "pose", 6)),
+    configurations=(
+      (
+        "frontal",
+        _values(pose=body, own=anchor),
+        _into_lens(
+          body_T_lens,
+          np.asarray(body.transformTo(gtsam.Point3(*_through(anchor, c)))),
+        ),
+      ),
+    ),
+    residual_atol=1e-6,
+    offset=np.array([2.0, -1.5]),
+  )
+
+
 def _cross_cases() -> tuple[_Case, _Case]:
   # Light distortion with a moderate super-fisheye xi.
   params = distorted_mei_params(xi=1.6)
@@ -287,42 +318,11 @@ def _cross_cases() -> tuple[_Case, _Case]:
   return tag, finger
 
 
-def _world_point_cases() -> tuple[_Case, ...]:
-  """``MeiWorldPointFactorCpp``: unary on the observing pose with a constant corner."""
-  params = _real_params()
-  out = []
-  for name, body_T_lens in (
-    ("world point", gtsam.Pose3()),
-    ("world point rear body_T_lens", _rear_body_T_lens()),
-  ):
-    for label, lens_xyz in (
-      ("near-axial", np.array([0.01, 0.01, 2.0])),
-      ("past 90°", np.array([1.0, 0.0, -0.1])),
-    ):
-      p_world = _through(body_T_lens, lens_xyz)
-      out.append(
-        _Case(
-          name=f"{name} [{label}]",
-          params=params,
-          make=_maker(
-            _mei_factor_cpp.make_mei_world_point_factor_cpp,
-            (_POSE,),
-            (body_T_lens, gtsam.Point3(*p_world)),
-            params,
-          ),
-          blocks=((_POSE, "pose", 6),),
-          configurations=((label, _values(pose=gtsam.Pose3()), lens_xyz),),
-          residual_atol=1e-10,
-        )
-      )
-  return tuple(out)
-
-
 def _cases() -> tuple[_Case, ...]:
   return (
     _mei_case("mei front", gtsam.Pose3(), _real_params()),
     _mei_case("mei rear body_T_lens", _rear_body_T_lens(), _real_params()),
-    *_world_point_cases(),
+    _anchor_tag_case(),
     _base_tag_case(),
     _finger_case(),
     *_cross_cases(),

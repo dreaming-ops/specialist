@@ -170,14 +170,14 @@ def main(args: Args) -> None:
 
   estimate = build_run_estimate(cameras, solve, keys, args, cross_obs)
 
-  worst_move_translation, worst_move_rotation = solve.worst_secondary_move
+  worst_move_translation, worst_move_rotation = solve.worst_anchor_move
   summary = Summary(
     cross_camera_obs=len(cross_obs),
     initial_graph_error=solve.result.initial_error,
     final_graph_error=solve.result.final_error,
     solver_iterations=solve.result.iterations,
-    secondary_anchor_move_translation=worst_move_translation,
-    secondary_anchor_move_rotation=worst_move_rotation,
+    anchor_move_translation=worst_move_translation,
+    anchor_move_rotation=worst_move_rotation,
   )
   _print_capture_diagnostics(cameras, solve.body_poses)
 

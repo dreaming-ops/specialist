@@ -12,12 +12,18 @@ Float64Array = npt.NDArray[np.float64]
 __all__ = [
   "average_pose",
   "bounding_box_diagonal",
+  "consensus_pose",
   "matrices_to_quats",
   "max_parallax",
   "quat_xyzw",
   "rotate_about_z",
   "translation",
 ]
+
+# Cluster agreement (radians, meters) and the most poses tried as cluster centers.
+_CONSENSUS_ROT = float(np.deg2rad(20.0))
+_CONSENSUS_TRANS = 0.15
+_CONSENSUS_CENTERS = 32
 
 
 def translation(pose: gtsam.Pose3) -> Float64Array:
@@ -32,6 +38,27 @@ def average_pose(poses: list[gtsam.Pose3]) -> gtsam.Pose3:
   delta_log, center = np.median(logs, axis=0), np.median(translations, axis=0)
   return gtsam.Pose3(
     ref_rot.compose(gtsam.Rot3.Expmap(delta_log)), gtsam.Point3(*center)
+  )
+
+
+def consensus_pose(poses: list[gtsam.Pose3]) -> gtsam.Pose3 | None:
+  """Median of the largest agreeing cluster, or ``None`` when none holds a majority."""
+  step = max(1, len(poses) // _CONSENSUS_CENTERS)
+  best: list[gtsam.Pose3] = []
+  for center in poses[::step]:
+    near = [p for p in poses if _agrees(center, p)]
+    if len(near) > len(best):
+      best = near
+  if 2 * len(best) <= len(poses):
+    return None
+  return average_pose(best)
+
+
+def _agrees(a: gtsam.Pose3, b: gtsam.Pose3) -> bool:
+  rel = a.between(b)
+  return bool(
+    np.linalg.norm(gtsam.Rot3.Logmap(rel.rotation())) <= _CONSENSUS_ROT
+    and np.linalg.norm(translation(rel)) <= _CONSENSUS_TRANS
   )
 
 

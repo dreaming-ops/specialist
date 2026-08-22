@@ -4,8 +4,8 @@
 // only in how the point reaches the body frame; the two finger factors also
 // share a RevoluteCorner joint kernel:
 //   * MeiFactorCpp            — binary on (body_pose, world_landmark).
-//   * MeiWorldPointFactorCpp  — unary on the observing pose; the anchor corner
-//                               is a constant, so it pins the world gauge.
+//   * MeiAnchorTagFactorCpp   — binary on (body_pose, world_T_anchor); a wall
+//                               tag whose pose the bundle solves for.
 //   * MeiFingerFactorCpp      — binary on (theta, body_T_base_tag); a finger tag
 //                               on a 1-DoF joint off the base tag.
 //   * MeiBaseTagFactorCpp     — unary on body_T_base_tag; the base tag.
@@ -180,35 +180,39 @@ class MeiFactorCpp : public NoiseModelFactorN<Pose3, Point3> {
   }
 };
 
-// Unary on the observing pose X (world_T_body): a world-fixed point p
-// reprojects as p_body = X^-1 . p through the lens. Constant world points
-// (anchor tag corners) enter here without becoming graph variables.
-class MeiWorldPointFactorCpp : public NoiseModelFactorN<Pose3> {
-  using Base = NoiseModelFactorN<Pose3>;
+// Binary on (body_pose X, world_T_anchor A): a wall tag whose pose is a
+// variable, so p_lens = lens_T_body . X^-1 . A . c
+class MeiAnchorTagFactorCpp : public NoiseModelFactorN<Pose3, Pose3> {
+  using Base = NoiseModelFactorN<Pose3, Pose3>;
   MeiCorner lens_;
-  Vector3 p_world_;
+  Vector3 c_;  // anchor corner in the tag frame
 
  public:
-  MeiWorldPointFactorCpp(Key poseKey, const SharedNoiseModel& model,
-                         MeiCorner lens, const Vector3& p_world)
-      : Base(model, poseKey), lens_(std::move(lens)), p_world_(p_world) {}
+  MeiAnchorTagFactorCpp(Key poseKey, Key anchorKey, const SharedNoiseModel& model,
+                        MeiCorner lens, const Vector3& c)
+      : Base(model, poseKey, anchorKey), lens_(std::move(lens)), c_(c) {}
 
-  Vector evaluateError(const Pose3& pose, OptionalMatrixType H1) const override {
-    const Matrix3 R_bw = pose.rotation().matrix().transpose();
-    const Vector3 p_b = R_bw * (p_world_ - pose.translation());
+  Vector evaluateError(const Pose3& X, const Pose3& A, OptionalMatrixType H1,
+                       OptionalMatrixType H2) const override {
+    const Matrix3 R_A = A.rotation().matrix();
+    const Vector3 p_world = R_A * c_ + A.translation();
+    const Matrix3 R_bw = X.rotation().matrix().transpose();
+    const Vector3 p_body = R_bw * (p_world - X.translation());
 
     Vector2 residual;
     Matrix23 j_mei_r_lb;
-    if (!lens_.reproject(p_b, residual, j_mei_r_lb)) {
+    if (!lens_.reproject(p_body, residual, j_mei_r_lb)) {
       if (H1) *H1 = Matrix::Zero(2, 6);
+      if (H2) *H2 = Matrix::Zero(2, 6);
       return Vector2::Zero();
     }
-    if (H1) *H1 = pose_to_jac(j_mei_r_lb, p_b);
+    if (H1) *H1 = pose_to_jac(j_mei_r_lb, p_body);
+    if (H2) *H2 = pose_from_jac(j_mei_r_lb * R_bw, R_A, c_);
     return residual;
   }
 
   gtsam::NonlinearFactor::shared_ptr clone() const override {
-    return std::make_shared<MeiWorldPointFactorCpp>(*this);
+    return std::make_shared<MeiAnchorTagFactorCpp>(*this);
   }
 };
 
@@ -398,15 +402,6 @@ static NoiseModelFactor::shared_ptr make_mei_factor_cpp(
       MeiCorner(body_T_lens, intrinsics, pixel, obs_bearing));
 }
 
-static NoiseModelFactor::shared_ptr make_mei_world_point_factor_cpp(
-    size_t poseKey, const Vector2& pixel, const SharedNoiseModel& model,
-    const Pose3& body_T_lens, const Vector3& p_world, const Intrinsics& intrinsics, const Vector3& obs_bearing) {
-  return std::make_shared<MeiWorldPointFactorCpp>(
-      poseKey, model,
-      MeiCorner(body_T_lens, intrinsics, pixel, obs_bearing),
-      p_world);
-}
-
 static NoiseModelFactor::shared_ptr make_mei_finger_factor_cpp(
     size_t thetaKey, size_t baseTagKey, const Vector2& pixel,
     const SharedNoiseModel& model, const Pose3& body_T_lens,
@@ -450,15 +445,21 @@ static NoiseModelFactor::shared_ptr make_mei_cross_finger_factor_cpp(
       RevoluteCorner(base_T_joint, c));
 }
 
+static NoiseModelFactor::shared_ptr make_mei_anchor_tag_factor_cpp(
+    size_t poseKey, size_t anchorKey, const Vector2& pixel,
+    const SharedNoiseModel& model, const Pose3& body_T_lens, const Vector3& c,
+    const Intrinsics& intrinsics, const Vector3& obs_bearing) {
+  return std::make_shared<MeiAnchorTagFactorCpp>(
+      poseKey, anchorKey, model,
+      MeiCorner(body_T_lens, intrinsics, pixel, obs_bearing),
+      c);
+}
+
 PYBIND11_MODULE(_mei_factor_cpp, m) {
   m.doc() = "Native MEI reprojection factors with analytical Jacobians.";
   m.def("make_mei_factor_cpp", &make_mei_factor_cpp, py::arg("pose_key"),
         py::arg("point_key"), py::arg("pixel"), py::arg("noise"),
         py::arg("body_T_lens"), py::arg("intrinsics"), py::arg("obs_bearing"));
-  m.def("make_mei_world_point_factor_cpp", &make_mei_world_point_factor_cpp,
-        py::arg("pose_key"), py::arg("pixel"), py::arg("noise"),
-        py::arg("body_T_lens"), py::arg("p_world"), py::arg("intrinsics"),
-        py::arg("obs_bearing"));
   m.def("make_mei_finger_factor_cpp", &make_mei_finger_factor_cpp,
         py::arg("theta_key"), py::arg("base_tag_key"), py::arg("pixel"),
         py::arg("noise"), py::arg("body_T_lens"), py::arg("base_T_joint"),
@@ -476,4 +477,7 @@ PYBIND11_MODULE(_mei_factor_cpp, m) {
         py::arg("theta_key"), py::arg("pixel"), py::arg("noise"),
         py::arg("observer_extrinsic"), py::arg("base_T_joint"), py::arg("c"),
         py::arg("intrinsics"), py::arg("obs_bearing"));
+  m.def("make_mei_anchor_tag_factor_cpp", &make_mei_anchor_tag_factor_cpp,
+        py::arg("pose_key"), py::arg("anchor_key"), py::arg("pixel"),
+        py::arg("noise"), py::arg("body_T_lens"), py::arg("c"), py::arg("intrinsics"), py::arg("obs_bearing"));
 }

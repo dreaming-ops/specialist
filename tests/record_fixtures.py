@@ -171,8 +171,8 @@ def make_summary(cross_camera_obs: int = 7) -> Summary:
     initial_graph_error=10.0,
     final_graph_error=1.0,
     solver_iterations=5,
-    secondary_anchor_move_translation=float("nan"),
-    secondary_anchor_move_rotation=float("nan"),
+    anchor_move_translation=float("nan"),
+    anchor_move_rotation=float("nan"),
   )
 
 

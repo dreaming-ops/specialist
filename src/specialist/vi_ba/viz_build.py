@@ -287,10 +287,7 @@ def build_run_estimate(
   cross_obs: list[CrossSighting],
 ) -> RunEstimate:
   """Each camera's payload from one solved graph, on the base recording's clock."""
-  world_T_anchor = {
-    solve.ref_tag_id: solve.world_T_ref_anchor,
-    **solve.secondary_anchor_world,
-  }
+  world_T_anchor = solve.world_T_anchor
   anchor_corners_by_tag = {
     tag_id: tag_corners_in_frame(pose.matrix(), args.anchor.tag_size)
     for tag_id, pose in world_T_anchor.items()
