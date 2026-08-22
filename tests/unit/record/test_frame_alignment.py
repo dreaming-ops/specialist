@@ -48,6 +48,7 @@ def _write_layer(root: Path, kf_times: np.ndarray) -> Path:
     body_poses=[gtsam.Pose3() for _ in kf_times],
     keyframe_times=kf_times,
     body_T_base_tag=gtsam.Pose3(),
+    body_T_rear_lens=gtsam.Pose3(),
     base_tag_id=2000,
     keyframe_frames=np.arange(len(kf_times), dtype=np.int64) * 3,
     highrate_times=kf_times,

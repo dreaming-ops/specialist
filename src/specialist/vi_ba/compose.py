@@ -14,10 +14,10 @@ from specialist_dataset.fiducials import tag_corners_local
 
 from specialist.vi_ba._mei_factor_cpp import (
   make_mei_anchor_tag_factor_cpp,
-  make_mei_base_tag_factor_cpp,
-  make_mei_cross_finger_factor_cpp,
-  make_mei_cross_tag_factor_cpp,
-  make_mei_finger_factor_cpp,
+  make_mei_seated_base_tag_factor_cpp,
+  make_mei_seated_cross_finger_factor_cpp,
+  make_mei_seated_cross_tag_factor_cpp,
+  make_mei_seated_finger_factor_cpp,
 )
 from specialist.vi_ba.build import (
   LensChannel,
@@ -53,6 +53,7 @@ __all__ = [
   "assemble_joint_graph",
   "cross_sightings",
   "points_from_values",
+  "seat_evidence",
 ]
 
 BASE_TAG_CHAR = "G"
@@ -60,15 +61,16 @@ _POSE_CHAR = "p"
 _VEL_CHAR = "v"
 _BIAS_CHAR = "b"
 _JOINT_ANGLE_CHAR = "a"
+SEAT_CHAR = "E"
 ANCHOR_CHAR = "A"
 
 # Finger corner σ (px) and the symmetry prior σ (rad) on θ_left + θ_right.
 _FINGER_REPROJ_SIGMA = 1.5
 _FINGER_SYMMETRY_SIGMA = 0.05
-# Base-tag pose sigmas: corner reprojection (px) and loose PnP-seeded prior (rad, m).
+# Base-tag corner σ (px) and its PnP-seeded pose prior σ (rad, m).
 _BASE_TAG_REPROJ_SIGMA = 1.5
-_BASE_TAG_PRIOR_SIGMA_ROT = 0.3
-_BASE_TAG_PRIOR_SIGMA_TRANS = 0.05
+_BASE_TAG_PRIOR_SIGMA_ROT = 1.0
+_BASE_TAG_PRIOR_SIGMA_TRANS = 0.3
 # Cross-camera corner σ (px).
 _CROSS_REPROJ_SIGMA = 3.0
 # Corner σ growth (px) per unit fractional overshoot of the calibrated radius.
@@ -77,6 +79,8 @@ _SIGMA_PER_RADIUS = 40.0
 _GAUGE_PRIOR_SIGMA = 1e-4
 # Loose σ on the reference anchor's tilt, which gravity makes observable.
 _TILT_FREE_SIGMA = 1e3
+# Loose rear-seat rotation prior σ (rad): factory seats err by several degrees.
+_SEAT_PRIOR_SIGMA_ROT = 0.2
 
 _MAX_KEYFRAMES_PER_CAMERA = 100_000
 _MAX_LANDMARKS_PER_CAMERA = 1_000_000
@@ -137,6 +141,10 @@ class CameraKeys:
   def base_tag_key(self, slot: str) -> int:
     """Key for the camera's static base-tag pose in its body frame."""
     return int(gtsam.symbol(BASE_TAG_CHAR, self._index[slot]))
+
+  def seat_key(self, slot: str) -> int:
+    """Key for the camera's static rear-lens seat rotation."""
+    return int(gtsam.symbol(SEAT_CHAR, self._index[slot]))
 
 
 def _bfs_world_alignments(
@@ -240,7 +248,8 @@ def cross_sightings(
   cameras: list[PreparedCamera],
   base_tag_size: float,
 ) -> list[CrossSighting]:
-  """Every other-camera sighting of a PnP-passing base tag or a modeled finger tag."""
+  """Every sighting of a camera's base or finger tag in another camera's rear lens;
+  raise when two keyframe grids disagree."""
   sightings: list[CrossSighting] = []
   for owner in cameras:
     # The base tag, plus each finger tag with URDF joint kinematics.
@@ -253,27 +262,27 @@ def cross_sightings(
       if observer is owner:
         continue
       n = min(observer.n_keyframes, owner.n_keyframes)
-      for ch in observer.lenses:
-        for kf in range(n):
-          for det in ch.tags[kf]:
-            if det.tag_id not in targets:
-              continue
-            finger = targets[det.tag_id]
-            if finger is None and (
-              estimate_lens_T_tag(det.corners, base_tag_size, ch.setup.params) is None
-            ):
-              continue  # base-tag PnP gate: drop degenerate / behind-camera
-            sightings.append(
-              CrossSighting(
-                observer=observer.name,
-                owner=owner.name,
-                keyframe=kf,
-                setup=ch.setup,
-                corners=det.corners,
-                bearing=tag_center_bearing(det, ch.setup.params),
-                finger=finger,
-              )
+      ch = observer.rear
+      for kf in range(n):
+        for det in ch.tags[kf]:
+          if det.tag_id not in targets:
+            continue
+          finger = targets[det.tag_id]
+          if finger is None and (
+            estimate_lens_T_tag(det.corners, base_tag_size, ch.setup.params) is None
+          ):
+            continue  # base-tag PnP gate: drop degenerate / behind-lens
+          sightings.append(
+            CrossSighting(
+              observer=observer.name,
+              owner=owner.name,
+              keyframe=kf,
+              setup=ch.setup,
+              corners=det.corners,
+              bearing=tag_center_bearing(det, ch.setup.params),
+              finger=finger,
             )
+          )
   return sightings
 
 
@@ -368,6 +377,7 @@ def _add_corner_factors_for_anchor(
       pose_key = keys.pose_key(t.name, kf)
       bearing = tag_center_bearing(det, ch.setup.params)
       sighting_noise = corner_noise(det.corners, ch.setup, base_sigma)
+      seat_key = keys.seat_key(t.name) if ch.lens == "rear" else None
       for corner, pixel in zip(corners, det.corners, strict=True):
         add_mei_tag_factor(
           graph,
@@ -378,6 +388,7 @@ def _add_corner_factors_for_anchor(
           ch.setup,
           corner,
           bearing,
+          seat_key=seat_key,
         )
   return n_sightings
 
@@ -417,6 +428,37 @@ def _add_anchor_factors(
   graph.add(anchor_gauge_prior(keys.anchor_key(reference), world_T_anchor[reference]))
 
 
+def _add_seat_variables(
+  cameras: list[PreparedCamera],
+  keys: CameraKeys,
+  graph: gtsam.NonlinearFactorGraph,
+  values: gtsam.Values,
+) -> None:
+  """One rear-seat rotation variable per camera, with a prior at its factory value."""
+  noise = gtsam.noiseModel.Isotropic.Sigma(3, _SEAT_PRIOR_SIGMA_ROT)
+  for t in cameras:
+    key = keys.seat_key(t.name)
+    rot = t.rear.setup.body_T_lens.rotation()
+    values.insert(key, rot)
+    graph.add(gtsam.PriorFactorRot3(key, rot, noise))
+
+
+def seat_evidence(
+  camera: PreparedCamera,
+  solved_anchor_ids: Iterable[int],
+  cross_obs: list[CrossSighting],
+) -> tuple[int, int]:
+  """``(anchor, cross)`` counts of the rear-lens sightings that measure its seat."""
+  anchors = sum(
+    1
+    for tag_id in solved_anchor_ids
+    for ch, _kf, _det in anchor_sightings(camera, tag_id)
+    if ch.lens == "rear"
+  )
+  cross = sum(1 for s in cross_obs if s.observer == camera.name)
+  return anchors, cross
+
+
 def _add_gripper_factors(
   cameras: list[PreparedCamera],
   keys: CameraKeys,
@@ -424,7 +466,7 @@ def _add_gripper_factors(
   graph: gtsam.NonlinearFactorGraph,
   values: gtsam.Values,
 ) -> tuple[int, int]:
-  """Add each camera's base-tag pose, its base and finger corner factors and
+  """Add each camera's base-tag pose, its seated base and finger corner factors and
   the finger symmetry priors; return the base and finger factor counts."""
   base_tag_prior_noise = gtsam.noiseModel.Diagonal.Sigmas(
     np.array([_BASE_TAG_PRIOR_SIGMA_ROT] * 3 + [_BASE_TAG_PRIOR_SIGMA_TRANS] * 3)
@@ -442,7 +484,6 @@ def _add_gripper_factors(
     bt_key = keys.base_tag_key(t.name)
     values.insert(bt_key, t.body_T_base_tag)
     graph.add(gtsam.PriorFactorPose3(bt_key, t.body_T_base_tag, base_tag_prior_noise))
-    # Base-tag corners reproject through body_T_base_tag into this camera's rear lens.
     for dets in t.rear.tags:
       det = next((d for d in dets if d.tag_id == t.tags.base), None)
       if det is None:
@@ -452,8 +493,8 @@ def _add_gripper_factors(
       for corner, pixel in zip(base_tag_corners, det.corners, strict=True):
         add_mei_tag_factor(
           graph,
-          make_mei_base_tag_factor_cpp,
-          (bt_key,),
+          make_mei_seated_base_tag_factor_cpp,
+          (bt_key, keys.seat_key(t.name)),
           pixel,
           base_tag_noise,
           t.rear.setup,
@@ -475,8 +516,8 @@ def _add_gripper_factors(
         for corner, pixel in zip(reproj.joint_t_corners, obs.pixels, strict=True):
           add_mei_tag_factor(
             graph,
-            make_mei_finger_factor_cpp,
-            (tkey, bt_key),
+            make_mei_seated_finger_factor_cpp,
+            (tkey, bt_key, keys.seat_key(t.name)),
             pixel,
             finger_noise,
             t.rear.setup,
@@ -508,7 +549,8 @@ def _add_cross_camera_factors(
   graph: gtsam.NonlinearFactorGraph,
   values: gtsam.Values,
 ) -> tuple[int, int]:
-  """Add cross-camera base and finger factors where the owner's variables exist."""
+  """Add each cross sighting's corner factors on the owner variables that
+  ``_add_gripper_factors`` inserted; return the base and finger factor counts."""
   base_tag_corners = tag_corners_local(args.gripper.tag_size)
   camera_by_slot = {t.name: t for t in cameras}
   base_count = finger_count = 0
@@ -516,13 +558,14 @@ def _add_cross_camera_factors(
     obs_key = keys.pose_key(sighting.observer, sighting.keyframe)
     owner_key = keys.pose_key(sighting.owner, sighting.keyframe)
     owner_bt_key = keys.base_tag_key(sighting.owner)
+    seat_key = keys.seat_key(sighting.observer)
     noise = corner_noise(sighting.corners, sighting.setup, _CROSS_REPROJ_SIGMA)
     if sighting.finger is None:
       for corner, pixel in zip(base_tag_corners, sighting.corners, strict=True):
         add_mei_tag_factor(
           graph,
-          make_mei_cross_tag_factor_cpp,
-          (obs_key, owner_key, owner_bt_key),
+          make_mei_seated_cross_tag_factor_cpp,
+          (obs_key, owner_key, owner_bt_key, seat_key),
           pixel,
           noise,
           sighting.setup,
@@ -538,8 +581,8 @@ def _add_cross_camera_factors(
       for corner, pixel in zip(reproj.joint_t_corners, sighting.corners, strict=True):
         add_mei_tag_factor(
           graph,
-          make_mei_cross_finger_factor_cpp,
-          (obs_key, owner_key, owner_bt_key, theta_key),
+          make_mei_seated_cross_finger_factor_cpp,
+          (obs_key, owner_key, owner_bt_key, theta_key, seat_key),
           pixel,
           noise,
           sighting.setup,
@@ -625,6 +668,7 @@ def assemble_joint_graph(
       front_landmark_key_fn=partial(keys.front_landmark_key, t.name),
       rear_landmark_key_fn=partial(keys.rear_landmark_key, t.name),
     )
+  _add_seat_variables(cameras, keys, graph, values)
   _add_anchor_factors(cameras, keys, args, world_T_anchor, graph, values)
   base_tags, fingers = _add_gripper_factors(cameras, keys, args, graph, values)
   cross_base, cross_finger = _add_cross_camera_factors(
@@ -636,6 +680,9 @@ def assemble_joint_graph(
     f"cross base {cross_base}, cross finger {cross_finger}; smoothness priors: "
     f"pose {poses_smoothed}, velocity {velocities_smoothed}"
   )
+  for t in cameras:
+    anchors, cross = seat_evidence(t, world_T_anchor, cross_obs)
+    print(f"[graph] {t.name} rear-seat evidence: {anchors} anchor, {cross} cross")
   return graph, values
 
 

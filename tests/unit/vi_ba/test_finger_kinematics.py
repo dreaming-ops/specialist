@@ -6,7 +6,7 @@ from dataclasses import astuple
 
 import gtsam
 import numpy as np
-from specialist.vi_ba._mei_factor_cpp import make_mei_finger_factor_cpp
+from specialist.vi_ba._mei_factor_cpp import make_mei_seated_finger_factor_cpp
 
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.finger_kinematics import build_finger_reproj
@@ -62,15 +62,18 @@ def test_seeds_theta_and_reprojects() -> None:
   # The synthetic tags use lens == body, so body_T_base_tag == I.
   noise = gtsam.noiseModel.Isotropic.Sigma(2, 1.0)
   btag_key = gtsam.symbol("G", 0)
+  seat_key = gtsam.symbol("E", 0)
   for kf, th in enumerate(thetas):
     vals = gtsam.Values()
     tkey = gtsam.symbol("a", kf)
     vals.insert(tkey, float(th))
     vals.insert(btag_key, gtsam.Pose3())
+    vals.insert(seat_key, lens.body_T_lens.rotation())
     for j in range(4):
-      f = make_mei_finger_factor_cpp(
+      f = make_mei_seated_finger_factor_cpp(
         tkey,
         btag_key,
+        seat_key,
         fr.observations[kf].pixels[j],
         noise,
         lens.body_T_lens,

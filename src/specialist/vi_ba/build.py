@@ -53,8 +53,8 @@ def _as_point3(v: Float64Array) -> gtsam.Point3:
 
 @dataclass(frozen=True)
 class LensSetup:
-  """Fixed per-lens inputs: body_T_lens, MEI intrinsics, and the radius
-  (px) past which a corner's noise model grows."""
+  """Fixed per-lens inputs: ``body_T_lens``, MEI intrinsics and the radius (px) past
+  which corner noise grows."""
 
   body_T_lens: gtsam.Pose3
   params: MeiParams
@@ -117,6 +117,7 @@ def add_mei_tag_factor(
   corner: Float64Array,
   obs_bearing: Float64Array,
   base_T_joint: gtsam.Pose3 | None = None,
+  **kwargs: int | None,
 ) -> None:
   """Push one native ``make`` factor on ``keys`` for a tag ``corner`` through ``lens``."""
   joint = () if base_T_joint is None else (base_T_joint,)
@@ -130,6 +131,7 @@ def add_mei_tag_factor(
       _as_point3(corner),
       np.array(astuple(lens.params)),
       _as_vec3(obs_bearing),
+      **kwargs,
     )
   )
 

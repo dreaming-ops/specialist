@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 
 import gtsam
@@ -12,12 +13,15 @@ from specialist_dataset.fiducials import tag_corners_in_frame
 from specialist.vi_ba.build import LensChannel, LensSetup, add_mei_tag_factor
 from specialist.vi_ba.compose import (
   CameraKeys,
+  _add_anchor_factors,
+  _add_corner_factors_for_anchor,
   _bfs_world_alignments,
   align_to_shared_world,
   anchor_sightings,
   anchored_keyframes,
   corner_noise,
   corner_sigma,
+  cross_sightings,
   sighting_max_radius,
 )
 from specialist.vi_ba.configs import (
@@ -26,6 +30,7 @@ from specialist.vi_ba.configs import (
   SolverCfg,
 )
 from specialist.vi_ba.features import mask_plane
+from specialist.vi_ba.finger_kinematics import FingerReproj
 from specialist.vi_ba.geometry import average_pose
 from specialist.vi_ba.imu import ImuSamples, make_preintegration_params
 from specialist.vi_ba.reference_solve import ReferenceSolve, _solve_joint_graph
@@ -40,7 +45,12 @@ from specialist.vi_ba.tag_detection import (
   tag_center_bearing,
 )
 from specialist.vi_ba.tag_discovery import GripperTags
-from tests.mei_fixtures import WIDE_CALIBRATED_RADIUS, narrow_mei_params
+from specialist.vi_ba.urdf_joints import FINGER_JOINTS
+from tests.mei_fixtures import (
+  WIDE_CALIBRATED_RADIUS,
+  narrow_mei_params,
+  synthetic_tag_detection,
+)
 
 
 def _pose(rx: float, ry: float, rz: float, x: float, y: float, z: float) -> gtsam.Pose3:
@@ -488,3 +498,114 @@ def test_corner_noise_whitens_by_the_sighting_radius() -> None:
   )
   assert expected > 0.9
   assert sigma_of(2) == pytest.approx(expected, rel=1e-6)
+
+
+def _anchor_corner_graph(
+  camera: PreparedCamera, tag_id: int, tag_size: float, base_sigma: float
+) -> gtsam.NonlinearFactorGraph:
+  graph = gtsam.NonlinearFactorGraph()
+  _add_corner_factors_for_anchor(
+    [camera], CameraKeys([camera.name]), base_sigma, tag_id, tag_size, graph
+  )
+  return graph
+
+
+def test_anchor_corner_factors_reach_the_graph_priced_by_radius() -> None:
+  """Sightings inside and well past the calibrated radius whiten by their own sigmas."""
+  params = narrow_mei_params()
+  calibrated_radius = 40.0
+  world_T_tag = _pose(0.0, 0.0, 0.0, 0.0, 0.0, 1.0)
+  central = _project_tag(gtsam.Pose3(), params, world_T_tag, 1, 0.1)
+  oblique_body = _pose(0.0, np.deg2rad(35.0), 0.0, 0.0, 0.0, 0.0)
+  oblique = _project_tag(oblique_body, params, world_T_tag, 1, 0.1)
+  assert sighting_max_radius(central.corners, params) < calibrated_radius
+  assert sighting_max_radius(oblique.corners, params) > calibrated_radius
+
+  camera = _dummy_camera(
+    "a",
+    [gtsam.Pose3(), oblique_body],
+    front_tags_per_kf=[[central], [oblique]],
+    calibrated_radius=calibrated_radius,
+  )
+  graph = _anchor_corner_graph(camera, 1, 0.1, 1.05)
+  keys = CameraKeys(["a"])
+  values = gtsam.Values()
+  values.insert(keys.anchor_key(1), world_T_tag)
+  values.insert(keys.pose_key("a", 0), gtsam.Pose3().retract(np.full(6, 1e-4)))
+  values.insert(keys.pose_key("a", 1), oblique_body.retract(np.full(6, 1e-4)))
+
+  # The cost ratio of the two sightings is the inverse square of their sigma ratio.
+  costs = [graph.at(i).error(values) for i in range(graph.size())]
+  assert len(costs) == 8
+  expected = [
+    corner_sigma(sighting_max_radius(det.corners, params), calibrated_radius, 1.05)
+    for det in (central, oblique)
+  ]
+  assert expected[1] > 4.0 * expected[0]
+  assert sum(costs[4:]) / sum(costs[:4]) < (expected[0] / expected[1]) ** 2 * 10.0
+
+
+def test_a_rear_anchor_sighting_reprojects_through_the_solved_seat() -> None:
+  """A rear factor's third key is the seat; a front one uses the baked body_T_lens."""
+  camera = _dummy_camera(
+    "a",
+    [gtsam.Pose3()],
+    front_tags_per_kf=[[_tag(1, 60.0, 120.0)]],
+    rear_tags_per_kf=[[_tag(1, 180.0, 120.0)]],
+  )
+  graph = _anchor_corner_graph(camera, 1, 0.1, 1.05)
+  keys = CameraKeys(["a"])
+  seat_key = keys.seat_key("a")
+  by_arity: dict[int, list[tuple[int, ...]]] = {}
+  for i in range(graph.size()):
+    factor_keys = tuple(graph.at(i).keys())
+    by_arity.setdefault(len(factor_keys), []).append(factor_keys)
+
+  assert sorted(by_arity) == [2, 3]
+  assert len(by_arity[2]) == 4
+  assert len(by_arity[3]) == 4
+  assert all(seat_key not in fk for fk in by_arity[2])
+  assert all(fk[2] == seat_key for fk in by_arity[3])
+
+
+def test_an_anchor_no_front_lens_resolved_is_reported(
+  capsys: pytest.CaptureFixture[str],
+) -> None:
+  """A rear-only tag carries no factors and reports the sightings it drops."""
+  camera = _dummy_camera(
+    "a",
+    [gtsam.Pose3()],
+    anchor_locals={1: gtsam.Pose3()},
+    rear_tags_per_kf=[[_tag(5, 180.0, 120.0)]],
+  )
+  args = Args(
+    base=Path("session_base.rrd"),
+    anchor=AnchorCfg(tag_ids=(1, 5)),
+    solver=SolverCfg(gpu="off"),
+  )
+  graph = gtsam.NonlinearFactorGraph()
+  values = gtsam.Values()
+  _add_anchor_factors(
+    [camera], CameraKeys(["a"]), args, {1: gtsam.Pose3()}, graph, values
+  )
+  out = capsys.readouterr().out
+  assert "anchor 5 has no world pose" in out
+  assert "1 rear sightings unused" in out
+
+
+def test_cross_sightings_keeps_finger_tag_zero() -> None:
+  """Another camera's rear sighting of finger tag id 0 pairs with its owner."""
+  reproj = FingerReproj(
+    base_T_joint=gtsam.Pose3(), joint_t_corners=np.zeros((4, 3)), observations={}
+  )
+  owner = replace(
+    _dummy_camera("a", [gtsam.Pose3()]),
+    tags=GripperTags(2000, (0, None)),
+    finger_reproj={FINGER_JOINTS[0]: reproj},
+  )
+  lens_T_tag = gtsam.Pose3(gtsam.Rot3.Rx(2.9), gtsam.Point3(0.0, 0.0, 0.3))
+  sighting = synthetic_tag_detection(lens_T_tag, 0, 0.05, narrow_mei_params())
+  assert sighting is not None
+  observer = _dummy_camera("b", [gtsam.Pose3()], rear_tags_per_kf=[[sighting]])
+  sightings = cross_sightings([owner, observer], 0.05)
+  assert [(s.owner, s.observer, s.finger) for s in sightings] == [("a", "b", 0)]

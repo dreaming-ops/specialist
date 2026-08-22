@@ -151,3 +151,9 @@ def validate(args: Args) -> None:
     raise ValueError(
       f"--anchor.tag-ids must be distinct, got {list(args.anchor.tag_ids)}"
     )
+  if args.frontend.rear_landmarks:
+    raise ValueError(
+      "--frontend.rear-landmarks reprojects rear landmarks through the factory "
+      "rear-lens rotation while the rear tag factors solve the seat; one lens "
+      "cannot carry two rotations"
+    )

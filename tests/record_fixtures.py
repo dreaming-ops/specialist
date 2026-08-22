@@ -120,6 +120,9 @@ def camera_estimate(slot: str, *, offset: float = 0.0) -> CameraEstimate:
     gyro_biases=[np.array([0.001, 0.002, 0.003])] * n,
     accel_biases=[np.array([0.01, 0.02, 0.03])] * n,
     body_T_base_tag=BASE_TAG,
+    body_T_rear_lens=gtsam.Pose3(
+      gtsam.Rot3.RzRyRx(0.0, 0.0, np.pi), gtsam.Point3(0.0, -0.026, 0.0)
+    ),
     base_tag_id=2000,
     joint_tags={"left_finger": 2001, "right_finger": 2002},
     anchor_obs_lines=[np.zeros((2, 2, 3)) for _ in range(n)],
@@ -198,6 +201,9 @@ def write_run(
         front_rmse=0.4,
         rear_rmse=0.6,
         base_tag_id=c.base_tag_id,
+        seat_rotation=(0.0, 0.0, 0.05),
+        seat_anchor_obs=12,
+        seat_cross_obs=7,
       )
       for c in cameras
     ]

@@ -28,6 +28,7 @@ def _data() -> CameraEstimate:
     body_poses=poses,
     keyframe_times=times,
     body_T_base_tag=gtsam.Pose3(),
+    body_T_rear_lens=gtsam.Pose3(),
     base_tag_id=2000,
     keyframe_frames=np.arange(len(times), dtype=np.int64) * 3,
     highrate_times=hr,

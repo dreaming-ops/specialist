@@ -31,6 +31,7 @@ _ESTIMATE = (
   "/world/anchor/0",
   "/camera/cam00",
   "/camera/cam00/base_tag",
+  "/camera/cam00/rear_seat",
   "/camera/cam00/state/pose",
   "/camera/cam00/state/lin_vel",
   "/camera/cam00/lin_vel",
@@ -146,7 +147,7 @@ def test_each_layer_carries_exactly_what_it_owns(
     r"^/(world(/anchor/\d+)?|estimate|__properties(/\w+)?"
     r"|camera/cam\d\d(/(front|rear)(/video|/(overlay|detection)(/[\w.]+)*)?"
     r"|/(state|imu|fit|landmark|factor|gripper)(/[\w./]+)?"
-    r"|/(marker|base_tag|lin_vel|trajectory))?)$"
+    r"|/(marker|base_tag|lin_vel|trajectory|rear_seat))?)$"
   )
   stray = sorted({e for e, _ in estimate | viz if not known.match(e)})
   assert not stray, f"entities routed by nobody: {stray}"
@@ -179,7 +180,9 @@ def test_a_static_component_never_replaces_a_different_temporal_one(
 
 
 # Entities measured from the camera ride its pose; anything else says where it is.
-_RIDES_THE_BODY = frozenset({"", "/front", "/rear", "/imu", "/base_tag", "/marker"})
+_RIDES_THE_BODY = frozenset(
+  {"", "/front", "/rear", "/rear_seat", "/imu", "/base_tag", "/marker"}
+)
 
 # What a CoordinateFrame can place; on an entity holding none of these it is inert.
 _DRAWABLE = ("Points3D", "LineStrips3D", "Boxes3D", "Asset3D", "TransformAxes3D")

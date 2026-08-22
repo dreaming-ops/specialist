@@ -386,6 +386,7 @@ class CameraEstimate:
   # The base tag's pose in the body frame, a bundle-adjustment variable.
   body_T_base_tag: gtsam.Pose3
   base_tag_id: int
+  body_T_rear_lens: gtsam.Pose3
   # The series propagated between the keyframes, at the IMU's own sample times.
   highrate_times: Float64Array
   highrate_positions: Float64Array
@@ -523,6 +524,11 @@ def _camera_statics(
     schema.base_tag(data.slot),
     _pose_columns(data.body_T_base_tag),
     tag_id=data.base_tag_id,
+  )
+  _static(
+    layers.estimate,
+    schema.lens_seat(data.slot, "rear"),
+    _pose_columns(data.body_T_rear_lens),
   )
 
 

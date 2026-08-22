@@ -22,7 +22,18 @@ def estimate_rrd(tmp_path_factory: pytest.TempPathFactory) -> Path:
     "sess_x",
     cameras,
     per_camera=[
-      CameraSummary(c.slot, 4, 3, 0.4, 0.6, base_tag_id=c.base_tag_id) for c in cameras
+      CameraSummary(
+        c.slot,
+        4,
+        3,
+        0.4,
+        0.6,
+        c.base_tag_id,
+        seat_rotation=(0.0, 0.0, 0.05),
+        seat_anchor_obs=12,
+        seat_cross_obs=7,
+      )
+      for c in cameras
     ],
     urdf_path=urdf_file(tmp_path_factory.mktemp("urdf")),
     frame_period=1.0 / 30.0,
@@ -77,8 +88,28 @@ def test_worst_rmse_is_the_worst_lens_that_was_measured(tmp_path: Path) -> None:
     cameras,
     per_camera=[
       # The NaN camera comes first.
-      CameraSummary(cameras[0].slot, 4, 3, float("nan"), 0.9, base_tag_id=2000),
-      CameraSummary(cameras[1].slot, 4, 3, 0.4, float("nan"), base_tag_id=2003),
+      CameraSummary(
+        cameras[0].slot,
+        4,
+        3,
+        float("nan"),
+        0.9,
+        2000,
+        seat_rotation=(0.0, 0.0, 0.05),
+        seat_anchor_obs=12,
+        seat_cross_obs=7,
+      ),
+      CameraSummary(
+        cameras[1].slot,
+        4,
+        3,
+        0.4,
+        float("nan"),
+        2003,
+        seat_rotation=(0.0, 0.0, 0.05),
+        seat_anchor_obs=12,
+        seat_cross_obs=7,
+      ),
     ],
     urdf_path=urdf_file(tmp_path),
     frame_period=1.0 / 30.0,
@@ -93,7 +124,17 @@ def test_worst_rmse_is_nan_when_no_lens_was_measured(tmp_path: Path) -> None:
     "sess_unmeasured",
     cameras,
     per_camera=[
-      CameraSummary(cameras[0].slot, 4, 3, float("nan"), float("nan"), base_tag_id=2000)
+      CameraSummary(
+        cameras[0].slot,
+        4,
+        3,
+        float("nan"),
+        float("nan"),
+        2000,
+        seat_rotation=(0.0, 0.0, 0.05),
+        seat_anchor_obs=12,
+        seat_cross_obs=7,
+      )
     ],
     urdf_path=urdf_file(tmp_path),
     frame_period=1.0 / 30.0,

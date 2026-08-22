@@ -11,7 +11,7 @@ from specialist_camera import mei_project
 from specialist_dataset.fiducials import tag_corners_in_frame
 
 from specialist.vi_ba.build import LensSetup
-from specialist.vi_ba.geometry import average_pose, rotate_about_z
+from specialist.vi_ba.geometry import average_pose, consensus_pose, rotate_about_z
 from specialist.vi_ba.tag_detection import (
   TagDetection,
   lens_T_tag_per_kf,
@@ -157,9 +157,11 @@ def recover_gripper_tags(
       f"across {n_keyframes} rear keyframes — its base-tag, finger, and "
       f"cross-camera factors would all be silently disabled"
     )
-  body_T_base_tag = average_pose(
-    [lens.body_T_lens.compose(p) for p in base_tag_obs.values()]
-  )
+  body_T_base_tags = [lens.body_T_lens.compose(p) for p in base_tag_obs.values()]
+  body_T_base_tag = consensus_pose(body_T_base_tags)
+  if body_T_base_tag is None:
+    print("  [warn] [gripper] body_T_base_tag sightings split; seeding on the median")
+    body_T_base_tag = average_pose(body_T_base_tags)
 
   finger_reproj: dict[str, FingerReproj] = {}
   frame_angles: dict[str, tuple[Float64Array, Float64Array]] = {}

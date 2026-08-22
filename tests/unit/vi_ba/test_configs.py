@@ -41,3 +41,11 @@ def test_rejects_a_negative_anchor_tag_id() -> None:
 def test_rejects_duplicate_anchor_tag_ids() -> None:
   with pytest.raises(ValueError, match="must be distinct"):
     validate(_args(anchor=AnchorCfg(tag_ids=(1, 1))))
+
+
+def test_rejects_rear_landmarks() -> None:
+  """Rear landmarks assume the factory seat that the rear tag factors solve for."""
+  from specialist.vi_ba.configs import FrontendCfg
+
+  with pytest.raises(ValueError, match="rear-landmarks"):
+    validate(_args(frontend=FrontendCfg(rear_landmarks=True)))
