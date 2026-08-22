@@ -9,6 +9,7 @@ from functools import partial
 import gtsam
 import numpy as np
 import numpy.typing as npt
+from specialist_camera import MeiParams
 from specialist_dataset.fiducials import tag_corners_local
 
 from specialist.vi_ba._mei_factor_cpp import (
@@ -32,7 +33,6 @@ from specialist.vi_ba.tag_detection import (
   TagDetection,
   estimate_lens_T_tag,
   tag_center_bearing,
-  tag_half_angle,
 )
 from specialist.vi_ba.urdf_joints import FINGER_JOINTS
 
@@ -71,6 +71,8 @@ _BASE_TAG_PRIOR_SIGMA_ROT = 0.3
 _BASE_TAG_PRIOR_SIGMA_TRANS = 0.05
 # Cross-camera corner σ (px).
 _CROSS_REPROJ_SIGMA = 3.0
+# Corner σ growth (px) per unit fractional overshoot of the calibrated radius.
+_SIGMA_PER_RADIUS = 40.0
 # Gauge prior σ on the reference anchor's position and yaw.
 _GAUGE_PRIOR_SIGMA = 1e-4
 # Loose σ on the reference anchor's tilt, which gravity makes observable.
@@ -288,6 +290,31 @@ def _finger_symmetry_factor(
   return gtsam.LinearContainerFactor(jacobian, lin_point)
 
 
+def corner_sigma(
+  max_radius: float, calibrated_radius: float, base_sigma: float
+) -> float:
+  """Corner σ (px): ``base_sigma`` plus overshoot growth, added in quadrature."""
+  over = max(0.0, max_radius / calibrated_radius - 1.0)
+  return float(np.hypot(base_sigma, _SIGMA_PER_RADIUS * over))
+
+
+def sighting_max_radius(corners: Float64Array, params: MeiParams) -> float:
+  """Pixel distance of the furthest corner from the principal point."""
+  pixels = np.asarray(corners, dtype=np.float64)
+  return float(np.hypot(pixels[:, 0] - params.cx, pixels[:, 1] - params.cy).max())
+
+
+def corner_noise(
+  corners: Float64Array, setup: LensSetup, base_sigma: float
+) -> gtsam.noiseModel.Base:
+  """Robust noise for one sighting's corner factors, priced by its corner radius."""
+  return huber_pixel_noise(
+    corner_sigma(
+      sighting_max_radius(corners, setup.params), setup.calibrated_radius, base_sigma
+    )
+  )
+
+
 def anchor_gauge_prior(
   anchor_key: int, world_T_anchor: gtsam.Pose3
 ) -> gtsam.PriorFactorPose3:
@@ -307,16 +334,14 @@ def anchor_gauge_prior(
 def anchor_sightings(
   camera: PreparedCamera,
   anchor_tag_id: int,
-  max_half_angle: float,
 ) -> list[tuple[LensChannel, int, TagDetection]]:
-  """Per-keyframe anchor-tag detections in both lenses, within ``max_half_angle``."""
+  """Per-keyframe anchor-tag detections in both lenses."""
   return [
     (ch, kf, det)
     for ch in camera.lenses
     for kf, dets in enumerate(ch.tags)
     for det in dets
     if det.tag_id == anchor_tag_id
-    and tag_half_angle(det, ch.setup.params) <= max_half_angle
   ]
 
 
@@ -328,28 +353,28 @@ def anchored_keyframes(camera: PreparedCamera) -> set[int]:
 def _add_corner_factors_for_anchor(
   cameras: list[PreparedCamera],
   keys: CameraKeys,
-  corner_noise: gtsam.noiseModel.Base,
+  base_sigma: float,
   tag_id: int,
   tag_size: float,
-  max_half_angle: float,
   graph: gtsam.NonlinearFactorGraph,
 ) -> int:
-  """Add corner factors per sighting within ``max_half_angle``; return the count."""
+  """Add one anchor's corner factors from every sighting; return the sighting count."""
   corners = tag_corners_local(tag_size)
   anchor_key = keys.anchor_key(tag_id)
   n_sightings = 0
   for t in cameras:
-    for ch, kf, det in anchor_sightings(t, tag_id, max_half_angle):
+    for ch, kf, det in anchor_sightings(t, tag_id):
       n_sightings += 1
       pose_key = keys.pose_key(t.name, kf)
       bearing = tag_center_bearing(det, ch.setup.params)
+      sighting_noise = corner_noise(det.corners, ch.setup, base_sigma)
       for corner, pixel in zip(corners, det.corners, strict=True):
         add_mei_tag_factor(
           graph,
           make_mei_anchor_tag_factor_cpp,
           (pose_key, anchor_key),
           pixel,
-          corner_noise,
+          sighting_noise,
           ch.setup,
           corner,
           bearing,
@@ -366,19 +391,13 @@ def _add_anchor_factors(
   values: gtsam.Values,
 ) -> None:
   """Add each anchor's pose and corner factors and the gauge prior on the reference."""
-  corner_noise = huber_pixel_noise(args.anchor.corner_reproj_sigma)
+  base_sigma = args.anchor.corner_reproj_sigma
   reference = args.anchor.tag_ids[0]
   for tag_id, world_T_tag in world_T_anchor.items():
     key = keys.anchor_key(tag_id)
     values.insert(key, world_T_tag)
     n = _add_corner_factors_for_anchor(
-      cameras,
-      keys,
-      corner_noise,
-      tag_id,
-      args.anchor.tag_size,
-      args.anchor.max_half_angle,
-      graph,
+      cameras, keys, base_sigma, tag_id, args.anchor.tag_size, graph
     )
     print(f"[graph] anchor {tag_id} corner reprojection: {n} sightings")
   for tag_id in args.anchor.tag_ids:
@@ -386,8 +405,8 @@ def _add_anchor_factors(
       continue
     rear = sum(
       1
-      for t in cameras
-      for ch, _kf, _det in anchor_sightings(t, tag_id, args.anchor.max_half_angle)
+      for camera in cameras
+      for ch, _kf, _det in anchor_sightings(camera, tag_id)
       if ch.lens == "rear"
     )
     print(
@@ -407,8 +426,6 @@ def _add_gripper_factors(
 ) -> tuple[int, int]:
   """Add each camera's base-tag pose, its base and finger corner factors and
   the finger symmetry priors; return the base and finger factor counts."""
-  finger_noise = huber_pixel_noise(_FINGER_REPROJ_SIGMA)
-  base_tag_noise = huber_pixel_noise(_BASE_TAG_REPROJ_SIGMA)
   base_tag_prior_noise = gtsam.noiseModel.Diagonal.Sigmas(
     np.array([_BASE_TAG_PRIOR_SIGMA_ROT] * 3 + [_BASE_TAG_PRIOR_SIGMA_TRANS] * 3)
   )
@@ -431,6 +448,7 @@ def _add_gripper_factors(
       if det is None:
         continue
       bearing = tag_center_bearing(det, t.rear.setup.params)
+      base_tag_noise = corner_noise(det.corners, t.rear.setup, _BASE_TAG_REPROJ_SIGMA)
       for corner, pixel in zip(base_tag_corners, det.corners, strict=True):
         add_mei_tag_factor(
           graph,
@@ -453,6 +471,7 @@ def _add_gripper_factors(
           continue
         tkey = keys.theta_key(t.name, finger_idx, kf)
         values.insert(tkey, float(obs.theta_seed))
+        finger_noise = corner_noise(obs.pixels, t.rear.setup, _FINGER_REPROJ_SIGMA)
         for corner, pixel in zip(reproj.joint_t_corners, obs.pixels, strict=True):
           add_mei_tag_factor(
             graph,
@@ -490,7 +509,6 @@ def _add_cross_camera_factors(
   values: gtsam.Values,
 ) -> tuple[int, int]:
   """Add cross-camera base and finger factors where the owner's variables exist."""
-  noise = huber_pixel_noise(_CROSS_REPROJ_SIGMA)
   base_tag_corners = tag_corners_local(args.gripper.tag_size)
   camera_by_slot = {t.name: t for t in cameras}
   base_count = finger_count = 0
@@ -498,6 +516,7 @@ def _add_cross_camera_factors(
     obs_key = keys.pose_key(sighting.observer, sighting.keyframe)
     owner_key = keys.pose_key(sighting.owner, sighting.keyframe)
     owner_bt_key = keys.base_tag_key(sighting.owner)
+    noise = corner_noise(sighting.corners, sighting.setup, _CROSS_REPROJ_SIGMA)
     if sighting.finger is None:
       for corner, pixel in zip(base_tag_corners, sighting.corners, strict=True):
         add_mei_tag_factor(

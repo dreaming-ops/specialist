@@ -80,10 +80,8 @@ class AnchorCfg:
 
   tag_size: float = 0.1
 
-  # The anchor's four metric corners reproject into the bundle and pin absolute scale.
-  corner_reproj_sigma: float = 1.5
-  # Drop anchor sightings past this bearing half-angle (rad).
-  max_half_angle: float = float(np.deg2rad(75.0))
+  # On-axis corner-reprojection noise floor (px), widened with corner radius.
+  corner_reproj_sigma: float = 1.05
 
 
 @dataclass

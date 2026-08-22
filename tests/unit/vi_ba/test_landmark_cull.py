@@ -11,13 +11,17 @@ from specialist_camera import mei_project
 
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.landmark_cull import cull_outlier_landmarks
-from tests.mei_fixtures import pinhole_mei_params
+from tests.mei_fixtures import WIDE_CALIBRATED_RADIUS, pinhole_mei_params
 
 _Tracks = dict[int, dict[int, np.ndarray]]
 
 
 def _lens() -> LensSetup:
-  return LensSetup(body_T_lens=gtsam.Pose3(), params=pinhole_mei_params())
+  return LensSetup(
+    body_T_lens=gtsam.Pose3(),
+    params=pinhole_mei_params(),
+    calibrated_radius=WIDE_CALIBRATED_RADIUS,
+  )
 
 
 def _project(lens: LensSetup, pose: gtsam.Pose3, point) -> np.ndarray:

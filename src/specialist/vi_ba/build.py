@@ -53,10 +53,12 @@ def _as_point3(v: Float64Array) -> gtsam.Point3:
 
 @dataclass(frozen=True)
 class LensSetup:
-  """Fixed per-lens inputs: body_T_lens + MEI intrinsics."""
+  """Fixed per-lens inputs: body_T_lens, MEI intrinsics, and the radius
+  (px) past which a corner's noise model grows."""
 
   body_T_lens: gtsam.Pose3
   params: MeiParams
+  calibrated_radius: float
 
 
 @dataclass

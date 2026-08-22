@@ -18,6 +18,7 @@ from specialist.vi_ba.init import (
 )
 from specialist.vi_ba.optimize import optimize_graph
 from tests.mei_fixtures import (
+  WIDE_CALIBRATED_RADIUS,
   front_landmark_key,
   pinhole_mei_params,
   pinned_visual_graph,
@@ -105,7 +106,9 @@ def test_pipeline_recovers_ground_truth_from_two_view_init() -> None:
 
   assert len(points_init) >= int(0.9 * n_lm)
 
-  lens = LensSetup(body_T_lens=body_T_lens, params=params)
+  lens = LensSetup(
+    body_T_lens=body_T_lens, params=params, calibrated_radius=WIDE_CALIBRATED_RADIUS
+  )
   graph, values = pinned_visual_graph(
     body_poses_init, lens, {tid: tracks[tid] for tid in points_init}, points_init
   )

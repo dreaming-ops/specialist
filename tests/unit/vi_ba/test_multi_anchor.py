@@ -5,15 +5,20 @@ from pathlib import Path
 import gtsam
 import numpy as np
 import pytest
+from specialist.vi_ba._mei_factor_cpp import make_mei_anchor_tag_factor_cpp
 from specialist_camera import MeiParams, mei_project
 from specialist_dataset.fiducials import tag_corners_in_frame
 
-from specialist.vi_ba.build import LensChannel, LensSetup
+from specialist.vi_ba.build import LensChannel, LensSetup, add_mei_tag_factor
 from specialist.vi_ba.compose import (
   CameraKeys,
   _bfs_world_alignments,
   align_to_shared_world,
+  anchor_sightings,
   anchored_keyframes,
+  corner_noise,
+  corner_sigma,
+  sighting_max_radius,
 )
 from specialist.vi_ba.configs import (
   AnchorCfg,
@@ -32,9 +37,10 @@ from specialist.vi_ba.symbols import LANDMARK_CHAR
 from specialist.vi_ba.tag_detection import (
   TagDetection,
   non_anchor_tag_masks,
+  tag_center_bearing,
 )
 from specialist.vi_ba.tag_discovery import GripperTags
-from tests.mei_fixtures import narrow_mei_params
+from tests.mei_fixtures import WIDE_CALIBRATED_RADIUS, narrow_mei_params
 
 
 def _pose(rx: float, ry: float, rz: float, x: float, y: float, z: float) -> gtsam.Pose3:
@@ -125,10 +131,16 @@ def _dummy_camera(
   biases: list[gtsam.imuBias.ConstantBias] | None = None,
   preintegrated: list[gtsam.PreintegratedCombinedMeasurements] | None = None,
   front_tags_per_kf: list[list[TagDetection]] | None = None,
+  rear_tags_per_kf: list[list[TagDetection]] | None = None,
   velocities: list[np.ndarray] | None = None,
+  calibrated_radius: float = WIDE_CALIBRATED_RADIUS,
 ) -> PreparedCamera:
   n = len(body_poses)
-  setup = LensSetup(body_T_lens=gtsam.Pose3(), params=narrow_mei_params())
+  setup = LensSetup(
+    body_T_lens=gtsam.Pose3(),
+    params=narrow_mei_params(),
+    calibrated_radius=calibrated_radius,
+  )
   return PreparedCamera(
     name=name,
     # Every capture carries one; these tests never propagate it.
@@ -147,7 +159,9 @@ def _dummy_camera(
     front=LensChannel(
       lens="front", setup=setup, tags=front_tags_per_kf or [[] for _ in range(n)]
     ),
-    rear=LensChannel(lens="rear", setup=setup, tags=[[] for _ in range(n)]),
+    rear=LensChannel(
+      lens="rear", setup=setup, tags=rear_tags_per_kf or [[] for _ in range(n)]
+    ),
     anchor_obs_by_tag=anchor_obs or {},
     anchor_locals_by_tag=anchor_locals or {},
     body_T_base_tag=gtsam.Pose3(),
@@ -399,3 +413,78 @@ def test_anchored_keyframes_union_over_all_anchors() -> None:
     anchor_obs={1: {0: gtsam.Pose3(), 1: gtsam.Pose3()}, 5: {2: gtsam.Pose3()}},
   )
   assert anchored_keyframes(camera) == {0, 1, 2}
+
+
+def test_corner_sigma_grows_past_the_calibrated_radius() -> None:
+  """Inside the calibrated radius a corner carries the sigma floor."""
+  assert corner_sigma(0.0, 1000.0, 1.05) == pytest.approx(1.05)
+  assert corner_sigma(1000.0, 1000.0, 1.05) == pytest.approx(1.05)
+  assert corner_sigma(1100.0, 1000.0, 1.05) == pytest.approx(4.1, rel=0.05)
+  assert corner_sigma(1200.0, 1000.0, 1.05) == pytest.approx(8.1, rel=0.05)
+
+
+def test_anchor_sightings_cover_both_lenses() -> None:
+  """Every detection of the id comes back, from both lenses."""
+  camera = _dummy_camera(
+    "a", [gtsam.Pose3()], front_tags_per_kf=[[_tag(1, 60.0, 120.0)]]
+  )
+  camera.rear.tags = [[_tag(1, 60.0, 120.0), _tag(1, 180.0, 120.0)]]
+  kept = anchor_sightings(camera, 1)
+  assert len(kept) == 3
+  assert {ch.lens for ch, _kf, _det in kept} == {"front", "rear"}
+
+
+def test_corner_noise_whitens_by_the_sighting_radius() -> None:
+  """A sighting past the calibrated radius carries a wider sigma than a central one."""
+  frontal_det = _project_tag(
+    gtsam.Pose3(), narrow_mei_params(), _pose(0.0, 0.0, 0.0, 0.0, 0.0, 1.0), 1, 0.1
+  )
+  # Calibrated at the frontal sighting, so anything further out is past the radius.
+  params = narrow_mei_params()
+  lens = LensSetup(
+    body_T_lens=gtsam.Pose3(),
+    params=params,
+    calibrated_radius=sighting_max_radius(frontal_det.corners, params),
+  )
+  angle = np.deg2rad(80.0)
+  scene = {
+    1: _pose(0.0, 0.0, 0.0, 0.0, 0.0, 1.0),
+    2: _pose(0.0, 0.0, 0.0, float(np.sin(angle)), 0.0, float(np.cos(angle))),
+  }
+  keys = CameraKeys(["a"])
+  key = keys.pose_key("a", 0)
+  values = gtsam.Values()
+  values.insert(key, gtsam.Pose3().retract(np.full(6, 1e-3)))
+
+  def sigma_of(tag_id: int) -> float:
+    """The sigma, from a small offset's cost ``0.5 * (residual / sigma)**2``."""
+    world_T_tag = scene[tag_id]
+    det = _project_tag(gtsam.Pose3(), params, world_T_tag, tag_id, 0.1)
+    corner_world = tag_corners_in_frame(world_T_tag.matrix(), 0.1)[0]
+    corner_local = np.asarray(world_T_tag.transformTo(gtsam.Point3(*corner_world)))
+    anchor_key = keys.anchor_key(tag_id)
+    values.insert(anchor_key, world_T_tag)
+    graph = gtsam.NonlinearFactorGraph()
+    add_mei_tag_factor(
+      graph,
+      make_mei_anchor_tag_factor_cpp,
+      (key, anchor_key),
+      det.corners[0],
+      corner_noise(det.corners, lens, 0.9),
+      lens,
+      corner_local,
+      tag_center_bearing(det, params),
+    )
+    predicted = mei_project(
+      np.asarray(values.atPose3(key).transformTo(corner_world))[None, :], params
+    )[0]
+    residual = float(np.linalg.norm(predicted - det.corners[0]))
+    return residual / float(np.sqrt(2.0 * graph.at(0).error(values)))
+
+  assert sigma_of(1) == pytest.approx(0.9, rel=1e-6)
+  oblique = _project_tag(gtsam.Pose3(), params, scene[2], 2, 0.1)
+  expected = corner_sigma(
+    sighting_max_radius(oblique.corners, params), lens.calibrated_radius, 0.9
+  )
+  assert expected > 0.9
+  assert sigma_of(2) == pytest.approx(expected, rel=1e-6)

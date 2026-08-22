@@ -15,6 +15,7 @@ from specialist.vi_ba.imu import (
 )
 from specialist.vi_ba.optimize import optimize_graph
 from tests.mei_fixtures import (
+  WIDE_CALIBRATED_RADIUS,
   front_landmark_key,
   pinhole_mei_params,
   pinned_visual_graph,
@@ -24,7 +25,11 @@ from tests.mei_fixtures import (
 )
 
 _GRAVITY = np.array([0.0, 0.0, -9.81])
-_LENS = LensSetup(body_T_lens=gtsam.Pose3(), params=pinhole_mei_params())
+_LENS = LensSetup(
+  body_T_lens=gtsam.Pose3(),
+  params=pinhole_mei_params(),
+  calibrated_radius=WIDE_CALIBRATED_RADIUS,
+)
 
 
 def _imu_only_graph(
@@ -68,7 +73,9 @@ def test_build_graph_dual_lens_uses_disjoint_landmark_keys() -> None:
     }
   }
 
-  lens = LensSetup(body_T_lens=body_T_lens, params=params)
+  lens = LensSetup(
+    body_T_lens=body_T_lens, params=params, calibrated_radius=WIDE_CALIBRATED_RADIUS
+  )
   graph, values = pinned_visual_graph(
     poses, lens, front_tracks, {0: xyz_front}, rear_tracks, {0: xyz_rear}
   )

@@ -37,6 +37,10 @@ def synthetic_tag_detection(
   return TagDetection(tag_id=tag_id, center=px.mean(0), corners=px)
 
 
+# Past every synthetic projection, so each sighting carries the corner-noise floor.
+WIDE_CALIBRATED_RADIUS = 1000.0
+
+
 def _undistorted(f: float, cx: float, cy: float, xi: float) -> MeiParams:
   return MeiParams(
     fx=f, fy=f, cx=cx, cy=cy, k1=0.0, k2=0.0, k3=0.0, p1=0.0, p2=0.0, xi=xi

@@ -169,6 +169,11 @@ def test_decoded_shape_and_lens_setups(base_rrd: Path) -> None:
   assert front.params.k1 == pytest.approx(expected.front.k1)
   half_raw = expected.rear.frame_width / 2.0
   assert rear.params.cx == pytest.approx((expected.rear.cx - half_raw) * scale)
+  # The calibrated radius is a fraction of the decoded per-lens width.
+  assert front.calibrated_radius == pytest.approx(64 * 1000.0 / 2880.0)
+  assert rear.calibrated_radius == front.calibrated_radius
+  wide, _ = session.lens_setups("cam00", 128)
+  assert wide.calibrated_radius == pytest.approx(2 * front.calibrated_radius)
   # Transform3D stores float32, so the round-trip is exact to ~1e-7 only.
   np.testing.assert_allclose(
     front.body_T_lens.matrix(), expected.body_T_front_lens.matrix(), atol=1e-6

@@ -208,15 +208,6 @@ class _LensPrep:
     )
 
 
-def _detect_anchor_obs(
-  tag_id: int,
-  tag_size: float,
-  front: _LensPrep,
-) -> dict[int, gtsam.Pose3]:
-  """``{kf: lens_T_tag}`` for one anchor id from the front lens alone, ungated."""
-  return lens_T_tag_per_kf(front.tags, tag_id, tag_size, front.setup.params)
-
-
 def _choose_prep_anchor(
   tag_ids: tuple[int, ...],
   obs_by_tag: dict[int, dict[int, gtsam.Pose3]],
@@ -552,8 +543,11 @@ def prepare_camera(args: CameraArgs, tags: GripperTags) -> PreparedCamera:
       list(args.frontend.mask_rear_rects) if args.frontend.rear_landmarks else []
     ),
   )
+  # Front lens only, since prep has not solved the rear seat; the corner factors gate.
   obs_by_tag = {
-    tag_id: _detect_anchor_obs(tag_id, args.anchor.tag_size, front)
+    tag_id: lens_T_tag_per_kf(
+      front.tags, tag_id, args.anchor.tag_size, front.setup.params
+    )
     for tag_id in args.anchor.tag_ids
   }
   prep_anchor_tag_id = _choose_prep_anchor(args.anchor.tag_ids, obs_by_tag)

@@ -20,6 +20,9 @@ from specialist.vi_ba.imu import ImuSamples
 Float64Array = npt.NDArray[np.float64]
 Int64Array = npt.NDArray[np.int64]
 
+# Radius, as a fraction of decoded lens width, past which anchor-corner noise grows.
+_CALIBRATED_RADIUS_FRAC = 1000.0 / 2880.0
+
 __all__ = [
   "SessionRecording",
   "covered_samples",
@@ -130,7 +133,9 @@ class SessionRecording:
       self._entity_row(schema.lens(slot, lens)), decoded_width, lens
     )
     return LensSetup(
-      body_T_lens=gtsam.Pose3(calibration.body_T_lens), params=calibration.params
+      body_T_lens=gtsam.Pose3(calibration.body_T_lens),
+      params=calibration.params,
+      calibrated_radius=_CALIBRATED_RADIUS_FRAC * decoded_width,
     )
 
   def imu(self, slot: str) -> ImuSamples:
