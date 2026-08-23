@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
-import itertools
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
+
+from specialist.vi_ba.urdf_joints import RevoluteJoint
 
 if TYPE_CHECKING:
   from specialist.record.session import SessionRecording
@@ -111,13 +112,9 @@ class CameraArgs:
 
   session: SessionRecording
   slot: str  # the camera's slot in the base recording
-  base_tag_id: int
   anchor: AnchorCfg
   keyframe_every: int  # 0 = auto (round(fps/10))
-  urdf_path: Path | None  # gripper URDF for finger joint kinematics
-  # 0 disables the corresponding URDF revolute joint angle recovery.
-  left_finger_tag_id: int
-  right_finger_tag_id: int
+  joints: dict[str, RevoluteJoint]
   frontend: FrontendCfg
   gripper: GripperCfg
   # Set when siblings prepare concurrently; gates per-thread AprilTag detectors.
@@ -139,41 +136,16 @@ class Args:
   # Replace this session's existing estimate and viz layers; off refuses.
   overwrite: bool = False
 
-  # One id per tracker; cross-tracker disambiguation needs distinct ids.
-  base_tag_ids: tuple[int, ...] = ()
-  # Per-tracker finger tag ids; 0 disables that tracker's finger.
-  left_finger_tag_ids: tuple[int, ...] = ()
-  right_finger_tag_ids: tuple[int, ...] = ()
-
   frontend: FrontendCfg = field(default_factory=FrontendCfg)
   gripper: GripperCfg = field(default_factory=GripperCfg)
   solver: SolverCfg = field(default_factory=SolverCfg)
 
 
-def validate(args: Args, n_trackers: int) -> None:
-  """Check every run-configuration invariant before any prep starts."""
+def validate(args: Args) -> None:
+  """Raise ``ValueError`` when the run configuration breaks an invariant."""
   if args.solver.max_iterations < 1:
     raise ValueError(
       f"--solver.max-iterations must be positive, got {args.solver.max_iterations}"
-    )
-  if not args.base_tag_ids:
-    raise ValueError(
-      f"--base-tag-ids must be supplied (one per tracker, got {n_trackers} cameras)"
-    )
-  for field_name, ids in (
-    ("base_tag_ids", args.base_tag_ids),
-    ("left_finger_tag_ids", args.left_finger_tag_ids),
-    ("right_finger_tag_ids", args.right_finger_tag_ids),
-  ):
-    if ids and len(ids) != n_trackers:
-      raise ValueError(
-        f"{field_name} length ({len(ids)}) must match "
-        f"the recording's cameras ({n_trackers})"
-      )
-  if len(set(args.base_tag_ids)) != len(args.base_tag_ids):
-    raise ValueError(
-      f"--base-tag-ids must be distinct per tracker for cross-tracker "
-      f"disambiguation, got {list(args.base_tag_ids)}"
     )
   if not args.anchor.tag_ids:
     raise ValueError("--anchor.tag-ids must name at least one anchor id")
@@ -185,27 +157,3 @@ def validate(args: Args, n_trackers: int) -> None:
     raise ValueError(
       f"--anchor.tag-ids must be distinct, got {list(args.anchor.tag_ids)}"
     )
-  _validate_tag_id_disjointness(args)
-
-
-def _validate_tag_id_disjointness(args: Args) -> None:
-  """Anchor, base and nonzero finger tag ids must be pairwise disjoint."""
-  groups = (
-    ("--anchor.tag-ids", set(args.anchor.tag_ids)),
-    ("--base-tag-ids", {int(i) for i in args.base_tag_ids}),
-    (
-      "--left/right-finger-tag-ids",
-      {
-        int(i)
-        for i in (*args.left_finger_tag_ids, *args.right_finger_tag_ids)
-        if int(i) > 0
-      },
-    ),
-  )
-  for (name_a, ids_a), (name_b, ids_b) in itertools.combinations(groups, 2):
-    overlap = ids_a & ids_b
-    if overlap:
-      raise ValueError(
-        f"tag ids {sorted(overlap)} appear in both {name_a} and "
-        f"{name_b}; anchor, base, and finger tags must be disjoint"
-      )

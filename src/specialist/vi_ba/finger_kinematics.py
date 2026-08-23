@@ -10,7 +10,6 @@ import numpy.typing as npt
 
 from specialist.loader.mei_model import mei_project
 from specialist.vi_ba.build import LensSetup
-from specialist.vi_ba.configs import CameraArgs
 from specialist.vi_ba.geometry import average_pose, rotate_about_z
 from specialist.vi_ba.tag_detection import (
   TagDetection,
@@ -18,7 +17,8 @@ from specialist.vi_ba.tag_detection import (
   tag_center_bearing,
   tag_corners_in_frame,
 )
-from specialist.vi_ba.urdf_joints import RevoluteJoint, read_revolute_joints
+from specialist.vi_ba.tag_discovery import GripperTags
+from specialist.vi_ba.urdf_joints import FINGER_JOINTS, RevoluteJoint
 
 Float64Array = npt.NDArray[np.float64]
 
@@ -131,23 +131,25 @@ def pin_angles_to_keyframes(
 
 
 def recover_gripper_tags(
-  args: CameraArgs,
+  tags: GripperTags,
+  joints: dict[str, RevoluteJoint],
   tags_per_kf: list[list[TagDetection]],
   lens: LensSetup,
+  tag_size: float,
   n_keyframes: int,
   kf_rotations: list[Float64Array],
-  tags_per_frame: list[list[TagDetection]] | None = None,
-  frame_times: Float64Array | None = None,
+  tags_per_frame: list[list[TagDetection]],
+  frame_times: Float64Array,
 ) -> tuple[
-  gtsam.Pose3 | None,
+  gtsam.Pose3,
   dict[str, FingerReproj],
   dict[str, tuple[Float64Array, Float64Array]],
 ]:
-  """Base-tag body pose and finger outputs; raises ValueError for an unseen base tag."""
+  """The base tag's body pose and, per finger, reprojection inputs and frame angles."""
   base_tag_obs = lens_T_tag_per_kf(
     tags_per_kf,
-    tag_id=args.base_tag_id,
-    tag_size=args.gripper.tag_size,
+    tag_id=tags.base,
+    tag_size=tag_size,
     params=lens.params,
     kf_rotations=kf_rotations,
   )
@@ -156,40 +158,21 @@ def recover_gripper_tags(
     body_T_base_tag = average_pose(
       [lens.body_T_lens.compose(p) for p in base_tag_obs.values()], "mean"
     )
-  if args.base_tag_id > 0 and body_T_base_tag is None:
+  if body_T_base_tag is None:
     raise ValueError(
-      f"base tag {args.base_tag_id} was configured but never detected in the rear "
-      f"lens across {n_keyframes} keyframes — its base-tag, finger, and cross-tracker "
-      f"factors would all be silently disabled. Wrong id, or the tag out of the "
-      f"rear-lens field of view?"
+      f"base tag {tags.base} was discovered but never resolved a pose "
+      f"across {n_keyframes} rear keyframes — its base-tag, finger, and "
+      f"cross-camera factors would all be silently disabled"
     )
 
-  # URDF joints sit in the base frame; body_T_base_tag carries them to the body.
-  joints = read_revolute_joints(args.urdf_path) if args.urdf_path is not None else {}
   finger_reproj: dict[str, FingerReproj] = {}
   frame_angles: dict[str, tuple[Float64Array, Float64Array]] = {}
-  for joint_name, finger_id in (
-    ("left_finger", args.left_finger_tag_id),
-    ("right_finger", args.right_finger_tag_id),
-  ):
-    if finger_id <= 0 or args.urdf_path is None:
+  for joint_name, finger_id in zip(FINGER_JOINTS, tags.fingers, strict=True):
+    if finger_id <= 0:
       continue
-    joint = joints.get(joint_name)
-    if joint is None or joint.joint_T_tag0 is None:
-      raise ValueError(
-        f"finger tag {finger_id} was configured for '{joint_name}', but "
-        f"{args.urdf_path} has no revolute joint '{joint_name}' carrying an "
-        f"AprilTag frame (revolute joints present: {sorted(joints)}). Wrong URDF?"
-      )
-    if body_T_base_tag is None:
-      continue
+    joint = joints[joint_name]
     reproj = build_finger_reproj(
-      joint,
-      tags_per_kf[:n_keyframes],
-      lens,
-      finger_id,
-      body_T_base_tag,
-      args.gripper.tag_size,
+      joint, tags_per_kf[:n_keyframes], lens, finger_id, body_T_base_tag, tag_size
     )
     if reproj is None:
       print(
@@ -198,10 +181,8 @@ def recover_gripper_tags(
       )
     else:
       finger_reproj[joint_name] = reproj
-    if tags_per_frame is None or frame_times is None:
-      continue
     framed = build_finger_reproj(
-      joint, tags_per_frame, lens, finger_id, body_T_base_tag, args.gripper.tag_size
+      joint, tags_per_frame, lens, finger_id, body_T_base_tag, tag_size
     )
     if framed is not None:
       frame_angles[joint_name] = (

@@ -64,6 +64,12 @@ from specialist.vi_ba.tag_detection import (
   lens_T_tag_per_kf,
   non_anchor_tag_masks,
 )
+from specialist.vi_ba.tag_discovery import (
+  GripperTags,
+  TagDiscoveryError,
+  discover_gripper_tags,
+  uniform_picks,
+)
 from specialist.vi_ba.tracks import (
   add_revisit_landmarks,
   bearings_by_track,
@@ -89,6 +95,7 @@ _PREP_MEMORY_SHARE = 0.35
 __all__ = [
   "PreparedCamera",
   "cameras_that_fit",
+  "discover_camera_tags",
   "prepare_camera",
 ]
 
@@ -145,14 +152,14 @@ class PreparedCamera:
   # ``{tag_id: {kf: {side: lens_T_tag}}}``.
   anchor_obs_by_tag: dict[int, dict[int, dict[str, gtsam.Pose3]]]
   anchor_locals_by_tag: dict[int, gtsam.Pose3]
-  body_T_base_tag: gtsam.Pose3 | None
+  body_T_base_tag: gtsam.Pose3
   keyframe_times: Float64Array
   # Session-clock frame per keyframe; ``schema.keyframe_index`` maps it to the timeline.
   keyframe_frames: npt.NDArray[np.int64]
   # URDF joint name -> kinematic inputs for the joint-angle reprojection factors.
   finger_reproj: dict[str, FingerReproj]
-  left_finger_tag_id: int
-  right_finger_tag_id: int
+  # This camera's own tag ids, discovered from its rear lens.
+  tags: GripperTags
   # Body-frame, rescaled IMU samples, for IMU-rate propagation between keyframes.
   imu: ImuSamples | None = None
   # Per-joint raw ``(times, angles)`` at the finger rate; export pins them to the solve.
@@ -479,7 +486,25 @@ def finger_stride(keyframe_every: int, fps: float) -> int:
   )
 
 
-def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
+def discover_camera_tags(args: CameraArgs) -> GripperTags:
+  """Identify the camera's gripper tags from a sparse rear-lens read before prep."""
+  rear = args.session.lens_video(args.slot, "rear")
+  walk = LensFrames(rear, uniform_picks(len(rear.times)), band=1)
+  detections = _per_band(detect_all_tags, walk)
+  _, rear_lens = args.session.lens_setups(args.slot, int(walk[0].shape[1]))
+  try:
+    return discover_gripper_tags(
+      detections,
+      rear_lens.params,
+      args.joints,
+      tag_size=args.gripper.tag_size,
+      anchor_tag_ids=set(args.anchor.tag_ids),
+    )
+  except TagDiscoveryError as exc:
+    raise TagDiscoveryError(f"{args.slot}: {exc}") from exc
+
+
+def prepare_camera(slot: str, args: CameraArgs, tags: GripperTags) -> PreparedCamera:
   """Every per-camera stage; body poses land in the camera's gravity-aligned world."""
   configure_detector(args.frontend.parallel_tag_detect and args.parallel_siblings)
   session = args.session
@@ -533,26 +558,16 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   decoded_width, front_tags_per_kf, front_orb = walk_front()
   front_lens, rear_lens = session.lens_setups(args.slot, decoded_width)
   release_freed_memory()
-  # With fingers configured, the rear walk detects tags at the finger stride.
-  wants_fingers = args.urdf_path is not None and (
-    args.left_finger_tag_id > 0 or args.right_finger_tag_id > 0
+  # Rear: one dense walk, of which the keyframe set is a stride.
+  stride = finger_stride(keyframe_every, fps)
+  dense_samples = nearest_samples(
+    rear_video.times, front_video.times[covered][::stride]
   )
-  rear_tags_per_frame: list[list[TagDetection]] | None = None
-  rear_frame_times: Float64Array | None = None
-  if wants_fingers:
-    stride = finger_stride(keyframe_every, fps)
-    dense_samples = nearest_samples(
-      rear_video.times, front_video.times[covered][::stride]
-    )
-    rear_tags_per_frame = _per_band(
-      detect_all_tags, LensFrames(rear_video, dense_samples, band=_PREP_BAND)
-    )
-    rear_frame_times = rear_video.times[dense_samples]
-    rear_tags_per_kf = rear_tags_per_frame[:: keyframe_every // stride]
-  else:
-    rear_tags_per_kf = _per_band(
-      detect_all_tags, LensFrames(rear_video, rear_kf_rows, band=_PREP_BAND)
-    )
+  rear_tags_per_frame = _per_band(
+    detect_all_tags, LensFrames(rear_video, dense_samples, band=_PREP_BAND)
+  )
+  rear_frame_times = rear_video.times[dense_samples]
+  rear_tags_per_kf = rear_tags_per_frame[:: keyframe_every // stride]
   n_keyframes = min(len(front_tags_per_kf), len(rear_tags_per_kf))
   release_freed_memory()
   if n_keyframes < 3:
@@ -734,9 +749,11 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
   biases = [bias0 for _ in range(n_keyframes)]
 
   body_T_base_tag, finger_reproj, finger_frame_angles = recover_gripper_tags(
-    args,
+    tags,
+    args.joints,
     rear_tags_per_kf,
     rear_lens,
+    args.gripper.tag_size,
     n_keyframes,
     rear_kf_rotations,
     rear_tags_per_frame,
@@ -757,8 +774,7 @@ def prepare_camera(slot: str, args: CameraArgs) -> PreparedCamera:
     keyframe_times=keyframe_times,
     keyframe_frames=np.round(keyframe_times * fps).astype(np.int64),
     finger_reproj=finger_reproj,
-    left_finger_tag_id=args.left_finger_tag_id,
-    right_finger_tag_id=args.right_finger_tag_id,
+    tags=tags,
     imu=imu,
     finger_frame_angles=finger_frame_angles,
   )

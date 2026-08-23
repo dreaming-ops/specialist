@@ -38,8 +38,6 @@ class Args:
   input_insvs: tuple[Path, ...]
   # Recording id shared by this session's base recording and track layers.
   session_id: str
-  # One name per capture; the solve reads them back off the recording.
-  slots: tuple[str, ...] = ()
   # Dataset root; the base recording lands as ``base/<session-id>.rrd``.
   output_dir: Path = Path("logs")
   # Seconds to add to each capture's clock, for clips that share no audible event.
@@ -55,13 +53,7 @@ class Args:
 
 def main(args: Args) -> None:
   sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
-  names = (
-    list(args.slots)
-    if args.slots
-    else [f"tracker_{i}" for i in range(len(args.input_insvs))]
-  )
-  if len(names) != len(args.input_insvs):
-    raise SystemExit("--slots must match --input-insvs in length")
+  names = [f"tracker_{i}" for i in range(len(args.input_insvs))]
   out_path = args.output_dir / "base" / f"{args.session_id}.rrd"
   if out_path.exists() and not args.overwrite:
     raise SystemExit(

@@ -187,10 +187,7 @@ def _build_tracker_outputs(
     f"  [{camera.name}/viz] kf={camera.n_keyframes} bbox={bbox_diagonal:.3f} m "
     f"front_rmse={front_rmse:.2f}px{rear_note}"
   )
-  if camera.body_T_base_tag is not None:
-    base_tag_poses = [p.compose(camera.body_T_base_tag) for p in poses]
-  else:
-    base_tag_poses = poses
+  base_tag_poses = [p.compose(camera.body_T_base_tag) for p in poses]
   biases_final = [
     result.values.atConstantBias(keys.bias_key(camera.name, i))
     for i in range(camera.n_keyframes)
@@ -251,13 +248,14 @@ def _build_tracker_outputs(
   return viz_data, summary
 
 
-def _tag_size_by_id(args: Args) -> dict[int, float]:
-  """Metric side length per tag id, across anchors, base tags, and fingers."""
-  finger_ids = (*args.left_finger_tag_ids, *args.right_finger_tag_ids)
+def _tag_size_by_id(args: Args, cameras: list[PreparedCamera]) -> dict[int, float]:
+  """Side length (m) per tag id, for the anchors and every camera's gripper tags."""
+  gripper_ids = {
+    tid for t in cameras for tid in (t.tags.base, *t.tags.fingers) if tid > 0
+  }
   return {
     **{tid: float(args.anchor.tag_size) for tid in args.anchor.tag_ids},
-    **{int(tid): float(args.gripper.tag_size) for tid in args.base_tag_ids},
-    **{int(tid): float(args.gripper.tag_size) for tid in finger_ids if int(tid) > 0},
+    **{tid: float(args.gripper.tag_size) for tid in gripper_ids},
   }
 
 
@@ -273,7 +271,6 @@ def _base_tag_corners_world(
       for pose in optimized_body_poses[t.name]
     ]
     for t in cameras
-    if t.body_T_base_tag is not None
   }
 
 
@@ -307,17 +304,17 @@ def build_run_outputs(
   base_tag_corners = _base_tag_corners_world(
     cameras, optimized_body_poses, args.gripper.tag_size
   )
-  tag_sizes = _tag_size_by_id(args)
+  tag_sizes = _tag_size_by_id(args, cameras)
   by_observer: dict[str, list[CrossSighting]] = {t.name: [] for t in cameras}
   for sighting in cross_obs:
     by_observer[sighting.observer].append(sighting)
 
   viz_trackers: list[CameraVizData] = []
   per_tracker: list[CameraSummary] = []
-  for t, base_tag_id in zip(cameras, args.base_tag_ids, strict=True):
+  for t in cameras:
     viz_data, summary = _build_tracker_outputs(
       t,
-      base_tag_id=base_tag_id,
+      base_tag_id=t.tags.base,
       poses=optimized_body_poses[t.name],
       result=result,
       keys=keys,

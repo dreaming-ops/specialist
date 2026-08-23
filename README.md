@@ -66,8 +66,7 @@ capture covers.
 ```
 uv run python scripts/convert.py \
   --input-insvs path/to/g0_00.insv path/to/g1_00.insv \
-  --session-id <session-id> --slots tracker_0 tracker_1 \
-  --output-dir logs
+  --session-id <session-id> --output-dir logs
 ```
 
 This writes `logs/base/<session-id>.rrd`: the remuxed per-lens video with its
@@ -77,21 +76,19 @@ audible event.
 
 **2. Solve.** `track.py` reads the base recording — it carries the tracker
 names, the session window, and the session id, so none of them are passed
-again. Base tag ids must be distinct per tracker (cross-tracker
-disambiguation); the first `--anchor.tag-ids` entry is the reference anchor
-that pins the world gauge.
+again. Each tracker's own base and finger tags are discovered from its rear
+lens against the gripper URDF, so only the anchors are named; the first
+`--anchor.tag-ids` entry is the reference anchor that pins the world gauge. The
+URDF is required: `--urdf-path` overrides the packaged gripper description.
 
 ```
 uv run python scripts/track.py --base logs/base/<session-id>.rrd \
-  --anchor.tag-ids <anchor-tag-id> --base-tag-ids <g0-base-tag-id> <g1-base-tag-id> \
-  --left-finger-tag-ids <g0-left> <g1-left> \
-  --right-finger-tag-ids <g0-right> <g1-right> \
-  --output-dir logs
+  --anchor.tag-ids <anchor-tag-id> --output-dir logs
 ```
 
-A single tracker is the same command with one id per list and no cross-tracker
-factors. `--keyframe-every` overrides the automatic ~0.10 s keyframe stride,
-and `--no-open-viewer` keeps a headless box from spawning one.
+A single tracker is the same command with no cross-tracker factors.
+`--keyframe-every` overrides the automatic ~0.10 s keyframe stride, and
+`--no-open-viewer` keeps a headless box from spawning one.
 
 The run writes two layers sharing the base recording's id:
 `logs/track/<session-id>.rrd` carries what a consumer reads — body poses,
