@@ -39,7 +39,7 @@ def test_grid_snaps_to_the_stride_lattice() -> None:
   # Coverage starts at sample 4, so sample 6, the first on-lattice one, sets the phase.
   times = np.arange(20) / 60.0
   covered = np.arange(4, 20)
-  samples = keyframe_grid(times, covered, fps=60.0, keyframe_every=6)
+  samples, _ = keyframe_grid(times, covered, fps=60.0, keyframe_every=6)
   assert samples.tolist() == [6, 12, 18]
 
 
@@ -47,7 +47,7 @@ def test_grid_without_a_lattice_sample_starts_at_coverage() -> None:
   # Coverage so short no covered sample hits the lattice: fall back to phase 0.
   times = np.arange(20) / 60.0
   covered = np.arange(7, 11)
-  samples = keyframe_grid(times, covered, fps=60.0, keyframe_every=6)
+  samples, _ = keyframe_grid(times, covered, fps=60.0, keyframe_every=6)
   assert samples.tolist() == [7]
 
 

@@ -412,13 +412,13 @@ def keyframe_grid(
   covered: npt.NDArray[np.int64],
   fps: float,
   keyframe_every: int,
-) -> npt.NDArray[np.int64]:
-  """Keyframe rows of the covered span, phased onto the stride lattice when possible."""
+) -> tuple[npt.NDArray[np.int64], int]:
+  """Keyframe rows snapped to the session-clock stride lattice, and the start phase."""
   stride = schema.keyframe_stride(fps)
   session_frames = np.round(times * fps).astype(np.int64)
   on_lattice = np.flatnonzero(session_frames[covered] % stride == 0)
   phase = int(on_lattice[0]) if len(on_lattice) else 0
-  return covered[phase::keyframe_every]
+  return covered[phase::keyframe_every], phase
 
 
 def finger_stride(keyframe_every: int, fps: float) -> int:
@@ -463,7 +463,9 @@ def prepare_camera(args: CameraArgs, tags: GripperTags) -> PreparedCamera:
   keyframe_every = resolve_keyframe_every(args.keyframe_every, fps)
   raw_imu = session.imu(args.slot)
   covered = covered_samples(front_video.times, rear_video.times, raw_imu.t, fps)
-  front_samples = keyframe_grid(front_video.times, covered, fps, keyframe_every)
+  front_samples, grid_phase = keyframe_grid(
+    front_video.times, covered, fps, keyframe_every
+  )
   grid_times = front_video.times[front_samples]
   rear_kf_rows = nearest_samples(rear_video.times, grid_times)
 
@@ -509,7 +511,7 @@ def prepare_camera(args: CameraArgs, tags: GripperTags) -> PreparedCamera:
   # Rear: one dense walk, of which the keyframe set is a stride.
   stride = finger_stride(keyframe_every, fps)
   dense_samples = nearest_samples(
-    rear_video.times, front_video.times[covered][::stride]
+    rear_video.times, front_video.times[covered][grid_phase::stride]
   )
   rear_tags_per_frame = _per_band(
     detect_all_tags, LensFrames(rear_video, dense_samples, band=_PREP_BAND)

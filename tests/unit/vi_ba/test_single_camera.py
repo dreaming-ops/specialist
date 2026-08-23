@@ -7,12 +7,15 @@ from concurrent.futures import ThreadPoolExecutor
 import gtsam
 import numpy as np
 from specialist_camera import mei_project
+from specialist_dataset import schema
 
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.configs import FrontendCfg
 from specialist.vi_ba.single_camera import (
   _anchor_metric_scale,
   _anchor_pose_seed,
+  finger_stride,
+  keyframe_grid,
 )
 from specialist.vi_ba.tracks import add_revisit_landmarks, run_lens_frontend
 from tests.frame_fixtures import translating_frames
@@ -190,3 +193,20 @@ def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:
   # The drifted tail still feeds the BA factors, which pull its pose onto the structure.
   assert 5 in fk_rel[99]
   assert 7 in fk_rel
+
+
+def test_the_dense_finger_walk_keeps_the_keyframe_grid() -> None:
+  """The rear walk lands on the front grid at every phase a covered span starts on."""
+  for fps, keyframe_every in ((30.0, 3), (60.0, 6)):
+    times = np.arange(0, 200) / fps
+    stride = finger_stride(keyframe_every, fps)
+    for start in range(7):
+      covered = np.arange(start, 150)
+      front_samples, phase = keyframe_grid(times, covered, fps, keyframe_every)
+      # The grid snaps to the session-clock lattice, not to the covered span.
+      session_stride = schema.keyframe_stride(fps)
+      lattice = np.round(times[front_samples] * fps).astype(np.int64) % session_stride
+      assert not lattice.any()
+      rear_samples = covered[phase::stride][:: keyframe_every // stride]
+      n = min(len(front_samples), len(rear_samples))
+      np.testing.assert_array_equal(rear_samples[:n], front_samples[:n])
