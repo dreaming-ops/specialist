@@ -51,7 +51,6 @@ _VIZ = (
   "/camera/cam00/trajectory",
   "/camera/cam00/marker",
   "/camera/cam00/landmark/front",
-  "/camera/cam00/landmark/rear",
   "/camera/cam00/front/overlay/tag_axes",
   "/camera/cam00/front/overlay/landmark_reprojection",
   "/camera/cam01/trajectory",
@@ -118,7 +117,7 @@ def test_the_fixture_carries_one_of_everything_a_camera_holds() -> None:
 
   empty = [f.name for f in fields(camera) if carries_nothing(camera, f.name)]
   assert camera.lenses, "a camera with no lens exercises no overlay"
-  # Per field, not per lens: what matters is that some lens exercises each field.
+  # A field counts when any lens carries it; the rear lens carries only tags.
   empty += [
     f"LensEstimate.{f.name}"
     for f in fields(next(iter(camera.lenses.values())))
@@ -396,35 +395,6 @@ def test_no_layer_embeds_a_blueprint(
   assert not RrdReader(str(estimate_path)).blueprints()
 
 
-def test_several_mask_rects_reach_the_layer(tmp_path: Path) -> None:
-  """Every mask rectangle reaches the estimate layer with its center and half-size."""
-  estimate, _viz = write_run(
-    tmp_path,
-    "sess_mask",
-    _two_cameras(),
-    mask_rects=((0, 0, 10, 10), (20, 20, 40, 40)),
-    urdf_path=urdf_file(tmp_path),
-    frame_period=1.0 / 30.0,
-  )
-  boxes: dict[str, list[tuple[object, object]]] = {}
-  for chunk in _chunks(estimate):
-    batch = chunk.to_record_batch()
-    if not chunk.entity_path.endswith("/static_mask"):
-      continue
-    if "Boxes2D:centers" not in batch.schema.names:
-      continue
-    row = batch.to_pydict()
-    boxes[chunk.entity_path] = list(
-      zip(row["Boxes2D:centers"][0], row["Boxes2D:half_sizes"][0], strict=True)
-    )
-
-  assert boxes, "no mask boxes reached the layer"
-  # Every rectangle, the right way round: swapped center and half-size mask elsewhere.
-  for path, pairs in boxes.items():
-    got = sorted((tuple(c), tuple(h)) for c, h in pairs)
-    assert got == [((5.0, 5.0), (5.0, 5.0)), ((30.0, 30.0), (10.0, 10.0))], (path, got)
-
-
 def test_a_model_that_fails_to_write_is_not_mistaken_for_a_missing_model(
   tmp_path: Path,
 ) -> None:
@@ -442,7 +412,6 @@ def test_a_model_that_fails_to_write_is_not_mistaken_for_a_missing_model(
       {0: gtsam.Pose3()},
       0,
       0.1,
-      mask_pad_px=45,
       urdf_path=urdf_file(tmp_path),
       timeline_start=0.0,
       frame_period=1.0 / 30.0,
@@ -509,7 +478,7 @@ def test_every_overlay_answers_on_the_keyframe_clock_alone(tmp_path: Path) -> No
     urdf_path=urdf_file(tmp_path),
     frame_period=1.0 / 30.0,
   )
-  geometry = ("strips", "positions", "centers")
+  geometry = ("strips", "positions")
   answered = 0
   for path in (estimate, viz):
     by_entity: dict[str, list[Chunk]] = {}

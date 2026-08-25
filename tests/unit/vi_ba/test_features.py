@@ -13,11 +13,9 @@ import pytest
 from specialist.vi_ba import features
 from specialist.vi_ba.features import (
   Frame,
-  _mask_ok,
   chain_tracks,
   detect_orb,
   essential_ransac_inliers,
-  mask_plane,
   match_pair,
 )
 
@@ -44,21 +42,6 @@ def test_detect_orb_on_solid_image_returns_empty_frame() -> None:
   )
   assert frame.keypoints.shape == (0, 2)
   assert frame.descriptors.shape == (0, 32)
-
-
-def test_detect_orb_respects_mask() -> None:
-  """Keypoints inside the masked-out region must be suppressed."""
-  rng = np.random.default_rng(0)
-  img = _textured_image(rng, h=200, w=300)
-  # Mask out the right half of the frame: 0 = ignore, 255 = keep.
-  mask = np.full(img.shape, 255, dtype=np.uint8)
-  mask[:, 150:] = 0
-  frame = detect_orb(img, n_features=500, fast_threshold=12, mask=mask)
-  assert frame.keypoints.shape[0] > 0
-  # No keypoint should land inside the masked-out region.
-  assert np.all(frame.keypoints[:, 0] < 150), (
-    f"masked region produced {(frame.keypoints[:, 0] >= 150).sum()} keypoints"
-  )
 
 
 def test_match_pair_identical_frames_returns_well_formed_matches() -> None:
@@ -158,29 +141,6 @@ def test_chain_tracks_unrelated_pairs_produce_separate_tracks() -> None:
   assert len(tracks) == 2
   lengths = sorted(len(obs) for obs in tracks.values())
   assert lengths == [2, 2]
-
-
-def test_rect_mask_matches_the_plane_it_replaces() -> None:
-  """The blocked-rectangle point test agrees exactly with the full-resolution plane."""
-  shape = (40, 60)
-  blocked = [(5, 5, 20, 15), (30, 25, 55, 38)]
-  plane = mask_plane(shape, blocked)
-
-  ys, xs = np.mgrid[-3 : shape[0] + 3, -3 : shape[1] + 3]
-  xy = np.stack([xs.ravel(), ys.ravel()], axis=1).astype(np.float64)
-
-  ix = np.round(xy[:, 0]).astype(np.int64)
-  iy = np.round(xy[:, 1]).astype(np.int64)
-  inside = (ix >= 0) & (ix < shape[1]) & (iy >= 0) & (iy < shape[0])
-  from_plane = np.zeros(len(xy), dtype=bool)
-  from_plane[inside] = plane[iy[inside], ix[inside]] > 0
-
-  assert np.array_equal(_mask_ok(xy, blocked, shape), from_plane)
-
-
-def test_rect_mask_with_no_rectangles_keeps_everything_in_frame() -> None:
-  xy = np.array([[0.0, 0.0], [9.0, 9.0], [-1.0, 5.0], [5.0, 99.0]])
-  assert list(_mask_ok(xy, [], (10, 10))) == [True, True, False, False]
 
 
 def test_flow_chunk_budget_tracks_available_memory(

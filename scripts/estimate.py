@@ -141,7 +141,7 @@ def main(args: Args) -> None:
     print(
       f"  [{slot}/prep] kf={camera.n_keyframes}  "
       f"anchor_obs={len(anchored_keyframes(camera))}  "
-      f"front_pts={len(camera.front.points)}  rear_pts={len(camera.rear.points)}  "
+      f"front_pts={len(camera.front.points)}  "
       f"tags={camera.tags.base}/{camera.tags.fingers[0]}/{camera.tags.fingers[1]}"
     )
     return camera
@@ -193,7 +193,6 @@ def main(args: Args) -> None:
     estimate=estimate,
     summary=summary,
     anchor_tag_size=args.anchor.tag_size,
-    mask_pad_px=args.frontend.mask_tag_pad if args.frontend.mask_tags else -1,
     urdf_path=urdf_path,
     session_id=session.session_id,
     open_viewer=args.open_viewer,

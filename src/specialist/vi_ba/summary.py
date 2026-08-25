@@ -14,9 +14,8 @@ class CameraSummary:
   slot: str
   n_keyframes: int
   anchor_obs: int
-  # Reprojection RMSE in pixels over the whole take, per lens.
+  # Reprojection RMSE in pixels over the whole session.
   front_rmse: float
-  rear_rmse: float
   # The gripper base tag this camera solves against.
   base_tag_id: int
   # Rear-lens rotation off its factory block, radians.

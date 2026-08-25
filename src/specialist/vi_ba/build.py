@@ -1,4 +1,4 @@
-"""The dual-lens VI-BA factor graph: keyframe poses, landmarks, MEI and IMU factors."""
+"""The VI-BA factor graph: keyframe poses, landmark points, MEI and IMU factors."""
 
 from __future__ import annotations
 
@@ -11,7 +11,6 @@ import numpy.typing as npt
 from specialist_camera import MeiParams
 from specialist_dataset import schema
 
-from specialist.vi_ba.features import Rect
 from specialist.vi_ba.tag_detection import TagDetection
 
 try:
@@ -72,8 +71,6 @@ class LensChannel:
   tracks: dict[int, dict[int, Float64Array]] = field(default_factory=dict)
   points: dict[int, Float64Array] = field(default_factory=dict)
   rejected: dict[int, dict[int, Float64Array]] = field(default_factory=dict)
-  # Rectangles masked from this lens at every keyframe; the front lens has none.
-  static_mask_rects: list[Rect] = field(default_factory=list)
 
 
 def huber_pixel_noise(sigma: float) -> gtsam.noiseModel.Base:
@@ -136,22 +133,6 @@ def add_mei_tag_factor(
   )
 
 
-def _add_projection_factors(
-  graph: gtsam.NonlinearFactorGraph,
-  values: gtsam.Values,
-  channel: LensChannel,
-  landmark_key_fn: Callable[[int], int],
-  pixel_noise: gtsam.noiseModel.Base,
-  pose_key_fn: Callable[[int], int],
-) -> None:
-  for tid, xyz in channel.points.items():
-    lm_key = landmark_key_fn(tid)
-    if not values.exists(lm_key):
-      values.insert(lm_key, _as_point3(xyz))
-    for kf, pt in channel.tracks[tid].items():
-      add_mei_factor(graph, pose_key_fn(kf), lm_key, pt, pixel_noise, channel.setup)
-
-
 def build_vi_graph(
   body_poses: list[gtsam.Pose3],
   *,
@@ -159,18 +140,16 @@ def build_vi_graph(
   biases: list[gtsam.imuBias.ConstantBias],
   preintegrated: list[gtsam.PreintegratedCombinedMeasurements],
   front: LensChannel,
-  rear: LensChannel,
   sigma: float,
   velocity_prior_sigma: float,
   pose_key_fn: Callable[[int], int],
   velocity_key_fn: Callable[[int], int],
   bias_key_fn: Callable[[int], int],
   front_landmark_key_fn: Callable[[int], int],
-  rear_landmark_key_fn: Callable[[int], int],
   graph: gtsam.NonlinearFactorGraph,
   values: gtsam.Values,
 ) -> tuple[gtsam.NonlinearFactorGraph, gtsam.Values]:
-  """Dual-lens VI graph, priors on ``V(0)`` and ``B(0)``; the caller grounds poses."""
+  """MEI and IMU factors plus ``V(0)``/``B(0)`` priors; the caller grounds the poses."""
   n = len(body_poses)
 
   pixel_noise = huber_pixel_noise(sigma)
@@ -204,9 +183,9 @@ def build_vi_graph(
       )
     )
 
-  channels = ((front, front_landmark_key_fn), (rear, rear_landmark_key_fn))
-  for channel, landmark_key_fn in channels:
-    _add_projection_factors(
-      graph, values, channel, landmark_key_fn, pixel_noise, pose_key_fn
-    )
+  for tid, xyz in front.points.items():
+    lm_key = front_landmark_key_fn(tid)
+    values.insert(lm_key, _as_point3(xyz))
+    for kf, pt in front.tracks[tid].items():
+      add_mei_factor(graph, pose_key_fn(kf), lm_key, pt, pixel_noise, front.setup)
   return graph, values

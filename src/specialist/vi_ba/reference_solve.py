@@ -48,19 +48,12 @@ def _outlier_landmark_keys(
   keys: CameraKeys,
   landmark_keep: LandmarkKeep,
 ) -> set[int]:
-  """The landmark keys the cull dropped, across both lenses of every camera."""
+  """The landmark keys the cull dropped, over every camera's front lens."""
   drop: set[int] = set()
   for t in cameras:
-    front_keep, rear_keep = landmark_keep[t.name]
+    keep = landmark_keep[t.name]
     drop.update(
-      keys.front_landmark_key(t.name, tid)
-      for tid in t.front.points
-      if tid not in front_keep
-    )
-    drop.update(
-      keys.rear_landmark_key(t.name, tid)
-      for tid in t.rear.points
-      if tid not in rear_keep
+      keys.front_landmark_key(t.name, tid) for tid in t.front.points if tid not in keep
     )
   return drop
 
@@ -73,7 +66,7 @@ def _solve_with_cull_reoptimize(
   max_iterations: int,
   gpu: GpuMode,
 ) -> tuple[OptimizeResult, LandmarkKeep]:
-  """Re-solved result and each camera's kept tracks after an outlier-landmark cull."""
+  """Solve, cull outlier landmarks and re-solve warm; return the kept tracks too."""
   print(f"\n[graph] joint graph: {graph.size()} factors, {values.size()} variables")
   result = optimize_graph(
     graph,
@@ -85,15 +78,10 @@ def _solve_with_cull_reoptimize(
   landmark_keep: LandmarkKeep = {}
   for t in cameras:
     poses_1 = poses_by_camera[t.name]
-    f_pts_1 = points_from_values(
-      result.values, keys.front_landmark_key, t.name, t.front.points
+    points = points_from_values(result.values, keys, t.name, t.front.points)
+    landmark_keep[t.name] = cull_outlier_landmarks(
+      points, t.front.tracks, poses_1, t.front.setup
     )
-    r_pts_1 = points_from_values(
-      result.values, keys.rear_landmark_key, t.name, t.rear.points
-    )
-    front_keep = cull_outlier_landmarks(f_pts_1, t.front.tracks, poses_1, t.front.setup)
-    rear_keep = cull_outlier_landmarks(r_pts_1, t.rear.tracks, poses_1, t.rear.setup)
-    landmark_keep[t.name] = (front_keep, rear_keep)
   first = result
   outlier_keys = _outlier_landmark_keys(cameras, keys, landmark_keep)
   if not outlier_keys and result.iterations >= _PRECULL_MAX_ITERATIONS:

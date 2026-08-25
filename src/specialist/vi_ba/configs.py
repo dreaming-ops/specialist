@@ -46,27 +46,20 @@ class FrontendCfg:
   feature_max_half_angle: float = float(np.deg2rad(70.0))
 
   reproj_sigma: float = 0.5
-  # Padding (px) around a masked tag's detected box.
-  mask_tag_pad: int = 45
-  # Exclude non-anchor tags (the grippers' own plates) from feature detection.
-  mask_tags: bool = True
 
   min_parallax: float = float(np.deg2rad(0.5))
   # Max metric depth (m) for kept landmarks in the final (scaled) triangulation.
   max_landmark_depth: float = 5.0
 
-  mask_rear_rects: tuple[tuple[int, int, int, int], ...] = ((728, 1425, 2153, 2880),)
   init_min_shared_tracks: int = 30
   vo_min_registered_ratio: float = 0.7
-  # Run the rear lens's landmark frontend; tag detection runs regardless.
-  rear_landmarks: bool = False
   # Re-match ORB features between nearby non-adjacent keyframes to rejoin broken tracks.
   revisit: bool = True
 
   # Triangulate the revisit landmarks from the anchor-covisible views alone.
   anchored_revisit: bool = True
-  # Cap on triangulated landmarks per lens, keeping the longest tracks.
-  max_landmarks_per_lens: int = 4000
+  # Cap on triangulated landmarks, keeping the longest tracks.
+  max_landmarks: int = 4000
   # Cap on observations per track in the joint BA: endpoints plus an even middle.
   max_obs_per_track: int = 8
   # Per-thread AprilTag detectors so concurrent tag walks overlap.
@@ -150,10 +143,4 @@ def validate(args: Args) -> None:
   if len(set(args.anchor.tag_ids)) != len(args.anchor.tag_ids):
     raise ValueError(
       f"--anchor.tag-ids must be distinct, got {list(args.anchor.tag_ids)}"
-    )
-  if args.frontend.rear_landmarks:
-    raise ValueError(
-      "--frontend.rear-landmarks reprojects rear landmarks through the factory "
-      "rear-lens rotation while the rear tag factors solve the seat; one lens "
-      "cannot carry two rotations"
     )

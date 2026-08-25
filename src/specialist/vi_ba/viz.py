@@ -183,7 +183,6 @@ def _send_lens_tag_columns(
   tags_per_kf: list[list[TagDetection]],
   index: list[rr.TimeColumn],
   anchor_tag_ids: set[int],
-  mask_pad_px: int,
 ) -> None:
   """Per-keyframe AprilTag quads, centers and ids; anchors gold, other tags cyan."""
   tags = [det for dets in tags_per_kf for det in dets]
@@ -225,54 +224,6 @@ def _send_lens_tag_columns(
       "colors": colors,
       "radii": np.full(len(tags), 10.0, dtype=np.float32),
     },
-  )
-  keep = ~is_anchor[:, 0] & (mask_pad_px >= 0)
-  masked = [d.corners for d, kept in zip(tags, keep, strict=True) if kept]
-  if not masked:
-    return
-  lo = np.stack([c.min(axis=0) for c in masked]) - float(mask_pad_px)
-  hi = np.stack([c.max(axis=0) for c in masked]) + float(mask_pad_px)
-  # Mask boxes are corner quads grown by the pad: drawn, not measured.
-  _send_overlay(
-    layers,
-    f"{tags_path}/masked",
-    index,
-    rr.Boxes2D,
-    [int(k.sum()) for k in np.split(keep, np.cumsum(partition)[:-1])],
-    measured={},
-    drawn={
-      "centers": ((lo + hi) * 0.5).astype(np.float32),
-      "half_sizes": ((hi - lo) * 0.5).astype(np.float32),
-      "colors": _solid_colors(_REJECTED, len(masked)),
-      "labels": ["MASKED"] * len(masked),
-      "show_labels": [True] * len(masked),
-    },
-  )
-
-
-def _log_static_mask_rects(
-  layers: Layers, entity_path: str, rects: list[tuple[int, int, int, int]]
-) -> None:
-  """Log the rectangles the frontend is told to ignore."""
-  centers: list[np.ndarray] = []
-  half_sizes: list[np.ndarray] = []
-  for x1, y1, x2, y2 in rects:
-    centers.append(np.array([(x1 + x2) * 0.5, (y1 + y2) * 0.5], dtype=np.float32))
-    half_sizes.append(np.array([(x2 - x1) * 0.5, (y2 - y1) * 0.5], dtype=np.float32))
-  _static(
-    layers.estimate,
-    entity_path,
-    rr.Boxes2D.columns(
-      centers=np.stack(centers), half_sizes=np.stack(half_sizes)
-    ).partition([len(rects)]),
-  )
-  _static(
-    layers.viz,
-    entity_path,
-    rr.Boxes2D.columns(
-      colors=_solid_colors(_REJECTED, len(rects)), labels=["STATIC"] * len(rects)
-    ).partition([len(rects)]),
-    rr.Boxes2D.columns(show_labels=[True]),
   )
 
 
@@ -372,7 +323,6 @@ class LensEstimate:
   tag_detections: list[list[TagDetection]] = field(default_factory=list)
   tag_axes: list[Float64Array] = field(default_factory=list)
   rmse_per_kf: list[float] = field(default_factory=list)
-  static_mask_rects: list[tuple[int, int, int, int]] = field(default_factory=list)
 
 
 @dataclass
@@ -758,7 +708,6 @@ def _lens_streams(
   data: CameraEstimate,
   indexes: _Indexes,
   anchor_tag_ids: set[int],
-  mask_pad_px: int,
 ) -> None:
   """Every image overlay, a kind at a time so each kind's chunks land together."""
   for lens, lens_estimate in data.lenses.items():
@@ -778,7 +727,6 @@ def _lens_streams(
       lens_estimate.tag_detections,
       indexes.overlay,
       anchor_tag_ids,
-      mask_pad_px,
     )
   for lens, lens_estimate in data.lenses.items():
     _send_pixel_columns(
@@ -807,13 +755,6 @@ def _lens_streams(
       lens_estimate.tag_axes,
       indexes.overlay,
     )
-  for lens, lens_estimate in data.lenses.items():
-    if lens_estimate.static_mask_rects:
-      _log_static_mask_rects(
-        layers,
-        schema.overlay(data.slot, lens, schema.STATIC_MASK_OVERLAY),
-        lens_estimate.static_mask_rects,
-      )
 
 
 def _bias_streams(layers: Layers, data: CameraEstimate, indexes: _Indexes) -> None:
@@ -855,7 +796,6 @@ def _send_camera(
   data: CameraEstimate,
   urdf_path: Path,
   anchor_tag_ids: set[int],
-  mask_pad_px: int,
   color: tuple[int, int, int],
   timeline_start: float,
   frame_period: float,
@@ -869,7 +809,7 @@ def _send_camera(
   _joint_streams(layers, data, indexes, tree)
   _trajectory_streams(layers, data, world_T_base_tag, color)
   _factor_line_streams(layers, data, indexes)
-  _lens_streams(layers, data, indexes, anchor_tag_ids, mask_pad_px)
+  _lens_streams(layers, data, indexes, anchor_tag_ids)
   _bias_streams(layers, data, indexes)
   _fit_streams(layers, data, indexes)
 
@@ -895,7 +835,6 @@ def estimate_chunks(
   world_T_anchor: dict[int, gtsam.Pose3],
   reference_tag_id: int,
   anchor_tag_size: float,
-  mask_pad_px: int,
   urdf_path: Path,
   timeline_start: float,
   frame_period: float,
@@ -923,7 +862,6 @@ def estimate_chunks(
       camera,
       urdf_path=urdf_path,
       anchor_tag_ids=set(world_T_anchor),
-      mask_pad_px=mask_pad_px,
       color=_SLOT_COLORS[i % len(_SLOT_COLORS)],
       timeline_start=timeline_start,
       frame_period=frame_period,

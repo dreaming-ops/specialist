@@ -11,15 +11,9 @@ from specialist_dataset.fiducials import tag_corners_in_frame
 from specialist.vi_ba.build import LensSetup, add_mei_factor
 from specialist.vi_ba.tag_detection import TagDetection
 
-_REAR_LANDMARK_OFFSET = 1_000_000
-
 
 def front_landmark_key(track_id: int) -> int:
   return int(L(track_id))
-
-
-def rear_landmark_key(track_id: int) -> int:
-  return int(L(_REAR_LANDMARK_OFFSET + track_id))
 
 
 def wide_mei_params() -> MeiParams:
@@ -71,7 +65,6 @@ def single_camera_keys() -> dict[str, object]:
     "velocity_key_fn": lambda i: int(V(i)),
     "bias_key_fn": lambda i: int(B(i)),
     "front_landmark_key_fn": front_landmark_key,
-    "rear_landmark_key_fn": rear_landmark_key,
     "graph": gtsam.NonlinearFactorGraph(),
     "values": gtsam.Values(),
   }
@@ -93,8 +86,6 @@ def pinned_visual_graph(
   front: LensSetup,
   front_tracks: dict,
   front_points: dict,
-  rear_tracks: dict | None = None,
-  rear_points: dict | None = None,
 ) -> tuple[gtsam.NonlinearFactorGraph, gtsam.Values]:
   """One lens's projection factors over a pose chain whose pinned ends fix the gauge."""
   graph = gtsam.NonlinearFactorGraph()
@@ -112,13 +103,9 @@ def pinned_visual_graph(
   for i in range(1, n - 1):
     graph.push_back(gtsam.PriorFactorPose3(int(X(i)), body_poses[i], weak))
 
-  for points, tracks, key_fn in (
-    (front_points, front_tracks, front_landmark_key),
-    (rear_points or {}, rear_tracks or {}, rear_landmark_key),
-  ):
-    for tid, xyz in points.items():
-      lm_key = key_fn(tid)
-      values.insert(lm_key, gtsam.Point3(*np.asarray(xyz, dtype=np.float64)))
-      for kf, pt in tracks[tid].items():
-        add_mei_factor(graph, int(X(kf)), lm_key, pt, pixel_noise, front)
+  for tid, xyz in front_points.items():
+    lm_key = front_landmark_key(tid)
+    values.insert(lm_key, gtsam.Point3(*np.asarray(xyz, dtype=np.float64)))
+    for kf, pt in front_tracks[tid].items():
+      add_mei_factor(graph, int(X(kf)), lm_key, pt, pixel_noise, front)
   return graph, values

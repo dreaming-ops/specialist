@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import gtsam
 import numpy as np
@@ -10,7 +10,7 @@ import numpy.typing as npt
 from specialist_camera import mei_project
 from specialist_dataset.fiducials import tag_corners_in_frame
 
-from specialist.vi_ba.build import LensSetup
+from specialist.vi_ba.build import LensChannel, LensSetup
 from specialist.vi_ba.compose import (
   CameraKeys,
   CrossSighting,
@@ -131,7 +131,7 @@ def _build_camera_estimate(
   poses: list[gtsam.Pose3],
   result: OptimizeResult,
   keys: CameraKeys,
-  lens_keeps: tuple[LandmarkTracks, LandmarkTracks],
+  lens_keep: LandmarkTracks,
   args: Args,
   tag_size_by_id: dict[int, float],
   cross_obs: list[CrossSighting],
@@ -139,8 +139,6 @@ def _build_camera_estimate(
   base_tag_corners_world: dict[str, list[Float64Array]],
 ) -> tuple[CameraEstimate, CameraSummary]:
   """One camera's estimate and summary line from the solved values."""
-  lenses: dict[str, LensEstimate] = {}
-  lens_rmse: dict[str, list[float]] = {}
   body_R_rear_lens = result.values.atRot3(keys.seat_key(camera.name))
   factory_body_R_rear_lens = camera.rear.setup.body_T_lens.rotation()
   body_T_rear_lens = gtsam.Pose3(
@@ -151,31 +149,34 @@ def _build_camera_estimate(
     f"  [{camera.name}/viz] rear seat correction: "
     f"{np.degrees(np.linalg.norm(seat_rotation)):.2f} deg"
   )
-  for channel, landmark_key, keep in (
-    (camera.front, keys.front_landmark_key, lens_keeps[0]),
-    (camera.rear, keys.rear_landmark_key, lens_keeps[1]),
-  ):
-    points, reprojections, rmse_per_kf = cull_and_reproject(
-      points_from_values(result.values, landmark_key, camera.name, keep),
-      channel.tracks,
-      poses,
-      channel.setup,
-    )
-    lens_rmse[channel.lens] = rmse_per_kf
-    lenses[channel.lens] = LensEstimate(
-      points=points,
-      keypoints=channel.keypoints,
-      rejected_keypoints=_per_kf_rejected_keypoints(
-        channel.rejected, camera.n_keyframes
-      ),
-      landmark_reprojections=reprojections,
+  points, reprojections, rmse_per_kf = cull_and_reproject(
+    points_from_values(result.values, keys, camera.name, lens_keep),
+    camera.front.tracks,
+    poses,
+    camera.front.setup,
+  )
+
+  def lens_tags(channel: LensChannel) -> LensEstimate:
+    """A lens's tag sightings and the axes they pose."""
+    return LensEstimate(
       tag_detections=channel.tags,
       tag_axes=_project_tag_axes_per_kf(channel.tags, channel.setup, tag_size_by_id),
-      rmse_per_kf=rmse_per_kf,
-      static_mask_rects=channel.static_mask_rects,
     )
-  front_rmse = _rms(lens_rmse["front"])
-  rear_rmse = _rms(lens_rmse["rear"])
+
+  lenses: dict[str, LensEstimate] = {
+    "front": replace(
+      lens_tags(camera.front),
+      points=points,
+      keypoints=camera.front.keypoints,
+      rejected_keypoints=_per_kf_rejected_keypoints(
+        camera.front.rejected, camera.n_keyframes
+      ),
+      landmark_reprojections=reprojections,
+      rmse_per_kf=rmse_per_kf,
+    ),
+    "rear": lens_tags(camera.rear),
+  }
+  front_rmse = _rms(rmse_per_kf)
   bbox_diagonal = bounding_box_diagonal(poses)
   seat_anchor_obs, seat_cross_obs = seat_evidence(
     camera, anchor_corners_by_tag, cross_obs
@@ -185,7 +186,6 @@ def _build_camera_estimate(
     n_keyframes=camera.n_keyframes,
     anchor_obs=len(anchored_keyframes(camera)),
     front_rmse=front_rmse,
-    rear_rmse=rear_rmse,
     base_tag_id=camera.tags.base,
     seat_rotation=(
       float(seat_rotation[0]),
@@ -195,10 +195,9 @@ def _build_camera_estimate(
     seat_anchor_obs=seat_anchor_obs,
     seat_cross_obs=seat_cross_obs,
   )
-  rear_note = f" rear_rmse={rear_rmse:.2f}px" if np.isfinite(rear_rmse) else ""
   print(
     f"  [{camera.name}] kf={camera.n_keyframes} bbox={bbox_diagonal:.3f} m "
-    f"front_rmse={front_rmse:.2f}px{rear_note}"
+    f"front_rmse={front_rmse:.2f}px"
   )
   biases_final = [
     result.values.atConstantBias(keys.bias_key(camera.name, i))
@@ -326,7 +325,7 @@ def build_run_estimate(
       poses=solve.body_poses[t.name],
       result=solve.result,
       keys=keys,
-      lens_keeps=solve.landmark_keep[t.name],
+      lens_keep=solve.landmark_keep[t.name],
       args=args,
       tag_size_by_id=tag_sizes,
       cross_obs=by_observer[t.name],

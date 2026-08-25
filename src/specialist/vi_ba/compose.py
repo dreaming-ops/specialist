@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import itertools
-from collections.abc import Callable, Iterable, Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from functools import partial
 
@@ -41,8 +41,8 @@ Float64Array = npt.NDArray[np.float64]
 
 # One lens's surviving observations, ``{track_id: {keyframe: pixel}}``.
 LandmarkTracks = dict[int, dict[int, Float64Array]]
-# Per camera slot, the ``(front, rear)`` pair each lens map comes in.
-LandmarkKeep = dict[str, tuple[LandmarkTracks, LandmarkTracks]]
+# Per camera slot, the landmark map its front lens carries.
+LandmarkKeep = dict[str, LandmarkTracks]
 __all__ = [
   "CameraKeys",
   "CrossSighting",
@@ -108,32 +108,23 @@ class CameraKeys:
   def bias_key(self, slot: str, kf: int) -> int:
     return self._kf_key(_BIAS_CHAR, slot, kf)
 
-  def _lm_key(self, slot: str, half: int, track_id: int) -> int:
-    """Landmark key in a front or rear slot; raises ValueError on slot overflow."""
+  def front_landmark_key(self, slot: str, track_id: int) -> int:
+    """Key for a landmark in the camera's slice; raise when ``track_id`` overflows."""
     if not 0 <= track_id < _MAX_LANDMARKS_PER_CAMERA:
       raise ValueError(
         f"track id {track_id} does not fit the {_MAX_LANDMARKS_PER_CAMERA}-wide "
         f"landmark slot for {slot!r}; its key would collide with another slot"
       )
-    return self._slice_key(
-      LANDMARK_CHAR, slot, half, _MAX_LANDMARKS_PER_CAMERA, track_id
+    return int(
+      gtsam.symbol(
+        LANDMARK_CHAR, self._index[slot] * _MAX_LANDMARKS_PER_CAMERA + track_id
+      )
     )
-
-  def front_landmark_key(self, slot: str, track_id: int) -> int:
-    return self._lm_key(slot, 0, track_id)
-
-  def rear_landmark_key(self, slot: str, track_id: int) -> int:
-    return self._lm_key(slot, 1, track_id)
 
   def theta_key(self, slot: str, finger_idx: int, kf: int) -> int:
     """Key for a finger joint angle at ``kf``; ``finger_idx`` 0 is left, 1 is right."""
-    return self._slice_key(
-      _JOINT_ANGLE_CHAR, slot, finger_idx, _MAX_KEYFRAMES_PER_CAMERA, kf
-    )
-
-  def _slice_key(self, char: str, slot: str, half: int, width: int, index: int) -> int:
-    """One integer key in the camera's ``half`` of two ``width``-wide slices."""
-    return int(gtsam.symbol(char, (self._index[slot] * 2 + half) * width + index))
+    index = (self._index[slot] * 2 + finger_idx) * _MAX_KEYFRAMES_PER_CAMERA + kf
+    return int(gtsam.symbol(_JOINT_ANGLE_CHAR, index))
 
   def anchor_key(self, tag_id: int) -> int:
     """Key for a wall tag's world pose, shared by every camera that sights it."""
@@ -227,8 +218,7 @@ def align_to_shared_world(
     align_t = np.asarray(align.translation(), dtype=np.float64)
     t.body_poses = [align.compose(p) for p in t.body_poses]
     t.velocities = [align_R @ v for v in t.velocities]
-    for ch in t.lenses:
-      ch.points = {tid: align_R @ p + align_t for tid, p in ch.points.items()}
+    t.front.points = {tid: align_R @ p + align_t for tid, p in t.front.points.items()}
   return world_T_anchor
 
 
@@ -665,7 +655,6 @@ def assemble_joint_graph(
       biases=t.biases,
       preintegrated=t.preintegrated,
       front=t.front,
-      rear=t.rear,
       sigma=args.frontend.reproj_sigma,
       velocity_prior_sigma=args.solver.velocity_prior_sigma,
       graph=graph,
@@ -674,7 +663,6 @@ def assemble_joint_graph(
       velocity_key_fn=partial(keys.velocity_key, t.name),
       bias_key_fn=partial(keys.bias_key, t.name),
       front_landmark_key_fn=partial(keys.front_landmark_key, t.name),
-      rear_landmark_key_fn=partial(keys.rear_landmark_key, t.name),
     )
   _add_seat_variables(cameras, keys, graph, values)
   _add_anchor_factors(cameras, keys, args, world_T_anchor, graph, values)
@@ -695,13 +683,12 @@ def assemble_joint_graph(
 
 
 def points_from_values(
-  values: gtsam.Values,
-  key_fn: Callable[[str, int], int],
-  slot: str,
-  tids: Iterable[int],
+  values: gtsam.Values, keys: CameraKeys, slot: str, tids: Iterable[int]
 ) -> dict[int, Float64Array]:
-  """Pull the solved 3-D landmark points out of ``values`` for ``tids``."""
+  """The solved front-lens landmark positions of ``slot`` for ``tids``."""
   return {
-    tid: np.asarray(values.atPoint3(key_fn(slot, tid)), dtype=np.float64)
+    tid: np.asarray(
+      values.atPoint3(keys.front_landmark_key(slot, tid)), dtype=np.float64
+    )
     for tid in tids
   }
