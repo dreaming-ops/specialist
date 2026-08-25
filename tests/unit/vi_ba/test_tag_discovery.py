@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 import gtsam
 import numpy as np
 import pytest
@@ -84,13 +86,14 @@ def _scene(
   foreign_still: bool = False,
   anchor: bool = True,
   rigid_anchor: bool = False,
+  own_ids: tuple[int, int, int] = (2000, 2001, 2002),
 ) -> list[list[TagDetection]]:
-  """Our gripper at 2000/2001/2002, the other operator's gripper and a wall anchor."""
+  """Our gripper at ``own_ids``, the other operator's gripper and a wall anchor."""
   thetas = own_thetas if own_thetas is not None else list(np.linspace(-0.2, 0.6, _N))
   picks: list[list[TagDetection]] = []
   for f in range(_N):
     dets: list[TagDetection | None] = []
-    _gripper(dets, _OWN, (2000, 2001, 2002), thetas[f], with_base, with_right_finger)
+    _gripper(dets, _OWN, own_ids, thetas[f], with_base, with_right_finger)
     if foreign_ids is not None:
       swing = 0.0 if foreign_still else 0.22 * f
       drift = 0.0 if foreign_still else 0.006 * f
@@ -116,9 +119,12 @@ def _scene(
   return picks
 
 
-def _discover(picks: list[list[TagDetection]]) -> GripperTags:
+def _discover(
+  picks: list[list[TagDetection]],
+  joints: dict[str, RevoluteJoint] | None = None,
+) -> GripperTags:
   return discover_gripper_tags(
-    picks, _PARAMS, _JOINTS, tag_size=_TAG_SIZE, anchor_tag_ids=_ANCHORS
+    picks, _PARAMS, joints or _JOINTS, tag_size=_TAG_SIZE, anchor_tag_ids=_ANCHORS
   )
 
 
@@ -141,6 +147,13 @@ def test_rigid_anchor_is_never_a_candidate() -> None:
   assert _discover(_scene(rigid_anchor=True)).base == 2000
 
 
+def test_tag_zero_is_a_finger_tag_like_any_other() -> None:
+  found = _discover(
+    _scene(with_right_finger=False, foreign_ids=None, own_ids=(2000, 0, 2002))
+  )
+  assert found == GripperTags(2000, (0, None))
+
+
 def test_sparse_sightings_are_dropped() -> None:
   picks = _scene()
   picks[3].append(
@@ -156,7 +169,11 @@ def test_rejects_two_cameras_sharing_any_tag() -> None:
   )
   with pytest.raises(ValueError, match="both discovered tag 2000"):
     validate_discovered(
-      {"t0": GripperTags(2000, (0, 0)), "t1": GripperTags(2000, (0, 0))}
+      {"t0": GripperTags(2000, (None, None)), "t1": GripperTags(2000, (None, None))}
+    )
+  with pytest.raises(ValueError, match="both discovered tag 0"):
+    validate_discovered(
+      {"t0": GripperTags(2000, (0, None)), "t1": GripperTags(2003, (0, None))}
     )
 
 
@@ -166,9 +183,11 @@ def test_uniform_picks_bounds() -> None:
   assert list(uniform_picks(5)) == [0, 1, 2, 3, 4]
 
 
-def test_the_other_operators_whole_gripper_is_rejected_by_rigidity() -> None:
-  """The foreign gripper fits the URDF too; only its rear-lens motion tells it apart."""
-  assert _discover(_scene()) == GripperTags(2000, (2001, 2002))
+def test_a_gripper_with_one_finger_tagged_assigns_rather_than_crashing() -> None:
+  """The untagged finger stays ``None``."""
+  joints = dict(_JOINTS)
+  joints["right_finger"] = replace(joints["right_finger"], joint_T_tag0=None)
+  assert _discover(_scene(), joints=joints) == GripperTags(2000, (2001, None))
 
 
 def test_a_second_still_gripper_refuses_rather_than_guesses() -> None:

@@ -183,12 +183,23 @@ def test_rect_mask_with_no_rectangles_keeps_everything_in_frame() -> None:
   assert list(_mask_ok(xy, [], (10, 10))) == [True, True, False, False]
 
 
-def test_flow_chunk_budget_tracks_available_memory() -> None:
-  """Total RAM over-commits: decoded keyframes and co-tenants already hold memory."""
+def test_flow_chunk_budget_tracks_available_memory(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """The flow chunk follows the memory that is available, not total RAM."""
   frames = [np.zeros((2880, 2880), dtype=np.uint8) for _ in range(400)]
   per_pair = 2880 * 2880 * 2 * 4 * 2
-  cached = features._flow_chunk_size(frames) * per_pair
-  assert 0 < cached <= max(features.available_ram() * 0.25, per_pair)
+
+  sizes = {}
+  for available in (8 * per_pair, 64 * per_pair):
+    monkeypatch.setattr(features, "available_ram", lambda a=available: a)
+    sizes[available] = features._flow_chunk_size(frames)
+    assert sizes[available] >= 1, "a budget always fits at least one pair"
+    assert sizes[available] * per_pair <= available, "the chunk over-commits"
+
+  assert sizes[8 * per_pair] < sizes[64 * per_pair], (
+    "the chunk ignores how much memory is available"
+  )
   assert features.available_ram() > 0
 
 
@@ -231,12 +242,14 @@ def test_flow_chunk_is_capped_regardless_of_memory() -> None:
   assert features._flow_chunk_size(frames) <= features._FLOW_CHUNK_MAX_PAIRS
 
 
-def test_cpu_budget_follows_the_cores_the_process_may_run_on() -> None:
-  """``os.cpu_count`` reports the machine, not the cores this process may use."""
-  budget = features.cpu_budget()
-  assert 0 < budget <= (os.cpu_count() or budget)
-  if (affinity := getattr(os, "sched_getaffinity", None)) is not None:
-    assert budget == len(affinity(0))
+def test_cpu_budget_follows_the_cores_the_process_may_run_on(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  """``sched_getaffinity`` exists only on Linux, so the test patches it in."""
+  monkeypatch.setattr(os, "sched_getaffinity", lambda _pid: {0, 1, 2, 3}, raising=False)
+  assert features.cpu_budget() == 4, "the budget ignores the cores it was given"
+  monkeypatch.delattr(os, "sched_getaffinity", raising=False)
+  assert 0 < features.cpu_budget() <= (os.cpu_count() or 4)
 
 
 def test_flow_falls_back_to_cv2_when_the_gpu_stream_fails_mid_lens(

@@ -1,4 +1,5 @@
-"""Nested tyro config dataclasses for ``track.py`` and ``prepare_camera``."""
+"""Config dataclasses: ``Args`` is the tyro CLI of ``estimate.py``; ``CameraArgs``
+feeds ``prepare_camera``."""
 
 from __future__ import annotations
 
@@ -111,7 +112,7 @@ class CameraArgs:
   """One camera's ``prepare_camera`` configuration."""
 
   session: SessionRecording
-  slot: str  # the camera's slot in the base recording
+  slot: str  # the camera's slot in the base recording, e.g. cam00
   anchor: AnchorCfg
   keyframe_every: int  # 0 = auto (round(fps/10))
   joints: dict[str, RevoluteJoint]

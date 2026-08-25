@@ -22,7 +22,7 @@ Float64Array = npt.NDArray[np.float64]
 
 
 def imu_chunks(
-  tracker: str,
+  slot: str,
   insv: InsvData,
   time_shift: float,
   window: tuple[float, float],
@@ -34,12 +34,12 @@ def imu_chunks(
   gyro = insv.gyro[keep]
   return [
     Chunk.from_columns(
-      schema.imu_entity(tracker, "gyro"),
+      schema.imu_signal(slot, "gyro"),
       indexes=[times],
       columns=rr.Scalars.columns(scalars=gyro),
     ),
     Chunk.from_columns(
-      schema.imu_entity(tracker, "accel"),
+      schema.imu_signal(slot, "accel"),
       indexes=[times],
       columns=rr.Scalars.columns(scalars=insv.accel[keep]),
     ),
@@ -70,7 +70,7 @@ BODY_R_IMU: Float64Array = np.array(
 
 
 def exposure_chunks(
-  tracker: str,
+  slot: str,
   insv: InsvData,
   time_shift: float,
   window: tuple[float, float],
@@ -82,7 +82,7 @@ def exposure_chunks(
     keep = (shifted >= window[0]) & (shifted <= window[1])
     chunks.append(
       Chunk.from_columns(
-        schema.exposure_entity(tracker),
+        schema.exposure(slot),
         indexes=[rr.TimeColumn(schema.TIMELINE, duration=shifted[keep])],
         columns=rr.Scalars.columns(scalars=insv.exposure_durations[keep]),
       )
@@ -92,7 +92,7 @@ def exposure_chunks(
     keep = (shifted >= window[0]) & (shifted <= window[1])
     chunks.append(
       Chunk.from_columns(
-        schema.ae_entity(tracker),
+        schema.autoexposure(slot),
         indexes=[rr.TimeColumn(schema.TIMELINE, duration=shifted[keep])],
         columns=cast("Any", rr.AnyValues).columns(
           **{name: values[keep] for name, values in insv.ae_stats.items()}
@@ -102,25 +102,23 @@ def exposure_chunks(
   return chunks
 
 
-def calibration_chunks(
-  tracker: str, insv: InsvData, body_R_imu: Float64Array = BODY_R_IMU
-) -> list[Chunk]:
+def calibration_chunks(slot: str, insv: InsvData) -> list[Chunk]:
   """Each lens's raw-unit MEI intrinsics and body_T_lens, and the IMU mounting."""
   offset_v3 = parse_offset_v3(insv.offset_v3)
-  rotation = gtsam.Rot3(np.asarray(body_R_imu, dtype=np.float64))
-  chunks = [
+  rotation = gtsam.Rot3(BODY_R_IMU)
+  return [
     _lens_calibration(
-      schema.calibration_entity(tracker, "front"),
+      schema.lens(slot, "front"),
       offset_v3.front,
       offset_v3.body_T_front_lens,
     ),
     _lens_calibration(
-      schema.calibration_entity(tracker, "rear"),
+      schema.lens(slot, "rear"),
       offset_v3.rear,
       offset_v3.body_T_rear_lens,
     ),
     Chunk.from_columns(
-      schema.calibration_entity(tracker, "imu"),
+      schema.imu(slot),
       indexes=[],
       columns=[
         *rr.Transform3D.columns(
@@ -133,29 +131,27 @@ def calibration_chunks(
         ),
       ],
     ),
-    Chunk.from_columns(
-      schema.calibration_entity(tracker, "factory_pinhole"),
-      indexes=[],
-      columns=rr.AnyValues.columns(
-        camera_matrix=[insv.intrinsics.camera_matrix.ravel()],
-        distortion_coeffs=[insv.intrinsics.distortion_coeffs],
-        calib_width=[float(insv.intrinsics.calib_width)],
-        calib_height=[float(insv.intrinsics.calib_height)],
-        distortion_model=[insv.intrinsics.distortion_model],
-      ),
-    ),
   ]
-  if insv.capture:
-    chunks.append(
-      Chunk.from_columns(
-        schema.calibration_entity(tracker, "capture"),
-        indexes=[],
-        columns=cast("Any", rr.AnyValues).columns(
-          **{name: [value] for name, value in insv.capture.items()}
-        ),
-      )
-    )
-  return chunks
+
+
+def capture_chunk(
+  slot: str,
+  insv: InsvData,
+  source: str,
+  clock_shift: float,
+  clock_confidence: float,
+) -> Chunk:
+  """The camera's metadata and its shift ``t_session = t_capture + clock_shift``."""
+  return Chunk.from_columns(
+    schema.camera(slot),
+    indexes=[],
+    columns=cast("Any", rr.AnyValues).columns(
+      source=[source],
+      clock_shift=[clock_shift],
+      clock_confidence=[clock_confidence],
+      **{name: [value] for name, value in insv.capture.items()},
+    ),
+  )
 
 
 def write_base_recording(
@@ -163,7 +159,6 @@ def write_base_recording(
   session_id: str,
   video_streams: list[LazyChunkStream],
   sidecar_chunks: list[Chunk],
-  properties: dict[str, dict[str, Any]],
 ) -> None:
   """Merge all streams, optimize for storage, and write one base rrd."""
   merged = LazyChunkStream.merge(
@@ -178,9 +173,6 @@ def write_base_recording(
     with rr.RecordingStream(schema.APPLICATION_ID, recording_id=session_id) as stream:
       stream.save(str(partial))
       send_chunks(store, recording=stream)
-      for name, values in properties.items():
-        if values:
-          stream.send_property(name, rr.AnyValues(**values))
     partial.replace(out_path)
   finally:
     partial.unlink(missing_ok=True)

@@ -151,9 +151,7 @@ def triangulate_lens(
     return {}
   lens_poses = [pose.compose(body_T_lens) for pose in body_poses]
   lens_rotations = np.stack([pose.rotation().matrix() for pose in lens_poses])
-  lens_centers = np.stack(
-    [np.asarray(pose.translation(), dtype=np.float64) for pose in lens_poses]
-  )
+  lens_centers = np.stack([translation(pose) for pose in lens_poses])
   out: dict[int, Float64Array] = {}
   for tid, kfs, bearings in unproject_tracks(tracks, params, min_obs=min_track_length):
     xyz = triangulate_track_multiview(

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 import gtsam
 import numpy as np
@@ -13,7 +13,6 @@ from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.compose import (
   CameraKeys,
   CrossSighting,
-  LandmarkKeep,
   LandmarkTracks,
   anchor_sightings,
   anchored_keyframes,
@@ -21,10 +20,11 @@ from specialist.vi_ba.compose import (
 )
 from specialist.vi_ba.configs import Args
 from specialist.vi_ba.finger_kinematics import pin_angles_to_keyframes
-from specialist.vi_ba.geometry import bounding_box_diagonal, path_length
+from specialist.vi_ba.geometry import bounding_box_diagonal
 from specialist.vi_ba.highrate import propagate_highrate
 from specialist.vi_ba.landmark_cull import cull_and_reproject
 from specialist.vi_ba.optimize import OptimizeResult
+from specialist.vi_ba.reference_solve import ReferenceSolve
 from specialist.vi_ba.single_camera import PreparedCamera
 from specialist.vi_ba.summary import CameraSummary
 from specialist.vi_ba.tag_detection import (
@@ -32,11 +32,12 @@ from specialist.vi_ba.tag_detection import (
   estimate_lens_T_tag,
   tag_corners_in_frame,
 )
-from specialist.vi_ba.viz import CameraVizData, LensVizData
+from specialist.vi_ba.urdf_joints import FINGER_JOINTS
+from specialist.vi_ba.viz import CameraEstimate, LensEstimate
 
 Float64Array = npt.NDArray[np.float64]
 
-__all__ = ["RunOutputs", "build_run_outputs"]
+__all__ = ["RunEstimate", "build_run_estimate"]
 
 
 def _rays(
@@ -128,9 +129,8 @@ def _project_tag_axes_per_kf(
   return out
 
 
-def _build_tracker_outputs(
+def _build_camera_estimate(
   camera: PreparedCamera,
-  base_tag_id: int,
   poses: list[gtsam.Pose3],
   result: OptimizeResult,
   keys: CameraKeys,
@@ -140,9 +140,9 @@ def _build_tracker_outputs(
   cross_obs: list[CrossSighting],
   anchor_corners_by_tag: dict[int, Float64Array],
   base_tag_corners_world: dict[str, list[Float64Array]],
-) -> tuple[CameraVizData, CameraSummary]:
-  """One camera's Rerun payload and summary line from the solved values."""
-  lenses: dict[str, LensVizData] = {}
+) -> tuple[CameraEstimate, CameraSummary]:
+  """One camera's estimate and summary line from the solved values."""
+  lenses: dict[str, LensEstimate] = {}
   lens_rmse: dict[str, list[float]] = {}
   for channel, landmark_key, keep in (
     (camera.front, keys.front_landmark_key, lens_keeps[0]),
@@ -155,7 +155,7 @@ def _build_tracker_outputs(
       channel.setup,
     )
     lens_rmse[channel.lens] = rmse_per_kf
-    lenses[channel.lens] = LensVizData(
+    lenses[channel.lens] = LensEstimate(
       points=points,
       keypoints=channel.keypoints,
       rejected_keypoints=_per_kf_rejected_keypoints(
@@ -165,29 +165,24 @@ def _build_tracker_outputs(
       tag_detections=channel.tags,
       tag_axes=_project_tag_axes_per_kf(channel.tags, channel.setup, tag_size_by_id),
       rmse_per_kf=rmse_per_kf,
-      body_T_lens=channel.setup.body_T_lens,
-      mei={k: float(v) for k, v in asdict(channel.setup.params).items()},
       static_mask_rects=channel.static_mask_rects,
     )
   front_rmse = _rms(lens_rmse["front"])
   rear_rmse = _rms(lens_rmse["rear"])
   bbox_diagonal = bounding_box_diagonal(poses)
   summary = CameraSummary(
-    name=camera.name,
+    slot=camera.name,
     n_keyframes=camera.n_keyframes,
     anchor_obs=len(anchored_keyframes(camera)),
-    bounding_box_diagonal=bbox_diagonal,
-    path_length=path_length(poses),
     front_rmse=front_rmse,
     rear_rmse=rear_rmse,
-    base_tag_id=base_tag_id,
+    base_tag_id=camera.tags.base,
   )
   rear_note = f" rear_rmse={rear_rmse:.2f}px" if np.isfinite(rear_rmse) else ""
   print(
-    f"  [{camera.name}/viz] kf={camera.n_keyframes} bbox={bbox_diagonal:.3f} m "
+    f"  [{camera.name}] kf={camera.n_keyframes} bbox={bbox_diagonal:.3f} m "
     f"front_rmse={front_rmse:.2f}px{rear_note}"
   )
-  base_tag_poses = [p.compose(camera.body_T_base_tag) for p in poses]
   biases_final = [
     result.values.atConstantBias(keys.bias_key(camera.name, i))
     for i in range(camera.n_keyframes)
@@ -196,24 +191,19 @@ def _build_tracker_outputs(
     np.asarray(result.values.atVector(keys.velocity_key(camera.name, i)))
     for i in range(camera.n_keyframes)
   ]
-  highrate_times = highrate_positions = highrate_quats = highrate_vels = None
-  if camera.imu is not None and biases_final:
-    # The propagated series keeps the IMU sample times and never resamples.
-    hr_t, hr_p, hr_q, hr_v = propagate_highrate(
+  # The propagated series keeps the IMU sample times and never resamples.
+  highrate_times, highrate_positions, highrate_quats, highrate_vels = (
+    propagate_highrate(
       poses, camera.keyframe_times, velocities_final, biases_final, camera.imu
     )
-    highrate_times = hr_t
-    highrate_positions = hr_p
-    highrate_quats = hr_q
-    highrate_vels = hr_v
+  )
   joint_frame_angles: dict[str, tuple[np.ndarray, np.ndarray]] = {}
-  if camera.finger_frame_angles:
-    kf_t = np.asarray(camera.keyframe_times, dtype=np.float64)
-    for joint, (f_times, f_angles) in camera.finger_frame_angles.items():
-      solved = np.asarray(camera.joint_angles[joint], dtype=np.float64)
-      n_j = min(len(kf_t), len(solved))
-      pinned = pin_angles_to_keyframes(f_times, f_angles, kf_t[:n_j], solved[:n_j])
-      joint_frame_angles[joint] = (f_times, pinned)
+  kf_t = np.asarray(camera.keyframe_times, dtype=np.float64)
+  for joint, (f_times, f_angles) in camera.finger_frame_angles.items():
+    solved = np.asarray(camera.joint_angles[joint], dtype=np.float64)
+    n_j = min(len(kf_t), len(solved))
+    pinned = pin_angles_to_keyframes(f_times, f_angles, kf_t[:n_j], solved[:n_j])
+    joint_frame_angles[joint] = (f_times, pinned)
   anchor_lines, cross_lines = _factor_observation_lines(
     camera,
     poses,
@@ -222,8 +212,8 @@ def _build_tracker_outputs(
     base_tag_corners_world,
     args.anchor.max_half_angle,
   )
-  viz_data = CameraVizData(
-    name=camera.name,
+  estimate = CameraEstimate(
+    slot=camera.name,
     body_poses=poses,
     keyframe_times=np.asarray(camera.keyframe_times, dtype=np.float64),
     keyframe_frames=np.asarray(camera.keyframe_frames, dtype=np.int64),
@@ -234,24 +224,31 @@ def _build_tracker_outputs(
       np.asarray(b.accelerometer(), dtype=np.float64) for b in biases_final
     ],
     anchor_obs_lines=anchor_lines,
-    cross_tracker_lines=cross_lines,
-    urdf_root_poses=base_tag_poses,
-    joint_angles=camera.joint_angles or None,
+    cross_camera_lines=cross_lines,
     tcp_in_base_tag=args.gripper.tcp_in_base_tag,
     highrate_times=highrate_times,
     highrate_positions=highrate_positions,
     highrate_quats=highrate_quats,
     highrate_vels=highrate_vels,
-    joint_frame_angles=joint_frame_angles or None,
+    joint_frame_angles=joint_frame_angles,
     body_T_base_tag=camera.body_T_base_tag,
+    base_tag_id=camera.tags.base,
+    joint_tags={
+      joint: tag_id
+      for joint, tag_id in zip(FINGER_JOINTS, camera.tags.fingers, strict=True)
+      if tag_id is not None
+    },
   )
-  return viz_data, summary
+  return estimate, summary
 
 
 def _tag_size_by_id(args: Args, cameras: list[PreparedCamera]) -> dict[int, float]:
   """Side length (m) per tag id, for the anchors and every camera's gripper tags."""
   gripper_ids = {
-    tid for t in cameras for tid in (t.tags.base, *t.tags.fingers) if tid > 0
+    tid
+    for camera in cameras
+    for tid in (camera.tags.base, *camera.tags.fingers)
+    if tid is not None
   }
   return {
     **{tid: float(args.anchor.tag_size) for tid in args.anchor.tag_ids},
@@ -275,56 +272,58 @@ def _base_tag_corners_world(
 
 
 @dataclass(frozen=True)
-class RunOutputs:
-  """A solved run's per-camera payloads and summaries, and its solved anchor poses."""
+class RunEstimate:
+  """A run's camera estimates, summary lines and anchor poses that hold the gauge."""
 
-  viz_trackers: list[CameraVizData]
-  per_tracker: list[CameraSummary]
+  cameras: list[CameraEstimate]
+  per_camera: list[CameraSummary]
   world_T_anchor: dict[int, gtsam.Pose3]
+  # The anchor whose pose pins the world gauge, one of world_T_anchor.
+  reference_tag_id: int
 
 
-def build_run_outputs(
+def build_run_estimate(
   cameras: list[PreparedCamera],
-  optimized_body_poses: dict[str, list[gtsam.Pose3]],
-  result: OptimizeResult,
+  solve: ReferenceSolve,
   keys: CameraKeys,
-  landmark_keep: LandmarkKeep,
   args: Args,
   cross_obs: list[CrossSighting],
-  world_T_ref_anchor: gtsam.Pose3,
-  reference_tag_id: int,
-  secondary_anchor_world: dict[int, gtsam.Pose3],
-) -> RunOutputs:
+) -> RunEstimate:
   """Each camera's payload from one solved graph, on the base recording's clock."""
-  world_T_anchor = {reference_tag_id: world_T_ref_anchor, **secondary_anchor_world}
+  world_T_anchor = {
+    solve.ref_tag_id: solve.world_T_ref_anchor,
+    **solve.secondary_anchor_world,
+  }
   anchor_corners_by_tag = {
     tag_id: tag_corners_in_frame(pose, args.anchor.tag_size)
     for tag_id, pose in world_T_anchor.items()
   }
   base_tag_corners = _base_tag_corners_world(
-    cameras, optimized_body_poses, args.gripper.tag_size
+    cameras, solve.body_poses, args.gripper.tag_size
   )
   tag_sizes = _tag_size_by_id(args, cameras)
   by_observer: dict[str, list[CrossSighting]] = {t.name: [] for t in cameras}
   for sighting in cross_obs:
     by_observer[sighting.observer].append(sighting)
 
-  viz_trackers: list[CameraVizData] = []
-  per_tracker: list[CameraSummary] = []
-  for t in cameras:
-    viz_data, summary = _build_tracker_outputs(
+  built = [
+    _build_camera_estimate(
       t,
-      base_tag_id=t.tags.base,
-      poses=optimized_body_poses[t.name],
-      result=result,
+      poses=solve.body_poses[t.name],
+      result=solve.result,
       keys=keys,
-      lens_keeps=landmark_keep[t.name],
+      lens_keeps=solve.landmark_keep[t.name],
       args=args,
       tag_size_by_id=tag_sizes,
       cross_obs=by_observer[t.name],
       anchor_corners_by_tag=anchor_corners_by_tag,
       base_tag_corners_world=base_tag_corners,
     )
-    viz_trackers.append(viz_data)
-    per_tracker.append(summary)
-  return RunOutputs(viz_trackers, per_tracker, world_T_anchor)
+    for t in cameras
+  ]
+  return RunEstimate(
+    [e for e, _ in built],
+    [s for _, s in built],
+    world_T_anchor,
+    solve.ref_tag_id,
+  )

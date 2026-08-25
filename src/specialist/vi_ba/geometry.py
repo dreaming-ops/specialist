@@ -16,7 +16,6 @@ __all__ = [
   "bounding_box_diagonal",
   "matrices_to_quats",
   "max_parallax",
-  "path_length",
   "quat_xyzw",
   "quats_to_matrices",
   "rotate_about_z",
@@ -104,11 +103,5 @@ def bounding_box_diagonal(poses: list[gtsam.Pose3]) -> float:
   """Diagonal of the axis-aligned box enclosing the trajectory's translations."""
   if len(poses) < 2:
     return 0.0
-  pts = np.array([np.asarray(p.translation(), dtype=np.float64) for p in poses])
+  pts = np.array([translation(p) for p in poses])
   return float(np.linalg.norm(pts.max(axis=0) - pts.min(axis=0)))
-
-
-def path_length(poses: list[gtsam.Pose3]) -> float:
-  """Total distance traveled along the trajectory, summed keyframe to keyframe."""
-  pts = [np.asarray(p.translation(), dtype=np.float64) for p in poses]
-  return float(sum(np.linalg.norm(pts[i] - pts[i - 1]) for i in range(1, len(pts))))

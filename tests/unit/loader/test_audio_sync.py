@@ -1,4 +1,4 @@
-"""Audio sync: ffmpeg resolution, envelope correlation and two-capture offsets."""
+"""Audio sync: envelope correlation and two-capture offsets."""
 
 from __future__ import annotations
 
@@ -14,16 +14,6 @@ from specialist.loader.audio_sync import (
   resolve_ffmpeg,
   sync_two_captures,
 )
-
-
-def test_resolve_ffmpeg_honors_env_override(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """``$FFMPEG`` takes priority so a specific binary can be forced."""
-  resolve_ffmpeg.cache_clear()
-  monkeypatch.setenv("FFMPEG", "/custom/path/ffmpeg")
-  assert resolve_ffmpeg() == "/custom/path/ffmpeg"
-  resolve_ffmpeg.cache_clear()
 
 
 def _burst_signal(

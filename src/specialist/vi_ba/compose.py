@@ -42,15 +42,12 @@ Float64Array = npt.NDArray[np.float64]
 
 # One lens's surviving observations, ``{track_id: {keyframe: pixel}}``.
 LandmarkTracks = dict[int, dict[int, Float64Array]]
-# One lens's triangulated points, ``{track_id: world_point}``.
-LandmarkPoints = dict[int, Float64Array]
 # Per camera slot, the ``(front, rear)`` pair each lens map comes in.
 LandmarkKeep = dict[str, tuple[LandmarkTracks, LandmarkTracks]]
 __all__ = [
   "CameraKeys",
   "CrossSighting",
   "LandmarkKeep",
-  "LandmarkPoints",
   "LandmarkTracks",
   "align_to_shared_world",
   "anchor_sightings",
@@ -223,7 +220,7 @@ def cross_sightings(
     targets: dict[int, int | None] = {owner.tags.base: None}
     fingers = zip(FINGER_JOINTS, owner.tags.fingers, strict=True)
     for idx, (name, finger_id) in enumerate(fingers):
-      if finger_id > 0 and name in owner.finger_reproj:
+      if finger_id is not None and name in owner.finger_reproj:
         targets[finger_id] = idx
     for observer in cameras:
       if observer is owner:

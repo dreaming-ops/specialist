@@ -161,7 +161,7 @@ class PreparedCamera:
   # This camera's own tag ids, discovered from its rear lens.
   tags: GripperTags
   # Body-frame, rescaled IMU samples, for IMU-rate propagation between keyframes.
-  imu: ImuSamples | None = None
+  imu: ImuSamples
   # Per-joint raw ``(times, angles)`` at the finger rate; export pins them to the solve.
   finger_frame_angles: dict[str, tuple[Float64Array, Float64Array]] = field(
     default_factory=dict
@@ -239,7 +239,7 @@ def _choose_prep_anchor(
   obs_by_tag: dict[int, dict[int, dict[str, gtsam.Pose3]]],
 ) -> int:
   """The id sighted at most keyframes; a tie goes to the earlier ``tag_ids`` entry."""
-  return max(tag_ids, key=lambda tid: len(obs_by_tag.get(tid, {})))
+  return max(tag_ids, key=lambda tid: len(obs_by_tag[tid]))
 
 
 def _first_sighting_local(
@@ -504,8 +504,9 @@ def discover_camera_tags(args: CameraArgs) -> GripperTags:
     raise TagDiscoveryError(f"{args.slot}: {exc}") from exc
 
 
-def prepare_camera(slot: str, args: CameraArgs, tags: GripperTags) -> PreparedCamera:
+def prepare_camera(args: CameraArgs, tags: GripperTags) -> PreparedCamera:
   """Every per-camera stage; body poses land in the camera's gravity-aligned world."""
+  slot = args.slot
   configure_detector(args.frontend.parallel_tag_detect and args.parallel_siblings)
   session = args.session
   front_video = session.lens_video(args.slot, "front")
@@ -610,12 +611,10 @@ def prepare_camera(slot: str, args: CameraArgs, tags: GripperTags) -> PreparedCa
     for tag_id in args.anchor.tag_ids
   }
   prep_anchor_tag_id = _choose_prep_anchor(args.anchor.tag_ids, obs_by_tag)
-  anchor_obs_per_kf: dict[int, dict[str, gtsam.Pose3]] = obs_by_tag.get(
-    prep_anchor_tag_id, {}
-  )
+  anchor_obs_per_kf = obs_by_tag[prep_anchor_tag_id]
   reference_tag_id = args.anchor.tag_ids[0]
   if prep_anchor_tag_id != reference_tag_id:
-    n_ref = len(obs_by_tag.get(reference_tag_id, {}))
+    n_ref = len(obs_by_tag[reference_tag_id])
     print(
       f"  [{slot}/anchor] prep reference: tag {prep_anchor_tag_id} "
       f"({len(anchor_obs_per_kf)} sighted keyframes vs {n_ref} for "

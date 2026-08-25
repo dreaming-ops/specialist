@@ -13,10 +13,10 @@ def test_lens_video_refuses_markerless_streams(
 ) -> None:
   table = pa.table({schema.TIMELINE: pa.array([0, 1], type=pa.duration("ns"))})
   monkeypatch.setattr(
-    frames, "_scan_video", lambda path: {"image/t/front": (table, [])}
+    frames, "_scan_video", lambda path: {"camera/cam00/front/video": (table, [])}
   )
   with pytest.raises(RuntimeError, match="no sync-sample markers"):
-    frames.LensVideo(Path("base.rrd"), "t", "front")
+    frames.LensVideo(Path("base.rrd"), "cam00", "front")
 
 
 def _time_batch(times: list[int], values: list[int]) -> pa.RecordBatch:

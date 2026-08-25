@@ -1,40 +1,34 @@
-"""The run summary the track layer carries as properties."""
+"""The run summary the estimate layer carries."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 
-__all__ = ["Summary", "CameraSummary"]
+__all__ = ["CameraSummary", "Summary"]
 
 
 @dataclass(frozen=True)
 class CameraSummary:
-  """One tracker's line in the run summary."""
+  """How one camera's own reprojections closed, written to its ``fit`` entity."""
 
-  name: str
+  slot: str
   n_keyframes: int
   anchor_obs: int
-  bounding_box_diagonal: float
-  path_length: float
   # Reprojection RMSE in pixels over the whole take, per lens.
-  front_rmse: float = float("nan")
-  rear_rmse: float = float("nan")
-  # Base tag the tracker is solved against; which arm carries it varies per take.
-  base_tag_id: int = -1
+  front_rmse: float
+  rear_rmse: float
+  # The gripper base tag this camera solves against.
+  base_tag_id: int
 
 
 @dataclass(frozen=True)
 class Summary:
-  """The run's header: what it processed and the solve's account of how it went."""
+  """The run's account of the estimate, written as the ``estimate`` property."""
 
-  sources: tuple[str, ...]
-  slots: tuple[str, ...]
-  cross_tracker_obs: int
+  cross_camera_obs: int
   initial_graph_error: float
   final_graph_error: float
   solver_iterations: int
   # Worst secondary-anchor move off its seed (meters, radians); NaN when none exists.
-  secondary_anchor_move_translation: float = float("nan")
-  secondary_anchor_move_rotation: float = float("nan")
-  # Overridden defaults as "dotted.name=value"; two empty tuples make layers comparable.
-  non_default_flags: tuple[str, ...] = ()
+  secondary_anchor_move_translation: float
+  secondary_anchor_move_rotation: float

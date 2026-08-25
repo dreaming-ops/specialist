@@ -27,7 +27,7 @@ _SCAN_LOCK = threading.Lock()
 
 
 def _scan_video(base_rrd: Path) -> dict[str, tuple[pa.Table, list[int]]]:
-  """Per lens entity, the ``(video_time, sample)`` table and keyframe times (ns)."""
+  """Each lens entity's ``(video_time, sample)`` table and keyframe times (ns)."""
   key = (str(base_rrd), base_rrd.stat().st_mtime)
   with _SCAN_LOCK:
     cached = _SCAN_CACHE.get(key)
@@ -40,7 +40,7 @@ def _scan_video(base_rrd: Path) -> dict[str, tuple[pa.Table, list[int]]]:
       .store()
       .stream()
       .filter(
-        content="/image/**",
+        content=f"/{schema.CAMERA_ROOT}/**",
         components=["VideoStream:sample", "VideoStream:is_keyframe"],
       )
     )
@@ -99,8 +99,8 @@ def lens_times(base_rrd: Path, entity: str) -> Float64Array:
 class LensVideo:
   """One lens's encoded samples and the timeline they sit on."""
 
-  def __init__(self, base_rrd: Path, tracker: str, lens: str) -> None:
-    self.entity = schema.image_entity(tracker, lens)
+  def __init__(self, base_rrd: Path, slot: str, lens: str) -> None:
+    self.entity = schema.video(slot, lens)
     table, iframe_ns = _sample_table(base_rrd, self.entity)
     times_ns = schema.times_ns(table.column(schema.TIMELINE))
     self.times: Float64Array = times_ns / schema.NS_PER_SECOND

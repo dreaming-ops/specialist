@@ -1,4 +1,4 @@
-"""Register a dataset's layers on a Rerun catalog dataset, one layer per directory.
+"""Register a dataset's layers on a Rerun catalog dataset, refusing name collisions.
 
 Usage:
     uv run python scripts/register.py --catalog-url rerun+http://host:port \
@@ -19,8 +19,15 @@ from rerun.catalog import CatalogClient, DatasetEntry, OnDuplicateSegmentLayer
 from rerun.experimental import RrdReader
 
 from specialist.record.read import check_frame_alignment
+from specialist.record.schema import (
+  APPLICATION_ID,
+  ESTIMATE,
+  anchor_id_of,
+  anchor_ids_in,
+  slots_in,
+)
 from specialist.record.session import SessionRecording
-from specialist.vi_ba.viz import blueprint_for_names, segment_card_blueprint
+from specialist.vi_ba.blueprint import blueprint_for_slots, segment_card_blueprint
 
 
 @dataclass
@@ -45,6 +52,19 @@ def recording_id(rrd: Path) -> str:
   return str(entries[0].recording_id)
 
 
+def anchor_tag_sizes(rrds: list[Path]) -> set[float]:
+  """The anchor tag widths that the estimate layers record."""
+  sizes = set()
+  for rrd in rrds:
+    for chunk in RrdReader(str(rrd)).stream():
+      if anchor_id_of(str(chunk.entity_path)) is None:
+        continue
+      batch = chunk.to_record_batch()
+      if "tag_size" in batch.schema.names:
+        sizes |= {v for row in batch.column("tag_size").to_pylist() if row for v in row}
+  return sizes
+
+
 def dataset_layers(root: Path) -> tuple[list[Path], dict[str, list[Path]]]:
   """``(base_files, {layer_name: files})``; exits when ``base`` holds no rrd."""
   bases = sorted((root / "base").glob("*.rrd"))
@@ -56,6 +76,37 @@ def dataset_layers(root: Path) -> tuple[list[Path], dict[str, list[Path]]]:
     if d.is_dir() and d.name != "base" and (files := sorted(d.glob("*.rrd")))
   }
   return bases, layers
+
+
+def written_names(rrd: Path) -> tuple[set[tuple[str, str]], set[tuple[str, str]]]:
+  """Every ``(entity, component)`` and ``(property group, key)`` one file writes."""
+  columns = RrdReader(str(rrd)).store().schema().component_columns()
+  entities = {(c.entity_path, c.component) for c in columns if not c.is_property}
+  properties = {(c.entity_path, c.component) for c in columns if c.is_property}
+  return entities, properties
+
+
+def check_no_collisions(files_by_session: dict[str, list[Path]]) -> None:
+  """Refuse a session whose layers write the same name twice."""
+  clashes = []
+  for session, files in sorted(files_by_session.items()):
+    if len(files) < 2:
+      continue
+    seen: dict[tuple[str, str], Path] = {}
+    seen_properties: dict[tuple[str, str], Path] = {}
+    for path in files:
+      entities, properties = written_names(path)
+      for owned, names in ((seen, entities), (seen_properties, properties)):
+        for name in sorted(names):
+          if name in owned:
+            clashes.append(
+              f"{session}: {name[0]}:{name[1]} written by both "
+              f"{owned[name].parent.name}/ and {path.parent.name}/"
+            )
+          else:
+            owned[name] = path
+  if clashes:
+    raise SystemExit("layers collide:\n  " + "\n  ".join(clashes))
 
 
 def check_layers_attach(base_ids: set[str], layers: dict[Path, str]) -> None:
@@ -110,9 +161,13 @@ def main(args: Args) -> None:
     entry = client.create_dataset(args.dataset)
     known = set()
   layers = {p: recording_id(p) for files in layer_files.values() for p in files}
-  # Only the track layer shares the base's frame clock, so only its frames are checked.
+  by_session: dict[str, list[Path]] = {}
+  for path, rid in {**bases, **layers}.items():
+    by_session.setdefault(rid, []).append(path)
+  check_no_collisions(by_session)
+  # Only the estimate layer shares the base's frame clock.
   base_by_id = {rid: p for p, rid in bases.items()}
-  for path in layer_files.get("track", []):
+  for path in layer_files.get("estimate", []):
     base = base_by_id.get(layers[path])
     if base is None:
       print(
@@ -134,33 +189,69 @@ def main(args: Args) -> None:
   replace = set(args.replace_base)
   keep = {p: "base" for p, rid in bases.items() if rid not in replace}
   redo = {p: "base" for p, rid in bases.items() if rid in replace}
-  accepted, _ = register_batch(entry, keep, OnDuplicateSegmentLayer.SKIP, failures)
-  redone, _ = register_batch(entry, redo, OnDuplicateSegmentLayer.REPLACE, failures)
+  accepted, kept_bad = register_batch(
+    entry, keep, OnDuplicateSegmentLayer.SKIP, failures
+  )
+  redone, redone_bad = register_batch(
+    entry, redo, OnDuplicateSegmentLayer.REPLACE, failures
+  )
   accepted |= redone
-  print(f"registered {len(bases) - len(failures)} of {len(bases)} base recording(s)")
+  bad = sum(kept_bad.values()) + sum(redone_bad.values())
+  print(f"registered {len(bases) - bad} of {len(bases)} base recording(s)")
+  if failures:
+    raise SystemExit(f"{len(failures)} registration(s) failed; no blueprint installed")
   check_layers_attach(known | accepted, layers)
   # `layer_name` takes one name per URI.
   layer_of = {p: name for name, files in layer_files.items() for p in files}
   _, failed = register_batch(entry, layer_of, OnDuplicateSegmentLayer.REPLACE, failures)
   for name, files in layer_files.items():
     print(f"registered {len(files) - failed[name]} {name} layer(s)")
+  if failures:
+    raise SystemExit(f"{len(failures)} registration(s) failed; no blueprint installed")
 
-  names = sorted({n for p in bases for n in _recording(p).slots})
+  paths = [c.entity_path for c in entry.schema().component_columns()]
+  slots = slots_in(paths)
+  if not slots:
+    raise SystemExit(
+      "the catalog dataset holds no camera slots; no blueprint installed"
+    )
+  anchors = anchor_ids_in(paths)
+  if not anchors:
+    print(
+      "  [warn] the catalog dataset holds no world anchors; the blueprint draws none"
+    )
+  sizes = anchor_tag_sizes(layer_files.get(ESTIMATE, []))
+  if len(sizes) > 1:
+    raise SystemExit(f"the dataset solved anchors at {sorted(sizes)} m; no blueprint")
+  if anchors and not sizes:
+    print("  [warn] the estimate layers record no anchor tag size; drawing 0.1 m")
+  tag_size = sizes.pop() if sizes else 0.1
   # Segments take the catalog dataset id as application id; a blueprint must match it.
   blueprint_app_id = str(entry.id)
   with tempfile.TemporaryDirectory() as tmp:
     rbl = Path(tmp) / f"{args.dataset}.rbl"
-    blueprint_for_names(names).save(blueprint_app_id, str(rbl))
+    blueprint_for_slots(slots, anchor_tag_ids=anchors, anchor_tag_size=tag_size).save(
+      blueprint_app_id, str(rbl)
+    )
     entry.register_blueprint(rbl.resolve().as_uri(), set_default=True)
     # The segment table renders every session, so its blueprint decodes no video.
     cards = Path(tmp) / f"{args.dataset}-cards.rbl"
-    segment_card_blueprint(names).save(blueprint_app_id, str(cards))
+    segment_card_blueprint(slots).save(blueprint_app_id, str(cards))
     entry.register_blueprint(
       cards.resolve().as_uri(), set_default=True, segment_table=True
     )
   print(f"installed the default + segment-table blueprints on {args.dataset!r}")
-  if failures:
-    raise SystemExit(f"{len(failures)} registration(s) failed")
+  # One .rbl under the recordings' app id, for session files opened directly.
+  blueprints_dir = args.root / "blueprints"
+  blueprints_dir.mkdir(exist_ok=True)
+  dataset_rbl = blueprints_dir / "specialist.rbl"
+  blueprint_for_slots(slots, anchor_tag_ids=anchors, anchor_tag_size=tag_size).save(
+    APPLICATION_ID, str(dataset_rbl)
+  )
+  print(
+    f"wrote {dataset_rbl.resolve()}: slots {slots}, "
+    f"anchor tags {anchors} at {tag_size} m"
+  )
 
 
 if __name__ == "__main__":

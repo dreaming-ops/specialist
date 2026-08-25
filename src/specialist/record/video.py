@@ -55,7 +55,7 @@ def _shift_chunk(
   if not values or max(values) < window_ns[0] or min(values) > window_ns[1]:
     return []
   batch = batch.set_column(index, batch.schema.field(index), shifted)
-  # Bucket by session-clock frame number, so every tracker's panel shows one instant.
+  # Bucket by session-clock frame number: every camera shows the same instant.
   session_frames = np.asarray([round(v / period_ns) for v in values], dtype=np.int64)
   batch = batch.append_column(
     pa.field(schema.KEYFRAME_TIMELINE, pa.int64()),

@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-_DRIVERS = ("track", "convert", "register", "imu", "video_imu_timing")
+_DRIVERS = ("estimate", "convert", "register", "imu", "video_imu_timing")
 
 
 @pytest.mark.parametrize("name", _DRIVERS)

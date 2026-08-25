@@ -1,11 +1,13 @@
-"""Track and viz layers on the base's ``recording_id``, with no ``RecordingInfo``."""
+"""Estimate and viz layers on the base's ``recording_id``, with no ``RecordingInfo``."""
 
 from __future__ import annotations
 
+import math
 import socket
+import subprocess
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
 
 import rerun as rr
 from rerun.experimental import (
@@ -17,44 +19,61 @@ from rerun.experimental import (
 
 from specialist.record import schema
 from specialist.vi_ba.summary import CameraSummary, Summary
-from specialist.vi_ba.viz import run_blueprint, solution_chunks
-from specialist.vi_ba.viz_build import RunOutputs
+from specialist.vi_ba.viz import Layers, estimate_chunks, run_blueprint
+from specialist.vi_ba.viz_build import RunEstimate
 
-__all__ = ["write_solution_layers"]
+__all__ = ["write_estimate_layers"]
 
 _VIEWER_PORT = 9876
 
 
-def _split_group(
-  stream: rr.RecordingStream,
-  group: str,
-  entity: str,
-  values: dict[str, Any],
-  headline: tuple[str, ...],
-) -> None:
-  """Headline keys become segment-table columns; the rest goes on the static entity."""
-  stream.send_property(group, rr.AnyValues(**{k: values[k] for k in headline}))
-  rest = {k: v for k, v in values.items() if k not in headline}
-  rr.log(entity, rr.AnyValues(**rest), static=True, recording=stream)
+def _git_sha() -> str:
+  """The current commit, or ``unknown``: an empty value would write no column."""
+  try:
+    return subprocess.run(
+      ["git", "rev-parse", "HEAD"],
+      cwd=Path(__file__).parent,
+      capture_output=True,
+      text=True,
+      timeout=5.0,
+      check=True,
+    ).stdout.strip()
+  except Exception:  # noqa: BLE001 - provenance is optional; the layers are not
+    return "unknown"
 
 
 def _send_run_properties(
-  summary: Summary, per_tracker: list[CameraSummary], stream: rr.RecordingStream
+  summary: Summary,
+  per_camera: list[CameraSummary],
+  stream: rr.RecordingStream,
+  estimated_at: str,
 ) -> None:
-  """Every summary number, to the layer that keeps them."""
-  run = asdict(summary)
-  stream.send_property("session", rr.AnyValues(sources=list(run.pop("sources"))))
-  _split_group(
-    stream, "solver", "run_summary", run, ("cross_tracker_obs", "solver_iterations")
-  )
-  for tracker in per_tracker:
-    _split_group(
-      stream,
-      f"quality_{tracker.name}",
-      f"run_summary/{tracker.name}",
-      asdict(tracker),
-      ("front_rmse",),
+  """The run's ``estimate`` property and each camera's numbers on its ``fit`` entity."""
+  for camera in per_camera:
+    fields = asdict(camera)
+    rr.log(
+      schema.fit(fields.pop("slot")),
+      rr.AnyValues(**fields),
+      static=True,
+      recording=stream,
     )
+  # Worst reprojection over measured lenses; an unmeasured lens's NaN poisons max().
+  measured = [
+    rmse
+    for camera in per_camera
+    for rmse in (camera.front_rmse, camera.rear_rmse)
+    if not math.isnan(rmse)
+  ]
+  stream.send_property(
+    "estimate",
+    rr.AnyValues(
+      **asdict(summary),
+      worst_rmse=max(measured) if measured else float("nan"),
+      git_sha=_git_sha(),
+      estimated_at=estimated_at,
+      rerun_version=rr.__version__,
+    ),
+  )
 
 
 def _stream(session_id: str) -> rr.RecordingStream:
@@ -74,44 +93,53 @@ def _viewer_sink() -> list[rr.GrpcSink]:
   return [rr.GrpcSink(url=f"rerun+http://127.0.0.1:{_VIEWER_PORT}/proxy")]
 
 
-def write_solution_layers(
-  track_path: Path,
+def write_estimate_layers(
+  estimate_path: Path,
   viz_path: Path,
-  outputs: RunOutputs,
+  estimate: RunEstimate,
   summary: Summary,
-  reference_tag_id: int,
   anchor_tag_size: float,
   session_id: str,
   mask_pad_px: int,
   open_viewer: bool,
-  urdf_path: Path | None = None,
-  timeline_start: float | None = None,
-  frame_period: float | None = None,
+  urdf_path: Path,
+  timeline_start: float,
+  frame_period: float,
 ) -> None:
-  """Write the run's track and viz layers (and open the viewer by default)."""
-  blueprint = run_blueprint(outputs.viz_trackers)
-  track_path.parent.mkdir(parents=True, exist_ok=True)
+  """Write the run's estimate and viz layers, and open the viewer if asked."""
+  estimated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
+  estimate_path.parent.mkdir(parents=True, exist_ok=True)
   viz_path.parent.mkdir(parents=True, exist_ok=True)
   partials = {
-    path: path.parent / (path.name + ".partial") for path in (track_path, viz_path)
+    path: path.parent / (path.name + ".partial") for path in (estimate_path, viz_path)
   }
   for partial in partials.values():
     partial.unlink(missing_ok=True)
 
   viewer = _viewer_sink() if open_viewer else []
 
-  # Viz chunks stream to the file; track chunks are shaped for the object store.
   kept: list[Chunk] = []
   try:
     with _stream(session_id) as viz_stream:
+      # The dashboard goes to the live viewer only, never into a layer file.
+      if viewer:
+        viz_stream.set_sinks(*viewer)
+        viz_stream.send_blueprint(
+          run_blueprint(
+            estimate.cameras, estimate.world_T_anchor.keys(), anchor_tag_size
+          ),
+          make_active=True,
+          make_default=True,
+        )
       viz_stream.set_sinks(rr.FileSink(partials[viz_path]), *viewer)
-      viz_stream.send_blueprint(blueprint, make_active=True, make_default=True)
-      solution_chunks(
-        kept.append,
-        lambda chunk: send_chunks([chunk], recording=viz_stream),
-        outputs.viz_trackers,
-        outputs.world_T_anchor,
-        reference_tag_id,
+      estimate_chunks(
+        Layers(
+          estimate=kept.append,
+          viz=lambda chunk: send_chunks([chunk], recording=viz_stream),
+        ),
+        estimate.cameras,
+        estimate.world_T_anchor,
+        estimate.reference_tag_id,
         anchor_tag_size,
         mask_pad_px=mask_pad_px,
         urdf_path=urdf_path,
@@ -122,10 +150,10 @@ def write_solution_layers(
     store = LazyChunkStream.from_iter(kept).collect(
       optimize=OptimizationProfile.OBJECT_STORE
     )
-    with _stream(session_id) as track_stream:
-      track_stream.set_sinks(rr.FileSink(partials[track_path]), *viewer)
-      send_chunks(store, recording=track_stream)
-      _send_run_properties(summary, outputs.per_tracker, track_stream)
+    with _stream(session_id) as estimate_stream:
+      estimate_stream.set_sinks(rr.FileSink(partials[estimate_path]), *viewer)
+      send_chunks(store, recording=estimate_stream)
+      _send_run_properties(summary, estimate.per_camera, estimate_stream, estimated_at)
     for path, partial in partials.items():
       partial.replace(path)
   finally:

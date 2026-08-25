@@ -10,22 +10,7 @@ import numpy as np
 import numpy.typing as npt
 import telemetry_parser
 
-__all__ = ["InsvData", "LensIntrinsics", "load_insv"]
-
-
-@dataclass(frozen=True)
-class LensIntrinsics:
-  """Factory MEI intrinsics of one fisheye, distortion ``[k1, k2, k3, p1, p2, xi]``."""
-
-  camera_matrix: npt.NDArray[np.float64]
-  distortion_coeffs: npt.NDArray[np.float64]
-  calib_width: int
-  calib_height: int
-  distortion_model: str
-
-  @property
-  def xi(self) -> float:
-    return float(self.distortion_coeffs[5])
+__all__ = ["InsvData", "load_insv"]
 
 
 @dataclass(frozen=True)
@@ -35,7 +20,6 @@ class InsvData:
   imu_timestamps: npt.NDArray[np.float64]
   gyro: npt.NDArray[np.float64]
   accel: npt.NDArray[np.float64]
-  intrinsics: LensIntrinsics
   rolling_shutter_readout: float
   offset_v3: npt.NDArray[np.float64]
   gyro_calib_numbers: npt.NDArray[np.float64]
@@ -119,15 +103,6 @@ def load_insv(path: Path) -> InsvData:
   accel = np.array([s["accl"] for s in imu_samples], dtype=np.float64)
 
   lens = meta["Lens"]["Data"]
-  fisheye = lens["fisheye_params"]
-  intrinsics = LensIntrinsics(
-    camera_matrix=np.asarray(fisheye["camera_matrix"], dtype=np.float64),
-    distortion_coeffs=np.asarray(fisheye["distortion_coeffs"], dtype=np.float64),
-    calib_width=int(lens["calib_dimension"]["w"]),
-    calib_height=int(lens["calib_dimension"]["h"]),
-    distortion_model=str(lens["distortion_model"]),
-  )
-
   default_meta = meta["Default"]["Metadata"]
   exposure = meta.get("Exposure", {}).get("Data", [])
   expo_t = np.array([e["t"] for e in exposure], dtype=np.float64)
@@ -152,7 +127,6 @@ def load_insv(path: Path) -> InsvData:
     imu_timestamps=ts,
     gyro=np.radians(gyro),
     accel=accel,
-    intrinsics=intrinsics,
     rolling_shutter_readout=float(lens["frame_readout_time"]) * 1e-3,
     offset_v3=np.asarray(default_meta["offset_v3"], dtype=np.float64),
     gyro_calib_numbers=np.asarray(

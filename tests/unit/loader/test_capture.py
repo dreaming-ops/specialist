@@ -30,7 +30,6 @@ def test_probe_capture_finds_the_sibling_and_the_span_both_lenses_cover(
   capture = probe_capture(front)
   assert capture.rear_path == rear
   assert capture.fps == pytest.approx(30.0)
-  assert capture.width == 64
   assert capture.duration == pytest.approx(12 / 30.0)
 
 

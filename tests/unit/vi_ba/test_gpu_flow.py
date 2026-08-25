@@ -39,19 +39,39 @@ def test_a_captures_second_lens_reuses_the_stream_its_first_lens_warmed() -> Non
   assert gpu_flow.prime(_frames(), 10, 2) is engine
 
 
-def test_a_different_frame_shape_does_not_reuse_the_warm_stream() -> None:
+def _refuse_to_build(monkeypatch: pytest.MonkeyPatch) -> list[int]:
+  """Fail every backend import a fresh stream makes and return the attempts list."""
+  attempts: list[int] = []
+
+  def _no_backend() -> tuple[Any, Any]:
+    attempts.append(1)
+    raise RuntimeError("no backend in this test")
+
+  monkeypatch.setattr(gpu_flow, "_import_backend", _no_backend)
+  return attempts
+
+
+def test_a_different_frame_shape_does_not_reuse_the_warm_stream(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
   """The staging buffers fit one frame shape."""
+  attempts = _refuse_to_build(monkeypatch)
   _pretend_warm(object(), (64, 64), 10, 2)
-  with pytest.raises(Exception):  # noqa: B017 - no GPU here; it must not reuse
+  with pytest.raises(RuntimeError, match="no backend"):
     gpu_flow.prime(_frames(128, 128), 10, 2)
+  assert attempts, "the warm stream was reused for a different shape"
 
 
-def test_a_stream_already_shut_down_is_not_handed_out_again() -> None:
+def test_a_stream_already_shut_down_is_not_handed_out_again(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
   """A thread still holding a reference warms a new stream on its next call."""
+  attempts = _refuse_to_build(monkeypatch)
   _pretend_warm(object(), (64, 64), 10, 2)
   gpu_flow._engines.clear()
-  with pytest.raises(Exception):  # noqa: B017 - no GPU here; it must not reuse
+  with pytest.raises(RuntimeError, match="no backend"):
     gpu_flow.prime(_frames(), 10, 2)
+  assert attempts, "a stream that was shut down was handed out again"
 
 
 def _fake_torch(free: float, total: float) -> Any:

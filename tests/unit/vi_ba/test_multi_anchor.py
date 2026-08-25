@@ -21,7 +21,7 @@ from specialist.vi_ba.configs import (
   SolverCfg,
 )
 from specialist.vi_ba.features import mask_plane
-from specialist.vi_ba.imu import make_preintegration_params
+from specialist.vi_ba.imu import ImuSamples, make_preintegration_params
 from specialist.vi_ba.reference_solve import (
   _secondary_anchor_seed,
   _solve_joint_graph,
@@ -132,6 +132,12 @@ def _dummy_camera(
   n = len(body_poses)
   return PreparedCamera(
     name=name,
+    # Every capture carries one; these tests never propagate it.
+    imu=ImuSamples(
+      t=np.zeros(1, dtype=np.float64),
+      gyro=np.zeros((1, 3)),
+      accel=np.zeros((1, 3)),
+    ),
     keyframe_frames=np.arange(n, dtype=np.int64) * 3,
     body_poses=body_poses,
     velocities=(
@@ -162,7 +168,7 @@ def _dummy_camera(
     body_T_base_tag=gtsam.Pose3(),
     keyframe_times=np.zeros(n),
     finger_reproj={},
-    tags=GripperTags(2, (0, 0)),
+    tags=GripperTags(2, (None, None)),
   )
 
 

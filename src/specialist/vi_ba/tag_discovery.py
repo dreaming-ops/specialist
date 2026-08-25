@@ -41,11 +41,10 @@ class TagDiscoveryError(RuntimeError):
 
 @dataclass(frozen=True)
 class GripperTags:
-  """One camera's own tag ids: the gripper base tag, and the finger tags in
-  ``FINGER_JOINTS`` order (0 = no tag rides that joint)."""
+  """Base tag id and ``FINGER_JOINTS``-ordered finger tag ids, ``None`` if untagged."""
 
   base: int
-  fingers: tuple[int, int]
+  fingers: tuple[int | None, int | None]
 
 
 @dataclass(frozen=True)
@@ -188,15 +187,16 @@ def discover_gripper_tags(
           riders[base.tag_id, name].append(other.tag_id)
 
   left, right = FINGER_JOINTS
+  untagged: list[int | None] = [None]
   found = [
     GripperTags(b.tag_id, (lf, rf))
     for b in candidates
-    for lf in riders[b.tag_id, left] or [0]
-    for rf in riders[b.tag_id, right] or [0]
+    for lf in riders.get((b.tag_id, left)) or untagged
+    for rf in riders.get((b.tag_id, right)) or untagged
     if lf != rf
   ]
   # A gripper showing one finger tag still assigns, but a full pair outranks it.
-  paired = [g for g in found if 0 not in g.fingers]
+  paired = [g for g in found if None not in g.fingers]
   found = paired or found
   if len(found) != 1:
     what = (
@@ -216,7 +216,7 @@ def validate_discovered(tags: dict[str, GripperTags]) -> None:
   seen: dict[int, str] = {}
   for slot, g in tags.items():
     for tag_id in (g.base, *g.fingers):
-      if tag_id <= 0:
+      if tag_id is None:
         continue
       if tag_id in seen:
         raise ValueError(
