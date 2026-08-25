@@ -8,12 +8,7 @@ import numpy.typing as npt
 from gtsam.symbol_shorthand import X
 
 from specialist.loader.mei_model import MeiParams, mei_project, mei_unproject
-from specialist.vi_ba.build import (
-  LensChannel,
-  LensSetup,
-  build_vi_graph,
-  front_landmark_key,
-)
+from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.features import chain_tracks
 from specialist.vi_ba.init import (
   body_poses_from_lens_poses,
@@ -22,7 +17,11 @@ from specialist.vi_ba.init import (
   two_view_essential,
 )
 from specialist.vi_ba.optimize import optimize_graph
-from tests.mei_fixtures import pinhole_mei_params
+from tests.mei_fixtures import (
+  front_landmark_key,
+  pinhole_mei_params,
+  pinned_visual_graph,
+)
 
 Float64Array = npt.NDArray[np.float64]
 
@@ -107,19 +106,8 @@ def test_pipeline_recovers_ground_truth_from_two_view_init() -> None:
   assert len(points_init) >= int(0.9 * n_lm)
 
   lens = LensSetup(body_T_lens=body_T_lens, params=params)
-  graph, values = build_vi_graph(
-    body_poses=body_poses_init,
-    preintegrated=None,
-    front=LensChannel(
-      lens="front",
-      setup=lens,
-      tracks={tid: tracks[tid] for tid in points_init},
-      points=points_init,
-    ),
-    rear=LensChannel(lens="rear", setup=lens),
-    sigma=0.5,
-    weak_pose_sigmas=(0.3, 0.3, 0.3, 0.3, 0.3, 0.3),
-    anchor_last_pose=True,
+  graph, values = pinned_visual_graph(
+    body_poses_init, lens, {tid: tracks[tid] for tid in points_init}, points_init
   )
   initial_err = graph.error(values)
   result = optimize_graph(graph, values, max_iterations=50)

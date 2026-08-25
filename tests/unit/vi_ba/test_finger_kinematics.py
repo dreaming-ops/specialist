@@ -8,15 +8,13 @@ import gtsam
 import numpy as np
 from specialist.vi_ba._mei_factor_cpp import make_mei_finger_factor_cpp
 
-from specialist.loader.mei_model import MeiParams, mei_project
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.finger_kinematics import build_finger_reproj
-from specialist.vi_ba.tag_detection import TagDetection, tag_corners_in_frame
+from specialist.vi_ba.tag_detection import TagDetection
 from specialist.vi_ba.urdf_joints import RevoluteJoint
+from tests.mei_fixtures import synthetic_tag_detection, wide_mei_params
 
-_PARAMS = MeiParams(
-  fx=800, fy=800, cx=960, cy=960, k1=0, k2=0, k3=0, p1=0, p2=0, xi=1.6
-)
+_PARAMS = wide_mei_params()
 _TAG_SIZE = 0.05
 _FINGER_TAG_ID = 2004
 # Joint 0.25 m in front, tag tilted off-frontal; joint_T_tag0 is the known CAD pose.
@@ -31,8 +29,9 @@ def _finger_pose(th: float) -> gtsam.Pose3:
 
 
 def _detect(lens_T_tag: gtsam.Pose3, tag_id: int) -> TagDetection:
-  px = mei_project(tag_corners_in_frame(lens_T_tag, _TAG_SIZE), _PARAMS)
-  return TagDetection(tag_id=tag_id, center=px.mean(0), corners=px)
+  det = synthetic_tag_detection(lens_T_tag, tag_id, _TAG_SIZE, _PARAMS)
+  assert det is not None
+  return det
 
 
 def test_seeds_theta_and_reprojects() -> None:

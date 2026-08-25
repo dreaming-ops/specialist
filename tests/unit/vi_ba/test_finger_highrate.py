@@ -5,6 +5,7 @@ from __future__ import annotations
 import numpy as np
 
 from specialist.vi_ba.finger_kinematics import pin_angles_to_keyframes
+from tests.mei_fixtures import synthetic_tag_detection, wide_mei_params
 
 
 def test_pinned_series_passes_through_the_keyframe_angles() -> None:
@@ -41,15 +42,11 @@ def test_frame_angles_recover_a_dense_synthetic_motion() -> None:
   """Angles come back within scan resolution, and undetected frames stay absent."""
   import gtsam
 
-  from specialist.loader.mei_model import MeiParams, mei_project
   from specialist.vi_ba.build import LensSetup
   from specialist.vi_ba.finger_kinematics import build_finger_reproj
-  from specialist.vi_ba.tag_detection import TagDetection, tag_corners_in_frame
   from specialist.vi_ba.urdf_joints import RevoluteJoint
 
-  params = MeiParams(
-    fx=800, fy=800, cx=960, cy=960, k1=0, k2=0, k3=0, p1=0, p2=0, xi=1.6
-  )
+  params = wide_mei_params()
   joint_pose = gtsam.Pose3(gtsam.Rot3.Rx(2.7), gtsam.Point3(0, 0, 0.25))
   joint_T_tag0 = gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(0.02, 0.03, 0.0))
   joint = RevoluteJoint(
@@ -66,8 +63,7 @@ def test_frame_angles_recover_a_dense_synthetic_motion() -> None:
     body_T_tag = joint_pose.compose(
       gtsam.Pose3(gtsam.Rot3.Rz(float(th)), gtsam.Point3(0, 0, 0))
     ).compose(joint_T_tag0)
-    px = mei_project(tag_corners_in_frame(body_T_tag, 0.05), params)
-    dets.append([TagDetection(tag_id=2004, center=px.mean(0), corners=px)])
+    dets.append([synthetic_tag_detection(body_T_tag, 2004, 0.05, params)])
 
   fr = build_finger_reproj(joint, dets, lens, 2004, gtsam.Pose3(), 0.05)
   assert fr is not None

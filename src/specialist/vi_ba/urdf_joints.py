@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
-import xml.etree.ElementTree as ET
+import math
 from dataclasses import dataclass
 from pathlib import Path
 
 import gtsam
-import numpy as np
+import rerun as rr
 
 __all__ = ["FINGER_JOINTS", "RevoluteJoint", "read_revolute_joints"]
 
@@ -25,36 +25,29 @@ class RevoluteJoint:
   joint_T_tag0: gtsam.Pose3 | None
 
 
-def _pose_from_origin(elem: ET.Element | None) -> gtsam.Pose3:
-  """``<origin xyz rpy>`` to a ``Pose3``, with URDF's R = Rz(yaw)Ry(pitch)Rx(roll)."""
-  if elem is None:
-    return gtsam.Pose3()
-  xyz = [float(v) for v in elem.get("xyz", "0 0 0").split()]
-  rpy = [float(v) for v in elem.get("rpy", "0 0 0").split()]
-  return gtsam.Pose3(gtsam.Rot3.RzRyRx(rpy[0], rpy[1], rpy[2]), gtsam.Point3(*xyz))
+def _pose(
+  xyz: tuple[float, float, float], rpy: tuple[float, float, float]
+) -> gtsam.Pose3:
+  """A URDF joint origin as a ``Pose3``, with R = Rz(yaw) Ry(pitch) Rx(roll)."""
+  return gtsam.Pose3(gtsam.Rot3.RzRyRx(*rpy), gtsam.Point3(*xyz))
 
 
 def read_revolute_joints(urdf_path: Path) -> dict[str, RevoluteJoint]:
-  """Revolute joints by name, with the tag frame of each child's fixed joint, if any."""
-  root = ET.parse(urdf_path).getroot()
-  # Fixed-joint origins keyed by parent link (the finger -> tag frame).
-  tag_by_parent: dict[str, gtsam.Pose3] = {}
-  for joint in root.findall("joint"):
-    parent = joint.find("parent")
-    if joint.get("type") == "fixed" and parent is not None:
-      tag_by_parent[parent.get("link", "")] = _pose_from_origin(joint.find("origin"))
-
-  joints: dict[str, RevoluteJoint] = {}
-  for joint in root.findall("joint"):
-    if joint.get("type") != "revolute":
-      continue
-    limit = joint.find("limit")
-    child = joint.find("child")
-    child_link = child.get("link", "") if child is not None else ""
-    joints[joint.get("name", "")] = RevoluteJoint(
-      base_T_joint=_pose_from_origin(joint.find("origin")),
-      lower=float(limit.get("lower", -np.pi)) if limit is not None else -np.pi,
-      upper=float(limit.get("upper", np.pi)) if limit is not None else np.pi,
-      joint_T_tag0=tag_by_parent.get(child_link),
+  """Revolute joints by name, each with the tag frame of its child's fixed joint."""
+  joints = rr.urdf.UrdfTree.from_file_path(str(urdf_path)).joints()
+  tag_by_parent = {
+    j.parent_link: _pose(j.origin_xyz, j.origin_rpy)
+    for j in joints
+    if j.joint_type == "fixed"
+  }
+  return {
+    j.name: RevoluteJoint(
+      base_T_joint=_pose(j.origin_xyz, j.origin_rpy),
+      # A joint that declares no limit reports zero for both.
+      lower=j.limit_lower if j.limit_lower != j.limit_upper else -math.pi,
+      upper=j.limit_upper if j.limit_lower != j.limit_upper else math.pi,
+      joint_T_tag0=tag_by_parent.get(j.child_link),
     )
-  return joints
+    for j in joints
+    if j.joint_type == "revolute"
+  }

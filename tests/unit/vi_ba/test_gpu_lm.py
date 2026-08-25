@@ -9,7 +9,7 @@ import scipy.sparse.linalg as spl
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.gpu_lm import SparseSystem, _lm
 from specialist.vi_ba.optimize import optimize_graph
-from tests.mei_fixtures import front_only_graph, pinhole_mei_params, project_point
+from tests.mei_fixtures import pinhole_mei_params, pinned_visual_graph, project_point
 
 
 def _scene(
@@ -31,7 +31,7 @@ def _scene(
     for tid, xyz in points.items()
   }
   noisy_points = {tid: xyz + rng.normal(0.0, 0.02, 3) for tid, xyz in points.items()}
-  return front_only_graph(
+  return pinned_visual_graph(
     poses, LensSetup(body_T_lens=body_T_lens, params=params), tracks, noisy_points
   )
 

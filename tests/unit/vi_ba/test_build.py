@@ -7,20 +7,21 @@ import numpy as np
 import pytest
 from gtsam.symbol_shorthand import B, V, X
 
-from specialist.vi_ba.build import (
-  LensChannel,
-  LensSetup,
-  build_vi_graph,
-  front_landmark_key,
-  rear_landmark_key,
-)
+from specialist.vi_ba.build import LensChannel, LensSetup, build_vi_graph
 from specialist.vi_ba.imu import (
   ImuSamples,
   integrate_samples,
   make_preintegration_params,
 )
 from specialist.vi_ba.optimize import optimize_graph
-from tests.mei_fixtures import front_only_graph, pinhole_mei_params, project_point
+from tests.mei_fixtures import (
+  front_landmark_key,
+  pinhole_mei_params,
+  pinned_visual_graph,
+  project_point,
+  rear_landmark_key,
+  single_camera_keys,
+)
 
 _GRAVITY = np.array([0.0, 0.0, -9.81])
 _LENS = LensSetup(body_T_lens=gtsam.Pose3(), params=pinhole_mei_params())
@@ -41,6 +42,8 @@ def _imu_only_graph(
     front=LensChannel(lens="front", setup=_LENS),
     rear=LensChannel(lens="rear", setup=_LENS),
     sigma=1.0,
+    velocity_prior_sigma=0.1,
+    **single_camera_keys(),  # type: ignore[arg-type]
   )
 
 
@@ -66,16 +69,8 @@ def test_build_graph_dual_lens_uses_disjoint_landmark_keys() -> None:
   }
 
   lens = LensSetup(body_T_lens=body_T_lens, params=params)
-  graph, values = build_vi_graph(
-    body_poses=poses,
-    preintegrated=None,
-    front=LensChannel(
-      lens="front", setup=lens, tracks=front_tracks, points={0: xyz_front}
-    ),
-    rear=LensChannel(lens="rear", setup=lens, tracks=rear_tracks, points={0: xyz_rear}),
-    sigma=1.0,
-    weak_pose_sigmas=(0.3,) * 6,
-    anchor_last_pose=True,
+  graph, values = pinned_visual_graph(
+    poses, lens, front_tracks, {0: xyz_front}, rear_tracks, {0: xyz_rear}
   )
   # Front landmark key != rear landmark key.
   assert front_landmark_key(0) != rear_landmark_key(0)
@@ -89,7 +84,7 @@ def test_optimize_graph_rejects_non_finite_initial_error_before_solving(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
   poses = [gtsam.Pose3(), gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(np.nan, 0.0, 0.0))]
-  graph, values = front_only_graph(poses, _LENS, {}, {})
+  graph, values = pinned_visual_graph(poses, _LENS, {}, {})
   assert not np.isfinite(graph.error(values))
 
   def _no_solve(*args: object, **kwargs: object) -> None:

@@ -4,9 +4,36 @@ from __future__ import annotations
 
 import gtsam
 import numpy as np
+from gtsam.symbol_shorthand import B, L, V, X
 
 from specialist.loader.mei_model import MeiParams, mei_project
-from specialist.vi_ba.build import LensChannel, LensSetup, build_vi_graph
+from specialist.vi_ba.build import LensSetup, add_mei_factor
+from specialist.vi_ba.tag_detection import TagDetection, tag_corners_in_frame
+
+_REAR_LANDMARK_OFFSET = 1_000_000
+
+
+def front_landmark_key(track_id: int) -> int:
+  return int(L(track_id))
+
+
+def rear_landmark_key(track_id: int) -> int:
+  return int(L(_REAR_LANDMARK_OFFSET + track_id))
+
+
+def wide_mei_params() -> MeiParams:
+  """The ξ=1.6 omni regime the gripper-tag tests project in."""
+  return _undistorted(800.0, 960.0, 960.0, 1.6)
+
+
+def synthetic_tag_detection(
+  lens_T_tag: gtsam.Pose3, tag_id: int, tag_size: float, params: MeiParams
+) -> TagDetection | None:
+  """An ideal detection of the tag at this pose, or None if a corner is non-finite."""
+  px = mei_project(tag_corners_in_frame(lens_T_tag, tag_size), params)
+  if not np.all(np.isfinite(px)):
+    return None
+  return TagDetection(tag_id=tag_id, center=px.mean(0), corners=px)
 
 
 def _undistorted(f: float, cx: float, cy: float, xi: float) -> MeiParams:
@@ -32,6 +59,19 @@ def distorted_mei_params(xi: float) -> MeiParams:
   )  # fmt: skip
 
 
+def single_camera_keys() -> dict[str, object]:
+  """The keying and containers a graph needs, for a test with one camera."""
+  return {
+    "pose_key_fn": lambda i: int(X(i)),
+    "velocity_key_fn": lambda i: int(V(i)),
+    "bias_key_fn": lambda i: int(B(i)),
+    "front_landmark_key_fn": front_landmark_key,
+    "rear_landmark_key_fn": rear_landmark_key,
+    "graph": gtsam.NonlinearFactorGraph(),
+    "values": gtsam.Values(),
+  }
+
+
 def project_point(
   world_T_body: gtsam.Pose3,
   body_T_lens: gtsam.Pose3,
@@ -43,21 +83,37 @@ def project_point(
   return mei_project(np.asarray(p_lens)[None, :], params)[0]
 
 
-def front_only_graph(
+def pinned_visual_graph(
   body_poses: list[gtsam.Pose3],
   front: LensSetup,
   front_tracks: dict,
   front_points: dict,
+  rear_tracks: dict | None = None,
+  rear_points: dict | None = None,
 ) -> tuple[gtsam.NonlinearFactorGraph, gtsam.Values]:
-  """Visual-only graph (no IMU, no rear lens), gauge-pinned at both ends."""
-  return build_vi_graph(
-    body_poses=body_poses,
-    preintegrated=None,
-    front=LensChannel(
-      lens="front", setup=front, tracks=front_tracks, points=front_points
-    ),
-    rear=LensChannel(lens="rear", setup=front),
-    sigma=1.0,
-    weak_pose_sigmas=(0.3,) * 6,
-    anchor_last_pose=True,
-  )
+  """One lens's projection factors over a pose chain whose pinned ends fix the gauge."""
+  graph = gtsam.NonlinearFactorGraph()
+  values = gtsam.Values()
+  pixel_noise = gtsam.noiseModel.Isotropic.Sigma(2, 1.0)
+  tight = gtsam.noiseModel.Isotropic.Sigma(6, 1e-6)
+  weak = gtsam.noiseModel.Diagonal.Sigmas(np.full(6, 0.3))
+
+  for i, pose in enumerate(body_poses):
+    values.insert(int(X(i)), pose)
+  n = len(body_poses)
+  graph.push_back(gtsam.PriorFactorPose3(int(X(0)), body_poses[0], tight))
+  if n > 1:
+    graph.push_back(gtsam.PriorFactorPose3(int(X(n - 1)), body_poses[-1], tight))
+  for i in range(1, n - 1):
+    graph.push_back(gtsam.PriorFactorPose3(int(X(i)), body_poses[i], weak))
+
+  for points, tracks, key_fn in (
+    (front_points, front_tracks, front_landmark_key),
+    (rear_points or {}, rear_tracks or {}, rear_landmark_key),
+  ):
+    for tid, xyz in points.items():
+      lm_key = key_fn(tid)
+      values.insert(lm_key, gtsam.Point3(*np.asarray(xyz, dtype=np.float64)))
+      for kf, pt in tracks[tid].items():
+        add_mei_factor(graph, int(X(kf)), lm_key, pt, pixel_noise, front)
+  return graph, values
