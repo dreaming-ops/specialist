@@ -10,6 +10,7 @@ import numpy as np
 import numpy.typing as npt
 
 from specialist.loader.mei_model import MeiParams
+from specialist.vi_ba.geometry import translation
 from specialist.vi_ba.tag_detection import (
   TagDetection,
   estimate_lens_T_tag,
@@ -97,15 +98,11 @@ def _tag_tracks(
   return tracks
 
 
-def _arc_fit(
-  base: _TagTrack, other: _TagTrack, joint: RevoluteJoint
-) -> tuple[float, float] | None:
-  """Median position and rotation residuals of ``other`` relative to ``base`` off
-  the arc, or None without enough co-sightings."""
+def _swept_arc(
+  joint: RevoluteJoint,
+) -> tuple[list[gtsam.Pose3], npt.NDArray[np.float64]]:
+  """Finger-tag poses swept over the joint range, and their stacked translations."""
   assert joint.joint_T_tag0 is not None
-  shared = sorted(base.poses.keys() & other.poses.keys())
-  if len(shared) < _MIN_PAIR_SIGHTINGS:
-    return None
   thetas = np.linspace(joint.lower, joint.upper, _ARC_SAMPLES)
   arc = [
     joint.base_T_joint.compose(
@@ -113,11 +110,23 @@ def _arc_fit(
     ).compose(joint.joint_T_tag0)
     for th in thetas
   ]
-  arc_t = np.array([np.asarray(p.translation()) for p in arc])
+  return arc, np.array([translation(p) for p in arc])
+
+
+def _arc_fit(
+  base: _TagTrack,
+  other: _TagTrack,
+  arc: list[gtsam.Pose3],
+  arc_t: npt.NDArray[np.float64],
+) -> tuple[float, float] | None:
+  """Median arc residuals (position, rotation) of ``other`` from ``base``, or None."""
+  shared = sorted(base.poses.keys() & other.poses.keys())
+  if len(shared) < _MIN_PAIR_SIGHTINGS:
+    return None
   pos_res, rot_res = [], []
   for f in shared:
     rel = base.poses[f].between(other.poses[f])
-    d = np.linalg.norm(arc_t - np.asarray(rel.translation()), axis=1)
+    d = np.linalg.norm(arc_t - translation(rel), axis=1)
     i = int(np.argmin(d))
     pos_res.append(float(d[i]))
     rot_res.append(
@@ -171,15 +180,16 @@ def discover_gripper_tags(
   tracks = _tag_tracks(tags_per_pick, params, tag_size)
   candidates = [t for t in tracks if t.rigid and t.tag_id not in anchor_tag_ids]
 
+  arcs = {name: _swept_arc(joint) for name, joint in finger_joints.items()}
   fits: dict[tuple[int, str, int], tuple[float, float]] = {}
   riders: dict[tuple[int, str], list[int]] = {}
   for base in candidates:
-    for name, joint in finger_joints.items():
+    for name in finger_joints:
       riders[base.tag_id, name] = []
       for other in tracks:
         if other.tag_id == base.tag_id or other.tag_id in anchor_tag_ids:
           continue
-        fit = _arc_fit(base, other, joint)
+        fit = _arc_fit(base, other, *arcs[name])
         if fit is None:
           continue
         fits[base.tag_id, name, other.tag_id] = fit

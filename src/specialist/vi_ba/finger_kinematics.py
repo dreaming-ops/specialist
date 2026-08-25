@@ -147,7 +147,7 @@ def recover_gripper_tags(
 ]:
   """The base tag's body pose and, per finger, reprojection inputs and frame angles."""
   base_tag_obs = lens_T_tag_per_kf(
-    tags_per_kf,
+    tags_per_kf[:n_keyframes],
     tag_id=tags.base,
     tag_size=tag_size,
     params=lens.params,

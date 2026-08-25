@@ -30,7 +30,8 @@ from specialist.vi_ba.single_camera import (
   prepare_camera,
 )
 from specialist.vi_ba.summary import Summary
-from specialist.vi_ba.tag_discovery import validate_discovered
+from specialist.vi_ba.tag_detection import configure_detector
+from specialist.vi_ba.tag_discovery import GripperTags, validate_discovered
 from specialist.vi_ba.urdf_joints import read_revolute_joints
 from specialist.vi_ba.viz_build import build_run_estimate
 
@@ -114,7 +115,17 @@ def main(args: Args) -> None:
     )
     for slot in slots
   }
-  tags = {slot: discover_camera_tags(spec) for slot, spec in specs.items()}
+
+  def _discover_one(slot: str) -> GripperTags:
+    try:
+      return discover_camera_tags(specs[slot])
+    except Exception as exc:
+      print(f"\n=== discover camera {slot!r} FAILED ===\n{exc}")
+      raise
+
+  configure_detector(args.frontend.parallel_tag_detect and concurrent > 1)
+  with ThreadPoolExecutor(max_workers=concurrent) as discovery_pool:
+    tags = dict(zip(slots, discovery_pool.map(_discover_one, slots), strict=True))
   validate_discovered(tags)
   for slot, found in tags.items():
     print(f"  {slot}: base tag {found.base}, finger tags {found.fingers}")
