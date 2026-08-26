@@ -578,7 +578,6 @@ def prepare_camera(args: CameraArgs, tags: GripperTags) -> PreparedCamera:
       body_poses,
       front_lens,
       max(kept, default=0),
-      args.frontend,
     )
   # Nothing past revisit matching reads the ORB frames, the descriptors' last holder.
   front_orb.clear()

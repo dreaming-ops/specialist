@@ -91,10 +91,12 @@ indent-width = 2
 exclude = ["src/specialist/vi_ba/gpu_dis/*.py"]
 
 [tool.ruff.lint]
-select = ["E4", "E7", "E9", "F", "I", "B"]
+select = ["E4", "E7", "E9", "F", "I", "B", "ARG"]
 
 [tool.ruff.lint.per-file-ignores]
-"src/specialist/vi_ba/gpu_dis/*" = ["E702", "E741", "I001", "B905"]
+"src/specialist/vi_ba/gpu_dis/*" = ["ARG002", "E702", "E741", "I001", "B905"]
+"tests/*" = ["ARG001", "ARG002", "ARG004"]
+"hatch_build.py" = ["ARG002"]
 
 [tool.mypy]
 strict = true
