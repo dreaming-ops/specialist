@@ -1286,6 +1286,7 @@ version = "0.1.0"
 source = { editable = "packages/specialist_dataset" }
 dependencies = [
     { name = "av" },
+    { name = "datafusion" },
     { name = "numpy" },
     { name = "pyarrow" },
     { name = "rerun-sdk", extra = ["datafusion"] },
@@ -1295,6 +1296,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "av", specifier = ">=13" },
+    { name = "datafusion", specifier = ">=50" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyarrow", specifier = ">=18" },
     { name = "rerun-sdk", extras = ["datafusion"], specifier = ">=0.36.3,<0.37" },

@@ -9,6 +9,8 @@ dependencies = [
   "pyarrow>=18",
   # An rrd reads back only across adjacent minor versions.
   "rerun-sdk[datafusion]>=0.36.3,<0.37",
+  # A reader builds its own column expressions on datafusion directly.
+  "datafusion>=50",
   "specialist-camera==0.1.0",
   "av>=13",
 ]

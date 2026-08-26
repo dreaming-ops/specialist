@@ -2,16 +2,15 @@
 
 from __future__ import annotations
 
-import threading
 from collections.abc import Sequence
-from pathlib import Path
 
+import datafusion
 import numpy as np
 import numpy.typing as npt
 import pyarrow as pa
-from rerun.experimental import RrdReader
 
 from specialist_dataset import schema
+from specialist_dataset.read import Recording
 
 Float64Array = npt.NDArray[np.float64]
 Int64Array = npt.NDArray[np.int64]
@@ -20,96 +19,53 @@ __all__ = ["LensVideo", "LensFrames", "lens_times"]
 
 _DECODE_THREADS = 16
 
-
-_SCAN_CACHE: dict[tuple[str, float], dict[str, tuple[pa.Table, list[int]]]] = {}
-_SCAN_LOCK = threading.Lock()
-
-
-def _scan_video(base_rrd: Path) -> dict[str, tuple[pa.Table, list[int]]]:
-  """Each lens entity's ``(video_time, sample)`` table and keyframe times (ns)."""
-  key = (str(base_rrd), base_rrd.stat().st_mtime)
-  with _SCAN_LOCK:
-    cached = _SCAN_CACHE.get(key)
-    if cached is not None:
-      return cached
-    batches: dict[str, list[pa.RecordBatch]] = {}
-    iframe_ns: dict[str, list[int]] = {}
-    stream = (
-      RrdReader(str(base_rrd))
-      .store()
-      .stream()
-      .filter(
-        content=f"/{schema.CAMERA_ROOT}/**",
-        components=["VideoStream:sample", "VideoStream:is_keyframe"],
-      )
-    )
-    for chunk in stream.to_chunks():
-      if chunk.is_static:
-        continue
-      entity = chunk.entity_path.removeprefix("/")
-      batch = chunk.to_record_batch()
-      names = batch.schema.names
-      if "VideoStream:sample" in names:
-        batches.setdefault(entity, []).append(
-          batch.select([schema.TIMELINE, "VideoStream:sample"])
-        )
-      if "VideoStream:is_keyframe" in names:
-        flags = batch.column(names.index("VideoStream:is_keyframe")).to_pylist()
-        stamps = batch.column(names.index(schema.TIMELINE))
-        iframe_ns.setdefault(entity, []).extend(
-          t.value
-          for t, flag in zip(stamps, flags, strict=True)
-          if flag is not None and len(flag) and bool(flag[0])
-        )
-    tables = {
-      entity: (
-        _time_ordered(pa.Table.from_batches(group, schema=group[0].schema)),
-        iframe_ns.get(entity, []),
-      )
-      for entity, group in batches.items()
-    }
-    _SCAN_CACHE.clear()
-    _SCAN_CACHE[key] = tables
-    return tables
+_SAMPLE = "VideoStream:sample"
+_SYNC = "VideoStream:is_keyframe"
 
 
-def _time_ordered(table: pa.Table) -> pa.Table:
-  """The table sorted by its timeline column."""
-  times = schema.times_ns(table.column(schema.TIMELINE))
-  if bool(np.all(times[:-1] <= times[1:])):
-    return table
-  return table.sort_by(schema.TIMELINE)
+def _column(entity: str, component: str) -> datafusion.Expr:
+  return datafusion.col(f'"{schema.selector(entity, component)}"')
 
 
-def _sample_table(base_rrd: Path, entity: str) -> tuple[pa.Table, list[int]]:
-  """One lens entity's sample table out of the cached single-pass scan."""
-  tables = _scan_video(base_rrd)
-  if entity not in tables:
-    raise RuntimeError(f"{base_rrd} has no video samples at /{entity}")
-  return tables[entity]
+def _index() -> datafusion.Expr:
+  return datafusion.col(f'"{schema.TIMELINE}"')
 
 
-def lens_times(base_rrd: Path, entity: str) -> Float64Array:
+def _samples(recording: Recording, entity: str) -> datafusion.DataFrame:
+  """One lens entity's samples, with their sync-sample markers."""
+  reader = recording.reader(f"/{entity}")
+  if schema.selector(entity, _SAMPLE) not in reader.schema().names:
+    raise RuntimeError(f"{recording.path} has no video samples at /{entity}")
+  samples: datafusion.DataFrame = reader.filter(_column(entity, _SAMPLE).is_not_null())
+  return samples
+
+
+def lens_times(recording: Recording, entity: str) -> Float64Array:
   """One lens entity's frame times (s), ascending, one per encoded sample."""
-  table, _ = _sample_table(base_rrd, entity)
+  table = _samples(recording, entity).select(_index()).to_arrow_table()
   return schema.seconds(table.column(schema.TIMELINE))
 
 
 class LensVideo:
   """One lens's encoded samples and the timeline they sit on."""
 
-  def __init__(self, base_rrd: Path, slot: str, lens: str) -> None:
+  def __init__(self, recording: Recording, slot: str, lens: str) -> None:
     self.entity = schema.video(slot, lens)
-    table, iframe_ns = _sample_table(base_rrd, self.entity)
+    samples = _samples(recording, self.entity)
+    table = samples.select(
+      _index(),
+      _column(self.entity, _SAMPLE),
+      _column(self.entity, _SYNC),
+    ).to_arrow_table()
     times_ns = schema.times_ns(table.column(schema.TIMELINE))
     self.times: Float64Array = times_ns / schema.NS_PER_SECOND
-    self.sync_samples = _sync_samples(times_ns, iframe_ns)
+    self.sync_samples = _sync_samples(table.column(schema.selector(self.entity, _SYNC)))
     if not self.sync_samples.size:
       raise RuntimeError(
         f"{self.entity}: no sync-sample markers; every decode would start at sample 0"
       )
-    # Keep the samples in the scan's chunks; joining them copies the whole video.
-    chunks = table.column("VideoStream:sample").chunks
+    # Joining the chunks would copy the lens's whole video onto the heap.
+    chunks = table.column(schema.selector(self.entity, _SAMPLE)).chunks
     self._chunk_first: Int64Array = np.cumsum(
       [0, *(len(chunk) for chunk in chunks)], dtype=np.int64
     )
@@ -143,14 +99,12 @@ def _packet_arrays(
   )
 
 
-def _sync_samples(times_ns: Int64Array, iframe_ns: list[int]) -> Int64Array:
-  """Sample rows whose timestamp carries a true ``is_keyframe`` marker."""
-  stamps = np.sort(np.asarray(iframe_ns, dtype=np.int64))
-  rows = np.searchsorted(times_ns, stamps)
-  inside = rows < len(times_ns)
-  rows, stamps = rows[inside], stamps[inside]
-  rows = rows[times_ns[rows] == stamps]
-  out: Int64Array = rows.astype(np.int64)
+def _sync_samples(markers: pa.ChunkedArray) -> Int64Array:
+  """Sample rows carrying a true ``is_keyframe`` marker."""
+  flags = [
+    bool(value[0]) if value else False for value in markers.combine_chunks().to_pylist()
+  ]
+  out: Int64Array = np.flatnonzero(flags).astype(np.int64)
   return out
 
 

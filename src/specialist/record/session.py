@@ -100,7 +100,7 @@ class SessionRecording:
 
   def lens_times(self, slot: str, lens: str) -> Float64Array:
     """One lens's frame times (s), one per encoded sample."""
-    return frames.lens_times(self.path, schema.video(slot, lens))
+    return frames.lens_times(self._recording, schema.video(slot, lens))
 
   @property
   def frame_times(self) -> dict[str, Float64Array]:
@@ -109,7 +109,7 @@ class SessionRecording:
 
   def lens_video(self, slot: str, lens: str) -> frames.LensVideo:
     """One lens's encoded samples, ready for banded decoding."""
-    return frames.LensVideo(self.path, slot, lens)
+    return frames.LensVideo(self._recording, slot, lens)
 
   def decoded_shape(self, slot: str) -> tuple[int, int]:
     """``(height, width)`` of decoded front-lens frames, from a one-frame decode."""

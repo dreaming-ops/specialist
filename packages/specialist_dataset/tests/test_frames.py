@@ -2,44 +2,43 @@
 
 from pathlib import Path
 
-import pyarrow as pa
 import pytest
+import rerun as rr
+from rerun.experimental import Chunk, send_chunks
 from specialist_dataset import frames, schema
+from specialist_dataset.read import Recording
 
 
-def test_lens_video_refuses_markerless_streams(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  table = pa.table({schema.TIMELINE: pa.array([0, 1], type=pa.duration("ns"))})
-  monkeypatch.setattr(
-    frames, "_scan_video", lambda path: {"camera/cam00/front/video": (table, [])}
+def _base_with_video(tmp_path: Path, *, sync: bool) -> Path:
+  """A base layer of one lens's samples, with or without a sync-sample marker."""
+  rrd = tmp_path / "base.rrd"
+  samples = [b"\x00\x01", b"\x02\x03", b"\x04\x05"]
+  chunk = Chunk.from_columns(
+    schema.video("cam00", "front"),
+    indexes=[rr.TimeColumn(schema.TIMELINE, duration=[0.0, 0.1, 0.2])],
+    columns=rr.VideoStream.columns(sample=samples, is_keyframe=[sync, False, False]),
   )
+  with rr.RecordingStream("test", recording_id="s") as stream:
+    stream.save(str(rrd))
+    send_chunks([chunk], recording=stream)
+  return rrd
+
+
+def test_a_lens_reads_its_sample_times(tmp_path: Path) -> None:
+  recording = Recording(_base_with_video(tmp_path, sync=True))
+  times = frames.lens_times(recording, schema.video("cam00", "front"))
+  assert list(times) == pytest.approx([0.0, 0.1, 0.2])
+
+
+def test_a_lens_starts_a_decode_at_its_sync_sample(tmp_path: Path) -> None:
+  recording = Recording(_base_with_video(tmp_path, sync=True))
+  video = frames.LensVideo(recording, "cam00", "front")
+  assert list(video.sync_samples) == [0]
+  assert video.decode_start(2) == 0
+  assert video.packet(1) == b"\x02\x03"
+
+
+def test_lens_video_refuses_markerless_streams(tmp_path: Path) -> None:
+  rrd = _base_with_video(tmp_path, sync=False)
   with pytest.raises(RuntimeError, match="no sync-sample markers"):
-    frames.LensVideo(Path("base.rrd"), "cam00", "front")
-
-
-def _time_batch(times: list[int], values: list[int]) -> pa.RecordBatch:
-  return pa.record_batch(
-    {
-      schema.TIMELINE: pa.array(times, type=pa.duration("ns")),
-      "v": pa.array(values, type=pa.int64()),
-    }
-  )
-
-
-def test_time_ordered_returns_a_sorted_table_untouched() -> None:
-  table = pa.Table.from_batches(
-    [_time_batch([0, 1, 2], [0, 1, 2]), _time_batch([3, 4, 5], [3, 4, 5])]
-  )
-  assert frames._time_ordered(table) is table
-
-
-def test_time_ordered_sorts_a_cross_batch_inversion() -> None:
-  table = pa.Table.from_batches(
-    [_time_batch([0, 1, 2], [0, 1, 2]), _time_batch([1, 7, 8], [9, 7, 8])]
-  )
-  ordered = frames._time_ordered(table)
-  assert ordered.equals(table.sort_by(schema.TIMELINE))
-  assert ordered.column(schema.TIMELINE).to_pylist() == sorted(
-    table.column(schema.TIMELINE).to_pylist()
-  )
+    frames.LensVideo(Recording(rrd), "cam00", "front")

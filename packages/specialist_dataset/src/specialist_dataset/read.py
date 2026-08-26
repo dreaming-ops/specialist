@@ -71,6 +71,10 @@ class Recording:
   def __exit__(self, *exception: object) -> None:
     return None
 
+  def reader(self, contents: str | list[str]) -> Any:
+    """A query over the named entities, indexed by the recording's clock."""
+    return self._entry.filter_contents(contents).reader(index=schema.TIMELINE)
+
   def statics(self, contents: str | list[str]) -> pa.Table:
     """Every static component of the named entities, one row."""
     return self._entry.filter_contents(contents).reader(index=None).to_arrow_table()
