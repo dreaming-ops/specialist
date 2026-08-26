@@ -47,7 +47,7 @@ class Args:
 
 def main(args: Args) -> None:
   sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
-  out_path = args.output_dir / "base" / f"{args.session_id}.rrd"
+  out_path = schema.layer_rrd(args.output_dir, schema.BASE, args.session_id)
   if out_path.exists() and not args.overwrite:
     raise SystemExit(
       f"{out_path} exists; pass --overwrite to replace it (a registered base "

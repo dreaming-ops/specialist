@@ -20,9 +20,11 @@ from rerun.experimental import RrdReader
 from specialist_dataset.read import check_frame_alignment
 from specialist_dataset.schema import (
   APPLICATION_ID,
+  BASE,
   ESTIMATE,
   anchor_id_of,
   anchor_ids_in,
+  layer_dir,
   slots_in,
 )
 
@@ -67,7 +69,7 @@ def anchor_tag_sizes(rrds: list[Path]) -> set[float]:
 
 def dataset_layers(root: Path) -> tuple[list[Path], dict[str, list[Path]]]:
   """``(base_files, {layer_name: files})``; exits when ``base`` holds no rrd."""
-  bases = sorted((root / "base").glob("*.rrd"))
+  bases = sorted(layer_dir(root, BASE).glob("*.rrd"))
   if not bases:
     raise SystemExit(f"{root / 'base'} holds no .rrd; a dataset needs its base layer")
   layers = {
