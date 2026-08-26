@@ -1288,7 +1288,7 @@ dependencies = [
     { name = "av" },
     { name = "numpy" },
     { name = "pyarrow" },
-    { name = "rerun-sdk" },
+    { name = "rerun-sdk", extra = ["datafusion"] },
     { name = "specialist-camera" },
 ]
 
@@ -1297,7 +1297,7 @@ requires-dist = [
     { name = "av", specifier = ">=13" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "pyarrow", specifier = ">=18" },
-    { name = "rerun-sdk", specifier = ">=0.36.3,<0.37" },
+    { name = "rerun-sdk", extras = ["datafusion"], specifier = ">=0.36.3,<0.37" },
     { name = "specialist-camera", editable = "packages/specialist_camera" },
 ]
 

@@ -12,7 +12,7 @@ from rerun.experimental import RrdReader
 from specialist_camera import LensName
 from specialist_dataset import frames, schema
 from specialist_dataset.poses import quats_to_matrices
-from specialist_dataset.read import lens_from_row, newest_values
+from specialist_dataset.read import Recording, lens_from_row
 
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.imu import ImuSamples
@@ -75,16 +75,12 @@ class SessionRecording:
       raise ValueError(f"{base_rrd} holds no recording")
     self.session_id: str = recordings[0].recording_id
     self._rows: dict[str, dict[str, Any]] = {}
-
-  def _stream(self) -> Any:
-    return RrdReader(str(self.path)).store().stream()
+    self._recording = Recording(base_rrd)
 
   @property
   def slots(self) -> list[str]:
     """The camera slots this recording holds video for."""
-    paths = {
-      p.strip("/") for p in RrdReader(str(self.path)).store().schema().entity_paths()
-    }
+    paths = self._recording.entity_paths()
     slots = [
       slot
       for slot in schema.slots_in(paths)
@@ -98,7 +94,7 @@ class SessionRecording:
     """Component name -> newest value across the entity's chunks."""
     cached = self._rows.get(entity)
     if cached is None:
-      cached = newest_values(self._stream().filter(content=f"/{entity}").to_chunks())
+      cached = self._recording.row(entity)
       self._rows[entity] = cached
     return cached
 
@@ -137,32 +133,10 @@ class SessionRecording:
       body_T_lens=gtsam.Pose3(calibration.body_T_lens), params=calibration.params
     )
 
-  def _scalar_rows(self, entity: str) -> tuple[Float64Array, Float64Array]:
-    """One entity's scalar series sorted by time; raises ValueError when it has none."""
-    times: list[Float64Array] = []
-    rows: list[Float64Array] = []
-    for chunk in self._stream().filter(content=f"/{entity}").to_chunks():
-      if chunk.is_static:
-        continue
-      batch = chunk.to_record_batch()
-      names = batch.schema.names
-      values = batch.column(names.index("Scalars:scalars"))
-      if not len(values):
-        continue
-      times.append(schema.seconds(batch.column(names.index(schema.TIMELINE))))
-      rows.append(
-        values.flatten().to_numpy(zero_copy_only=False).reshape(len(values), -1)
-      )
-    if not rows:
-      raise ValueError(f"{self.path} has no samples at /{entity}")
-    t = np.concatenate(times)
-    order = np.argsort(t, kind="stable")
-    return t[order], np.concatenate(rows)[order]
-
   def imu(self, slot: str) -> ImuSamples:
     """Raw-axis IMU samples as stored: t (s), gyro (rad/s), accel (m/s^2)."""
-    t_gyro, gyro = self._scalar_rows(schema.imu_signal(slot, "gyro"))
-    t_accel, accel = self._scalar_rows(schema.imu_signal(slot, "accel"))
+    t_gyro, gyro = self._recording.scalars(schema.imu_signal(slot, "gyro"))
+    t_accel, accel = self._recording.scalars(schema.imu_signal(slot, "accel"))
     if not np.array_equal(t_gyro, t_accel):
       raise ValueError(f"{self.path}: gyro and accel rows disagree for {slot}")
     return ImuSamples(t=t_gyro, gyro=gyro, accel=accel)

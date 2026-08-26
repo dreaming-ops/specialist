@@ -231,6 +231,7 @@ def slots_in(paths: Iterable[str]) -> list[str]:
 
 
 # Stored component spellings, addressed as "/entity/path:Component:field".
+SCALARS = "Scalars:scalars"
 POSE_TRANSLATION = "Transform3D:translation"
 POSE_QUATERNION = "Transform3D:quaternion"
 
