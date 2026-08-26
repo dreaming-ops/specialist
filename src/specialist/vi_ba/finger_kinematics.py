@@ -7,15 +7,15 @@ from dataclasses import dataclass
 import gtsam
 import numpy as np
 import numpy.typing as npt
+from specialist_camera import mei_project
+from specialist_dataset.fiducials import tag_corners_in_frame
 
-from specialist.loader.mei_model import mei_project
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.geometry import average_pose, rotate_about_z
 from specialist.vi_ba.tag_detection import (
   TagDetection,
   lens_T_tag_per_kf,
   tag_center_bearing,
-  tag_corners_in_frame,
 )
 from specialist.vi_ba.tag_discovery import GripperTags
 from specialist.vi_ba.urdf_joints import FINGER_JOINTS, RevoluteJoint
@@ -88,7 +88,7 @@ def build_finger_reproj(
   assert joint.joint_T_tag0 is not None
   base_T_joint = joint.base_T_joint
   body_T_joint_seed = body_T_base_tag.compose(base_T_joint)
-  joint_t_corners = tag_corners_in_frame(joint.joint_T_tag0, tag_size)
+  joint_t_corners = tag_corners_in_frame(joint.joint_T_tag0.matrix(), tag_size)
   observations: dict[int, FingerKfObs] = {}
   for i, dets in enumerate(tags_per_frame):
     det = next((d for d in dets if d.tag_id == finger_tag_id), None)

@@ -12,13 +12,13 @@ import gtsam
 import numpy as np
 import numpy.typing as npt
 from pupil_apriltags import Detector
+from specialist_camera import MeiParams, mei_unproject
+from specialist_dataset.fiducials import TAG_FAMILY, tag_corners_local
 
-from specialist.loader.mei_model import MeiParams, mei_unproject
 from specialist.vi_ba.features import Rect, cpu_budget
 
 Float64Array = npt.NDArray[np.float64]
 
-_TAG_FAMILY = "tagStandard41h12"
 # Cap on the detector's own thread pool.
 _DETECT_THREADS = 48
 _detect_lock = threading.Lock()
@@ -35,8 +35,6 @@ __all__ = [
   "estimate_lens_T_tag",
   "non_anchor_tag_masks",
   "tag_center_bearing",
-  "tag_corners_in_frame",
-  "tag_corners_local",
   "tag_half_angle",
 ]
 
@@ -123,30 +121,16 @@ def _shared_detector() -> Detector:
     got = getattr(_local, "detector", None)
     if got is None:
       got = _OrderedTeardownDetector(
-        families=_TAG_FAMILY, nthreads=max(1, min(_DETECT_THREADS, cpu_budget()) // 2)
+        families=TAG_FAMILY, nthreads=max(1, min(_DETECT_THREADS, cpu_budget()) // 2)
       )
       _local.detector = got
     return got
   with _detect_lock:
     if _detector is None:
       _detector = _OrderedTeardownDetector(
-        families=_TAG_FAMILY, nthreads=min(_DETECT_THREADS, cpu_budget())
+        families=TAG_FAMILY, nthreads=min(_DETECT_THREADS, cpu_budget())
       )
     return _detector
-
-
-def tag_corners_local(tag_size: float) -> Float64Array:
-  """The tag's corners in the tag frame, ``(4, 3)``, in order BL, BR, TR, TL."""
-  half = float(tag_size / 2.0)
-  return np.array(
-    [
-      [-half, -half, 0.0],
-      [+half, -half, 0.0],
-      [+half, +half, 0.0],
-      [-half, +half, 0.0],
-    ],
-    dtype=np.float64,
-  )
 
 
 @dataclass(frozen=True)
@@ -156,14 +140,6 @@ class TagDetection:
   tag_id: int
   center: Float64Array  # (2,)
   corners: Float64Array  # (4, 2)
-
-
-def tag_corners_in_frame(frame_T_tag: gtsam.Pose3, tag_size: float) -> Float64Array:
-  """A tag's ``(4, 3)`` corners in the frame of ``frame_T_tag``."""
-  return np.array(
-    [frame_T_tag.transformFrom(gtsam.Point3(*c)) for c in tag_corners_local(tag_size)],
-    dtype=np.float64,
-  )
 
 
 def tag_center_bearing(det: TagDetection, params: MeiParams) -> Float64Array:

@@ -12,8 +12,8 @@ from pathlib import Path
 import gtsam
 import numpy as np
 import tyro
+from specialist_dataset import schema
 
-from specialist.record import schema
 from specialist.record.layer import write_estimate_layers
 from specialist.record.session import SessionRecording
 from specialist.vi_ba import gpu_flow

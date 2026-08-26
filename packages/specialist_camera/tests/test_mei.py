@@ -6,11 +6,11 @@ from dataclasses import replace
 
 import numpy as np
 import pytest
-
-from specialist.loader.mei_model import (
+from specialist_camera import (
   MeiParams,
   mei_project,
   mei_unproject,
+  rescale,
 )
 
 # Plausible Insta360 intrinsics in 1920x1920 per-lens coords.
@@ -51,7 +51,6 @@ def _forward_rays(rng: np.random.Generator, n: int, half_angle: float) -> np.nda
 
 
 def test_mei_round_trip_with_distortion() -> None:
-  """ray -> pixel -> ray within tight tolerance, staying inside the camera FOV."""
   params = _X3
   rng = np.random.default_rng(42)
   rays = _forward_rays(rng, n=80, half_angle=np.deg2rad(85.0))
@@ -79,3 +78,15 @@ def test_mei_rejects_bad_shape() -> None:
     mei_project(np.zeros((3,)), _PINHOLE)
   with pytest.raises(ValueError):
     mei_unproject(np.zeros((3,)), _PINHOLE)
+
+
+def test_rescale_maps_stored_intrinsics_onto_the_decoded_lens() -> None:
+  raw = MeiParams(
+    fx=4663.0, fy=4663.0, cx=1440.0, cy=1440.0,
+    k1=0.1, k2=0.2, k3=0.3, p1=0.4, p2=0.5, xi=1.9,
+  )  # fmt: skip
+  assert rescale(raw, 5760.0, 2880, "front") == raw
+  half = rescale(raw, 5760.0, 1440, "front")
+  assert half.fx == pytest.approx(4663.0 / 2)
+  assert half.cy == pytest.approx(720.0)
+  assert rescale(replace(raw, cx=4320.0), 5760.0, 2880, "rear") == raw

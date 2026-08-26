@@ -6,6 +6,7 @@ from dataclasses import dataclass, replace
 
 import gtsam
 import numpy as np
+from specialist_dataset.fiducials import tag_corners_in_frame
 
 from specialist.vi_ba.compose import (
   CameraKeys,
@@ -20,7 +21,6 @@ from specialist.vi_ba.geometry import average_pose
 from specialist.vi_ba.landmark_cull import cull_outlier_landmarks
 from specialist.vi_ba.optimize import OptimizeResult, optimize_graph
 from specialist.vi_ba.single_camera import PreparedCamera
-from specialist.vi_ba.tag_detection import tag_corners_in_frame
 from specialist.vi_ba.urdf_joints import FINGER_JOINTS
 
 __all__ = [
@@ -219,7 +219,7 @@ def _solve_joint_graph(
     keys,
     args,
     cross_obs,
-    tag_corners_in_frame(world_T_ref_anchor, args.anchor.tag_size),
+    tag_corners_in_frame(world_T_ref_anchor.matrix(), args.anchor.tag_size),
     seed,
   )
   result, landmark_keep = _solve_with_cull_reoptimize(

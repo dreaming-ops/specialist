@@ -8,8 +8,8 @@ from dataclasses import dataclass
 import gtsam
 import numpy as np
 import numpy.typing as npt
+from specialist_camera import MeiParams
 
-from specialist.loader.mei_model import MeiParams
 from specialist.vi_ba.geometry import translation
 from specialist.vi_ba.tag_detection import (
   TagDetection,

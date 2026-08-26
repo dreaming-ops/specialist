@@ -8,9 +8,9 @@ from dataclasses import astuple, dataclass, field
 import gtsam
 import numpy as np
 import numpy.typing as npt
+from specialist_camera import MeiParams
+from specialist_dataset import schema
 
-from specialist.loader.mei_model import MeiParams
-from specialist.record import schema
 from specialist.vi_ba.features import Rect
 from specialist.vi_ba.tag_detection import TagDetection
 

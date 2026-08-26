@@ -115,6 +115,12 @@ uv run python scripts/register.py --catalog-url rerun+http://host:port \
 ## Layout
 
 ```
+packages/
+├── specialist_camera/   mei (MEI projection both ways, rescaling)
+└── specialist_dataset/  the dataset contract: schema (entity paths, timelines,
+                         sessions), read (layers as numpy), frames (lens frame
+                         times, H.264 decoding), poses, fiducials
+
 src/specialist/
 ├── vi_ba/       the solve: single_camera (per-camera prep), tracks +
 │                features + gpu_flow (frontend), init (incremental SfM + VI
@@ -124,11 +130,10 @@ src/specialist/
 │                (gripper joint recovery), imu,
 │                tag_detection, landmark_cull, highrate,
 │                geometry, configs, summary, viz + viz_build
-├── record/      the rrd data layer — schema (entity paths), base + video
-│                (session recording), layer (estimate and viz layers),
-│                session + frames + read (reading them back), offset_v3
-│                (factory lens calibration)
-└── loader/      parse_insv, mei_model, capture, audio_sync
+├── record/      the rrd writers and the solve's reader: base + video +
+│                offset_v3 (base recording), layer (estimate and viz
+│                layers), session (a base recording as the solve reads it)
+└── loader/      parse_insv, capture, audio_sync
 
 scripts/
 ├── convert.py          captures → one session base recording

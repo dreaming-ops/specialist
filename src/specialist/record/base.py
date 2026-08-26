@@ -11,10 +11,10 @@ import numpy as np
 import numpy.typing as npt
 import rerun as rr
 from rerun.experimental import Chunk, LazyChunkStream, OptimizationProfile, send_chunks
+from specialist_camera import MeiParams
+from specialist_dataset import schema
 
-from specialist.loader.mei_model import MeiParams
 from specialist.loader.parse_insv import InsvData
-from specialist.record import schema
 from specialist.record.offset_v3 import LensOffset, parse_offset_v3
 from specialist.vi_ba.geometry import quat_xyzw
 

@@ -1,4 +1,4 @@
-"""Keyframe decoding straight out of a base recording's video stream."""
+"""Frame times and H.264 frame decoding for a base recording's lens videos."""
 
 from __future__ import annotations
 
@@ -11,14 +11,13 @@ import numpy.typing as npt
 import pyarrow as pa
 from rerun.experimental import RrdReader
 
-from specialist.record import schema
+from specialist_dataset import schema
 
 Float64Array = npt.NDArray[np.float64]
 Int64Array = npt.NDArray[np.int64]
 
 __all__ = ["LensVideo", "LensFrames", "lens_times"]
 
-# Frame threading delays output, so each band flushes at its end.
 _DECODE_THREADS = 16
 
 
@@ -156,7 +155,7 @@ def _sync_samples(times_ns: Int64Array, iframe_ns: list[int]) -> Int64Array:
 
 
 class LensFrames(Sequence[np.ndarray]):
-  """A lens's frames at ascending ``samples`` of a base recording, one band at a time."""
+  """A lens's frames at ascending ``samples``, decoded and held one band at a time."""
 
   def __init__(self, video: LensVideo, samples: Int64Array, band: int) -> None:
     self._video = video
@@ -186,7 +185,7 @@ class LensFrames(Sequence[np.ndarray]):
 
     def take(decoded: object, at: int) -> None:
       if at in wanted:
-        # The stream is 4:2:0, so the first plane is the full-resolution luma.
+        # 4:2:0, so plane 0 is the full-resolution luma.
         plane = decoded.planes[0]  # type: ignore[attr-defined]
         height = int(decoded.height)  # type: ignore[attr-defined]
         width = int(decoded.width)  # type: ignore[attr-defined]

@@ -8,9 +8,9 @@ from typing import Any
 import numpy as np
 import rerun as rr
 import rerun.blueprint as rrb
+from specialist_dataset import schema
+from specialist_dataset.fiducials import tag_corners_local
 
-from specialist.record import schema
-from specialist.vi_ba.tag_detection import tag_corners_local
 from specialist.vi_ba.urdf_joints import FINGER_JOINTS
 
 __all__ = [

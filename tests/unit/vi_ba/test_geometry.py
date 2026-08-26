@@ -2,12 +2,9 @@
 
 import gtsam
 import numpy as np
+from specialist_dataset.poses import quats_to_matrices
 
-from specialist.vi_ba.geometry import (
-  matrices_to_quats,
-  quat_xyzw,
-  quats_to_matrices,
-)
+from specialist.vi_ba.geometry import matrices_to_quats, quat_xyzw
 
 
 def test_quat_xyzw_is_scipy_order() -> None:

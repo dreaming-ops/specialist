@@ -5,8 +5,9 @@ from pathlib import Path
 import gtsam
 import numpy as np
 import pytest
+from specialist_camera import MeiParams, mei_project
+from specialist_dataset.fiducials import tag_corners_in_frame
 
-from specialist.loader.mei_model import MeiParams, mei_project
 from specialist.vi_ba.build import LensChannel, LensSetup
 from specialist.vi_ba.compose import (
   CameraKeys,
@@ -35,7 +36,6 @@ from specialist.vi_ba.tag_detection import (
   TagDetection,
   non_anchor_tag_masks,
   tag_center_bearing,
-  tag_corners_in_frame,
 )
 from specialist.vi_ba.tag_discovery import GripperTags
 from tests.mei_fixtures import narrow_mei_params
@@ -314,7 +314,7 @@ def _project_tag(
   tag_size: float,
 ) -> TagDetection:
   corners_lens = np.array(
-    [body.transformTo(c) for c in tag_corners_in_frame(world_T_tag, tag_size)]
+    [body.transformTo(c) for c in tag_corners_in_frame(world_T_tag.matrix(), tag_size)]
   )
   center_lens = np.asarray(body.transformTo(world_T_tag.translation()))
   return TagDetection(

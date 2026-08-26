@@ -6,8 +6,8 @@ import gtsam
 import numpy as np
 import numpy.typing as npt
 from gtsam.symbol_shorthand import X
+from specialist_camera import MeiParams, mei_project, mei_unproject
 
-from specialist.loader.mei_model import MeiParams, mei_project, mei_unproject
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.features import chain_tracks
 from specialist.vi_ba.init import (

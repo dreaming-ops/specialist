@@ -7,8 +7,8 @@ from collections.abc import Callable
 import gtsam
 import numpy as np
 import pytest
+from specialist_camera import mei_project
 
-from specialist.loader.mei_model import mei_project
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.landmark_cull import cull_outlier_landmarks
 from tests.mei_fixtures import pinhole_mei_params

@@ -5,10 +5,11 @@ from __future__ import annotations
 import gtsam
 import numpy as np
 from gtsam.symbol_shorthand import B, L, V, X
+from specialist_camera import MeiParams, mei_project
+from specialist_dataset.fiducials import tag_corners_in_frame
 
-from specialist.loader.mei_model import MeiParams, mei_project
 from specialist.vi_ba.build import LensSetup, add_mei_factor
-from specialist.vi_ba.tag_detection import TagDetection, tag_corners_in_frame
+from specialist.vi_ba.tag_detection import TagDetection
 
 _REAR_LANDMARK_OFFSET = 1_000_000
 
@@ -30,7 +31,7 @@ def synthetic_tag_detection(
   lens_T_tag: gtsam.Pose3, tag_id: int, tag_size: float, params: MeiParams
 ) -> TagDetection | None:
   """An ideal detection of the tag at this pose, or None if a corner is non-finite."""
-  px = mei_project(tag_corners_in_frame(lens_T_tag, tag_size), params)
+  px = mei_project(tag_corners_in_frame(lens_T_tag.matrix(), tag_size), params)
   if not np.all(np.isfinite(px)):
     return None
   return TagDetection(tag_id=tag_id, center=px.mean(0), corners=px)

@@ -5,8 +5,8 @@ from __future__ import annotations
 import gtsam
 import numpy as np
 import numpy.typing as npt
+from specialist_camera import mei_project
 
-from specialist.loader.mei_model import mei_project
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.geometry import max_parallax
 

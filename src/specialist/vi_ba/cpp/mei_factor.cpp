@@ -12,7 +12,7 @@
 //   * MeiCrossTagFactorCpp    — ternary on (observer_pose, owner_pose,
 //                               body_T_base_tag); owner's base tag seen by another.
 //   * MeiCrossFingerFactorCpp — quaternary, adds the owner's joint angle theta.
-// The forward projection mirrors mei_project in specialist.loader.mei_model; the
+// The forward projection mirrors mei_project in specialist_camera; the
 // analytical Jacobian is native-only, validated against finite differences of it.
 // Built by specialist.vi_ba._buildext and loaded by build.py.
 

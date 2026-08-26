@@ -6,9 +6,9 @@ import gtsam
 import numpy as np
 import pytest
 from rerun.experimental import RrdReader
+from specialist_dataset import schema
+from specialist_dataset.read import read_keyframe_poses
 
-from specialist.record import schema
-from specialist.record.read import read_keyframe_poses
 from specialist.vi_ba.summary import CameraSummary
 from tests.record_fixtures import camera_estimate, urdf_file, write_run
 

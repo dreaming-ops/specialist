@@ -6,8 +6,8 @@ from concurrent.futures import ThreadPoolExecutor
 
 import gtsam
 import numpy as np
+from specialist_camera import mei_project
 
-from specialist.loader.mei_model import mei_project
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.configs import FrontendCfg
 from specialist.vi_ba.single_camera import (

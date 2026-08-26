@@ -10,10 +10,10 @@ from typing import NamedTuple, TypeVar
 import gtsam
 import numpy as np
 import numpy.typing as npt
+from specialist_camera import mei_unproject
+from specialist_dataset import schema
+from specialist_dataset.frames import LensFrames, LensVideo
 
-from specialist.loader.mei_model import mei_unproject
-from specialist.record import schema
-from specialist.record.frames import LensFrames, LensVideo
 from specialist.record.session import (
   SessionRecording,
   covered_samples,

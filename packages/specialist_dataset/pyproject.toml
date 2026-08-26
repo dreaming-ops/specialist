@@ -1,0 +1,22 @@
+[project]
+name = "specialist-dataset"
+version = "0.1.0"
+description = "The dataset contract: entity paths, timelines, conventions and a numpy reader"
+requires-python = ">=3.12,<3.13"
+license = {text = "MIT"}
+dependencies = [
+  "numpy>=1.26",
+  "pyarrow>=18",
+  # An rrd reads back only across adjacent minor versions, so a dataset written
+  # by another minor cannot be opened through this pin.
+  "rerun-sdk>=0.36.3,<0.37",
+  "specialist-camera==0.1.0",
+  "av>=13",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/specialist_dataset"]

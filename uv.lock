@@ -8,6 +8,13 @@ resolution-markers = [
     "sys_platform != 'emscripten' and sys_platform != 'linux' and sys_platform != 'win32'",
 ]
 
+[manifest]
+members = [
+    "specialist",
+    "specialist-camera",
+    "specialist-dataset",
+]
+
 [[package]]
 name = "alabaster"
 version = "1.0.0"
@@ -1084,7 +1091,7 @@ wheels = [
 
 [[package]]
 name = "rerun-sdk"
-version = "0.36.1"
+version = "0.36.3"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "attrs" },
@@ -1095,10 +1102,10 @@ dependencies = [
     { name = "typing-extensions" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/b8/b9/eb4355b862a4afabf1a3ec2a472e32fe668919a1933bea96a7e4f6891ae1/rerun_sdk-0.36.1-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:6323d6c22ccdcb9aad5d507044e8aef43ac0f0c97cd98b1c90d63b09b0d372b1", size = 147494029, upload-time = "2026-08-19T11:51:55.903Z" },
-    { url = "https://files.pythonhosted.org/packages/40/05/ed2f5225e79cb01940d5faf65cf3045b1fc1baa58d73d641ef15f27b5cb7/rerun_sdk-0.36.1-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:d067cdaa61e23f456ae2e217187043fb97e10146ad42a2049d45cf0f9f70dba5", size = 157768321, upload-time = "2026-08-19T11:52:00.762Z" },
-    { url = "https://files.pythonhosted.org/packages/9c/2d/213b41280869e11d4fa3de4b33073adae5f0ea84c817271cf33ea2b474e6/rerun_sdk-0.36.1-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:4827d8f5551e42a9072f6946c1f796261ce3563fea1f95a89b750b12152f15b8", size = 162986954, upload-time = "2026-08-19T12:41:30.676Z" },
-    { url = "https://files.pythonhosted.org/packages/bd/7a/2089c90e1c57065e4074c41ee2eff30f3f599f60df9f5af722f20aa76d08/rerun_sdk-0.36.1-cp310-abi3-win_amd64.whl", hash = "sha256:72c342b10911436c392aee30474366a1ad80db2282d447d338f92727e9c9a36e", size = 140649472, upload-time = "2026-08-19T12:41:36.701Z" },
+    { url = "https://files.pythonhosted.org/packages/43/ff/e8ce81a4fa451f232abb10f0737c5fa8c812a4b2979bda2f655c58c478eb/rerun_sdk-0.36.3-cp310-abi3-macosx_11_0_arm64.whl", hash = "sha256:804067d6e71747f8461104988be82543b318b583a2837935558a5e79a5e9befd", size = 147513390, upload-time = "2026-08-24T18:59:12.502Z" },
+    { url = "https://files.pythonhosted.org/packages/47/0d/a44bccfa279d043929d595a97c220ce3151dd2ef39d6b0477abfa6abc5c0/rerun_sdk-0.36.3-cp310-abi3-manylinux_2_28_aarch64.whl", hash = "sha256:954d8980e15e71245ac91ba7120bbaeb624df2bd7a47bbbb8856fd45174d2521", size = 157793360, upload-time = "2026-08-24T18:59:20.494Z" },
+    { url = "https://files.pythonhosted.org/packages/54/30/3dae429550a667bc0536bd419864c8574de908557aaadcc136082cb6f17c/rerun_sdk-0.36.3-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:287059b7154bf3881f5b32035f5772d0556d55a0a894650fb74a2605fb39afbe", size = 163018185, upload-time = "2026-08-24T18:59:30.55Z" },
+    { url = "https://files.pythonhosted.org/packages/35/97/3ea34c7e892474d940759fe18045fe29e245ac5c5b82e526088c388ba854/rerun_sdk-0.36.3-cp310-abi3-win_amd64.whl", hash = "sha256:f84441a3e1d1d679f6fe5a319cac86ccc3992f8f88bfa72517f76d8b45bf066c", size = 140659012, upload-time = "2026-08-24T18:59:37.699Z" },
 ]
 
 [package.optional-dependencies]
@@ -1204,6 +1211,8 @@ dependencies = [
     { name = "pyarrow" },
     { name = "rerun-sdk", extra = ["datafusion"] },
     { name = "scipy" },
+    { name = "specialist-camera" },
+    { name = "specialist-dataset" },
     { name = "specialist-description" },
     { name = "telemetry-parser" },
     { name = "tyro" },
@@ -1235,8 +1244,10 @@ requires-dist = [
     { name = "opencv-python", specifier = ">=4.10" },
     { name = "pupil-apriltags", specifier = ">=1.0.4" },
     { name = "pyarrow", specifier = ">=18" },
-    { name = "rerun-sdk", extras = ["datafusion"], specifier = ">=0.36,<0.37" },
+    { name = "rerun-sdk", extras = ["datafusion"], specifier = ">=0.36.3,<0.37" },
     { name = "scipy", specifier = ">=1.11" },
+    { name = "specialist-camera", editable = "packages/specialist_camera" },
+    { name = "specialist-dataset", editable = "packages/specialist_dataset" },
     { name = "specialist-description", git = "ssh://git@github.com/specialist-ai/specialist_description.git?branch=main" },
     { name = "telemetry-parser", specifier = ">=0.3" },
     { name = "tyro", specifier = ">=0.9" },
@@ -1256,6 +1267,38 @@ gpu = [
     { name = "nvmath-python", extras = ["cu12"], marker = "sys_platform == 'linux'", specifier = ">=1.0" },
     { name = "torch", marker = "sys_platform == 'linux'", specifier = ">=2.11", index = "https://download.pytorch.org/whl/cu129" },
     { name = "triton", marker = "sys_platform == 'linux'", specifier = ">=3.4", index = "https://download.pytorch.org/whl/cu129" },
+]
+
+[[package]]
+name = "specialist-camera"
+version = "0.1.0"
+source = { editable = "packages/specialist_camera" }
+dependencies = [
+    { name = "numpy" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "numpy", specifier = ">=1.26" }]
+
+[[package]]
+name = "specialist-dataset"
+version = "0.1.0"
+source = { editable = "packages/specialist_dataset" }
+dependencies = [
+    { name = "av" },
+    { name = "numpy" },
+    { name = "pyarrow" },
+    { name = "rerun-sdk" },
+    { name = "specialist-camera" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "av", specifier = ">=13" },
+    { name = "numpy", specifier = ">=1.26" },
+    { name = "pyarrow", specifier = ">=18" },
+    { name = "rerun-sdk", specifier = ">=0.36.3,<0.37" },
+    { name = "specialist-camera", editable = "packages/specialist_camera" },
 ]
 
 [[package]]

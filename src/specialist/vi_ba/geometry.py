@@ -17,7 +17,6 @@ __all__ = [
   "matrices_to_quats",
   "max_parallax",
   "quat_xyzw",
-  "quats_to_matrices",
   "rotate_about_z",
   "translation",
 ]
@@ -54,12 +53,6 @@ def quat_xyzw(rotation: gtsam.Rot3) -> Float64Array:
   q = rotation.toQuaternion()
   raw = np.array([[q.x(), q.y(), q.z(), q.w()]], dtype=np.float64)
   out: Float64Array = _canonical(raw)[0]
-  return out
-
-
-def quats_to_matrices(quaternions: Float64Array) -> Float64Array:
-  """Batch xyzw quaternions to rotation matrices, ``(n, 4) -> (n, 3, 3)``."""
-  out: Float64Array = Rotation.from_quat(quaternions).as_matrix()
   return out
 
 

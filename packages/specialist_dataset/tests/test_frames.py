@@ -4,8 +4,7 @@ from pathlib import Path
 
 import pyarrow as pa
 import pytest
-
-from specialist.record import frames, schema
+from specialist_dataset import frames, schema
 
 
 def test_lens_video_refuses_markerless_streams(

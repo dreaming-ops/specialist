@@ -16,8 +16,8 @@ from rerun.experimental import (
   OptimizationProfile,
   send_chunks,
 )
+from specialist_dataset import schema
 
-from specialist.record import schema
 from specialist.vi_ba.summary import CameraSummary, Summary
 from specialist.vi_ba.viz import Layers, estimate_chunks, run_blueprint
 from specialist.vi_ba.viz_build import RunEstimate
@@ -65,7 +65,7 @@ def _send_run_properties(
     if not math.isnan(rmse)
   ]
   stream.send_property(
-    "estimate",
+    schema.ESTIMATE,
     rr.AnyValues(
       **asdict(summary),
       worst_rmse=max(measured) if measured else float("nan"),

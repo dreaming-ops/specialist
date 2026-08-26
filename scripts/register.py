@@ -17,15 +17,15 @@ from pathlib import Path
 import tyro
 from rerun.catalog import CatalogClient, DatasetEntry, OnDuplicateSegmentLayer
 from rerun.experimental import RrdReader
-
-from specialist.record.read import check_frame_alignment
-from specialist.record.schema import (
+from specialist_dataset.read import check_frame_alignment
+from specialist_dataset.schema import (
   APPLICATION_ID,
   ESTIMATE,
   anchor_id_of,
   anchor_ids_in,
   slots_in,
 )
+
 from specialist.record.session import SessionRecording
 from specialist.vi_ba.blueprint import blueprint_for_slots, segment_card_blueprint
 

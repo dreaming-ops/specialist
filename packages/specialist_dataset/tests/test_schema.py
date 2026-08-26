@@ -4,28 +4,23 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-
-from specialist.record import schema
+from specialist_dataset import schema
 
 
 def test_the_slot_is_the_serial_rank_not_the_argument_order() -> None:
-  """Ranking serials gives a re-conversion of the same cameras the same slots."""
   serials = ["IAQEB2601V3F6K", "IAQEB2601UVVAJ", "IAQEB2601A0000"]
   assert schema.camera_slots(serials) == ["cam02", "cam01", "cam00"]
-  # The same cameras in any order earn the same slots.
   reversed_order = list(reversed(serials))
   assert schema.camera_slots(reversed_order) == ["cam00", "cam01", "cam02"]
 
 
 def test_a_serial_that_cannot_identify_a_camera_refuses() -> None:
-  """Falling back to argument order would defeat the rank, so it raises."""
   for serials in ([""], ["A", ""], ["A", "A"], ["", ""]):
     with pytest.raises(ValueError, match="one distinct serial"):
       schema.camera_slots(serials)
 
 
 def test_a_camera_path_reports_its_slot_and_nothing_else_does() -> None:
-  """``slot_of`` ignores other roots, so world-frame entities never read as cameras."""
   assert schema.slot_of(f"/{schema.video('cam00', 'front')}") == "cam00"
   assert schema.slot_of(schema.state("cam07", "pose")) == "cam07"
   assert schema.slot_of(f"/{schema.anchor(3)}") is None
@@ -36,7 +31,6 @@ def test_a_camera_path_reports_its_slot_and_nothing_else_does() -> None:
 
 
 def test_an_anchor_path_reports_its_tag_and_nothing_else_does() -> None:
-  """Only an anchor path yields an id; ``anchor_ids_in`` sorts and deduplicates them."""
   assert schema.anchor_id_of(f"/{schema.anchor(3)}") == 3
   assert schema.anchor_id_of(schema.anchor(0)) == 0
   assert schema.anchor_id_of(f"/{schema.video('cam00', 'front')}") is None
@@ -53,9 +47,18 @@ def test_an_anchor_path_reports_its_tag_and_nothing_else_does() -> None:
 
 
 def test_keyframe_index_buckets_session_frames_by_stride() -> None:
-  """Bucket k ends exactly on row k*stride, the frame the solver placed."""
   stride = schema.keyframe_stride(60.0)
   assert stride == 6
   rows = schema.keyframe_index(np.arange(0, 19, dtype=np.int64), stride)
   assert list(rows[:8]) == [0, 1, 1, 1, 1, 1, 1, 2]
   assert rows[stride] == 1 and rows[2 * stride] == 2
+
+
+def test_a_selector_names_the_field_a_query_addresses() -> None:
+  assert (
+    schema.selector(schema.state("cam00", "pose"), schema.POSE_TRANSLATION)
+    == "/camera/cam00/state/pose:Transform3D:translation"
+  )
+  translation, quaternion = schema.pose_selectors(schema.camera("cam01"))
+  assert translation == "/camera/cam01:Transform3D:translation"
+  assert quaternion == "/camera/cam01:Transform3D:quaternion"

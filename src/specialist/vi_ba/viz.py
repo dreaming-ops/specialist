@@ -16,15 +16,16 @@ import pyarrow.compute as pc
 import rerun as rr
 import rerun.blueprint as rrb
 from rerun.experimental import Chunk
+from specialist_dataset import schema
+from specialist_dataset.poses import quats_to_matrices
 
-from specialist.record import schema
 from specialist.vi_ba.blueprint import (
   BODY_AXIS,
   TAG_AXIS,
   TRAJECTORY_TRAIL_DURATION,
   blueprint_for_slots,
 )
-from specialist.vi_ba.geometry import matrices_to_quats, quat_xyzw, quats_to_matrices
+from specialist.vi_ba.geometry import matrices_to_quats, quat_xyzw
 
 if TYPE_CHECKING:
   from specialist.vi_ba.tag_detection import TagDetection

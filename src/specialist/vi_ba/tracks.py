@@ -8,8 +8,8 @@ import cv2
 import gtsam
 import numpy as np
 import numpy.typing as npt
+from specialist_camera import MeiParams, mei_unproject
 
-from specialist.loader.mei_model import MeiParams, mei_unproject
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.configs import FrontendCfg
 from specialist.vi_ba.features import (

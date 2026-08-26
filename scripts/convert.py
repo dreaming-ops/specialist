@@ -13,11 +13,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import tyro
+from specialist_dataset import schema
 
 from specialist.loader.audio_sync import sync_two_captures
 from specialist.loader.capture import probe_capture
 from specialist.loader.parse_insv import load_insv
-from specialist.record import schema
 from specialist.record.base import (
   calibration_chunks,
   capture_chunk,

@@ -1,15 +1,19 @@
-"""Pure-numpy MEI unified projection; distortion is ``[k1, k2, k3, p1, p2, xi]``."""
+"""MEI unified omnidirectional projection with Brown-Conrady distortion."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Literal
 
 import numpy as np
 import numpy.typing as npt
 
 Float64Array = npt.NDArray[np.float64]
 
-__all__ = ["MeiParams", "mei_project", "mei_unproject"]
+__all__ = ["LENSES", "LensName", "MeiParams", "mei_project", "mei_unproject", "rescale"]
+
+LensName = Literal["front", "rear"]
+LENSES: tuple[LensName, LensName] = ("front", "rear")
 
 
 @dataclass(frozen=True)
@@ -36,9 +40,24 @@ def unit_rows(v: Float64Array) -> Float64Array:
 
 
 def require_2d(arr: Float64Array, cols: int, name: str) -> None:
-  """Validate that ``arr`` is ``(N, cols)``; raise ValueError otherwise."""
+  """Raise ValueError unless ``arr`` has shape ``(N, cols)``."""
   if arr.ndim != 2 or arr.shape[1] != cols:
     raise ValueError(f"{name} must be (N, {cols}), got {arr.shape}")
+
+
+def rescale(
+  raw: MeiParams, frame_width: float, decoded_width: int, lens: LensName
+) -> MeiParams:
+  """Rescale ``raw`` from the two-lens frame to one lens at ``decoded_width``."""
+  scale = 2.0 * decoded_width / frame_width
+  left_edge = frame_width / 2.0 if lens == "rear" else 0.0
+  return replace(
+    raw,
+    fx=raw.fx * scale,
+    fy=raw.fy * scale,
+    cx=(raw.cx - left_edge) * scale,
+    cy=raw.cy * scale,
+  )
 
 
 def mei_project(points_cam: Float64Array, params: MeiParams) -> Float64Array:
@@ -85,7 +104,7 @@ def mei_unproject(pixels: Float64Array, params: MeiParams) -> Float64Array:
       break
 
   r2 = x * x + y * y
-  # Invert the sphere shift with the larger root; a negative discriminant gives NaN.
+  # factor is the larger root of factor**2 (r2 + 1) - 2 factor xi + xi**2 - 1 = 0.
   disc = 1.0 + (1.0 - params.xi * params.xi) * r2
   disc = np.where(disc < 0.0, np.nan, disc)
   factor = (params.xi + np.sqrt(disc)) / (r2 + 1.0)

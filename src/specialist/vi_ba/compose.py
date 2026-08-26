@@ -9,6 +9,7 @@ from functools import partial
 import gtsam
 import numpy as np
 import numpy.typing as npt
+from specialist_dataset.fiducials import tag_corners_in_frame, tag_corners_local
 
 from specialist.vi_ba._mei_factor_cpp import (
   make_mei_base_tag_factor_cpp,
@@ -32,8 +33,6 @@ from specialist.vi_ba.tag_detection import (
   TagDetection,
   estimate_lens_T_tag,
   tag_center_bearing,
-  tag_corners_in_frame,
-  tag_corners_local,
   tag_half_angle,
 )
 from specialist.vi_ba.urdf_joints import FINGER_JOINTS
@@ -364,7 +363,7 @@ def _add_all_anchor_corner_factors(
     3, args.anchor.secondary_corner_prior_sigma
   )
   for tag_id, world_T_tag in secondary_anchor_world.items():
-    seed_corners = tag_corners_in_frame(world_T_tag, args.anchor.tag_size)
+    seed_corners = tag_corners_in_frame(world_T_tag.matrix(), args.anchor.tag_size)
     corner_keys: list[int] | None = None
     if args.anchor.free_secondary:
       # Secondary corners are graph variables held near the seed by a loose prior.
