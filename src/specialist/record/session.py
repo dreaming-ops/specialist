@@ -13,6 +13,7 @@ from specialist_camera import LensName
 from specialist_dataset import frames, schema
 from specialist_dataset.poses import quats_to_matrices
 from specialist_dataset.read import Recording, lens_from_row
+from specialist_dataset.state import nearest
 
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.imu import ImuSamples
@@ -42,19 +43,14 @@ def nearest_samples(times: Float64Array, grid: Float64Array) -> Int64Array:
   """The sample of ``times`` nearest each ``grid`` time; raises beyond half a frame."""
   if len(times) < 2:
     raise ValueError(f"need at least two frame times, got {len(times)}")
-  pos = np.searchsorted(times, grid)
-  lo = np.clip(pos - 1, 0, len(times) - 1)
-  hi = np.clip(pos, 0, len(times) - 1)
-  samples = np.where(np.abs(times[hi] - grid) < np.abs(times[lo] - grid), hi, lo)
-  deltas = np.abs(times[samples] - grid)
+  samples, deltas = nearest(times, grid)
   half_frame = 0.5 * float(np.median(np.diff(times)))
   if float(deltas.max()) > half_frame:
     raise ValueError(
       f"nearest-PTS match misses the grid by {float(deltas.max()):.4f} s, "
       f"more than half a frame ({half_frame:.4f} s)"
     )
-  out: Int64Array = samples.astype(np.int64)
-  return out
+  return samples
 
 
 def covered_samples(
@@ -114,10 +110,10 @@ class SessionRecording:
     """One lens's encoded samples, ready for banded decoding."""
     return frames.LensVideo(self._recording, slot, lens)
 
-  def decoded_shape(self, slot: str) -> tuple[int, int]:
-    """``(height, width)`` of decoded front-lens frames, from a one-frame decode."""
+  def decoded_shape(self, slot: str, lens: LensName = "front") -> tuple[int, int]:
+    """``(height, width)`` of one lens's decoded frames, from a one-frame decode."""
     frame = frames.LensFrames(
-      self.lens_video(slot, "front"), np.zeros(1, dtype=np.int64), band=1
+      self.lens_video(slot, lens), np.zeros(1, dtype=np.int64), band=1
     )[0]
     return int(frame.shape[0]), int(frame.shape[1])
 
@@ -145,6 +141,11 @@ class SessionRecording:
     if not np.array_equal(t_gyro, t_accel):
       raise ValueError(f"{self.path}: gyro and accel rows disagree for {slot}")
     return ImuSamples(t=t_gyro, gyro=gyro, accel=accel)
+
+  @property
+  def converted_at(self) -> int:
+    """The base recording's write time, in nanoseconds since the epoch."""
+    return int(np.asarray(self._recording.property("RecordingInfo")["start_time"])[0])
 
   def body_R_imu(self, slot: str) -> Float64Array:
     row = self._entity_row(schema.imu(slot))

@@ -44,18 +44,20 @@ uv run pytest
 
 ## Run
 
-A session goes through three steps. The raw captures convert once into a base
+A session goes through four steps. The raw captures convert once into a base
 recording; every solve reads that recording and writes its two layers beside
-it; registration puts them all on a catalog. Records are laid out layer-first —
+it; the state layer distills both into what a policy trains on;
+registration puts them all on a catalog. Records are laid out layer-first —
 one directory per layer, one file per session — so a whole layer registers
 with one glob and any layer can be refetched or regenerated without touching
 the rest:
 
 ```
-base/<session-id>.rrd    # remuxed per-lens video, IMU, calibration, clock shifts
-estimate/<session-id>.rrd # the run's answers: poses, joint angles
-viz/<session-id>.rrd     # what is only drawn: ribbon, overlays, meshes
-mocap/<session-id>.rrd   # ground-truth layer (eval branch)
+base/<session-id>.rrd          # remuxed per-lens video, IMU, calibration, clock shifts
+estimate/<session-id>.rrd      # the run's answers: poses, joint angles
+viz/<session-id>.rrd           # what is only drawn: ribbon, overlays, meshes
+state_s8_r100/<session-id>.rrd  # what the policy sees: 360x360 images, 100 Hz state
+mocap/<session-id>.rrd         # ground-truth layer (eval branch)
 ```
 
 **1. Convert.** Pass one `_00_` master `.insv` per camera; the converter finds
@@ -101,10 +103,51 @@ To look at a session, load the layers beside their base — the
 shared id merges them — with
 `uv run rerun logs/base/<id>.rrd logs/estimate/<id>.rrd logs/viz/<id>.rrd`.
 
-**3. Register** (optional) the pair on a Rerun catalog, which installs the
+**3. State.** A trainer builds the policy's observation from the images and
+past rows, and its action from future rows.
+
+```
+state ──┬── images ───── augment ── normalize ──────────────┐
+        │                                                   ├──►  obs
+        ├── past rows ── transform (egocentric, …) ─────────┘
+        │
+        └── future rows ─ transform (egocentric, …) ──►  action   (exact, unaugmented)
+```
+
+`state.py` writes the layer from the base recording and the estimate, keyed by
+hand under `state/left` and `state/right`. Per hand, the layer holds:
+
+- the rear lens, block-averaged to 360x360 (`--scale 8`) and blanked outside
+  the fisheye disc, as one JPEG for every frame inside the usable window;
+- the gripper's base-tag pose and twist in the world frame on every row,
+  interpolated between the estimate's samples;
+- the coupled finger angle.
+
+The window comes from the operator's bracket gestures: a hold at the start and
+a tap at the end. `--margin` seconds stay clear of each. The writer finds which
+camera rode which hand.
+
+A trainer indexes the layer by the integer `row` timeline, `round(t * --f-row)`.
+Every row keeps its true time beside that label. Both hands cover one dense row
+range.
+
+```
+uv run python scripts/state.py --base logs/base/<session-id>.rrd --output-dir logs
+```
+
+The layer lands in `logs/state_s8_r100/<session-id>.rrd`. The directory names
+the configuration, so several configurations sit side by side in one dataset.
+
+**4. Register** (optional) the layers on a Rerun catalog, which installs the
 standard dashboard as the catalog dataset default. A layer whose recording id matches
 no base segment is refused; a layer attaches only to the base segment that
-shares its recording id.
+shares its recording id. A root holding state layers registers the one
+`--state state_s8_r100` names and skips the rest.
+`--state` builds a training catalog dataset: the state layer as
+the segments themselves and nothing else, with the state dashboard - the two
+hands' images beside a 3D view of their base-tag frames,
+written to `logs/blueprints/state.rbl` - as the default, and both hands'
+images side by side as the segment-table card.
 
 ```
 uv run python scripts/register.py --catalog-url rerun+http://host:port \
@@ -115,10 +158,12 @@ uv run python scripts/register.py --catalog-url rerun+http://host:port \
 
 ```
 packages/
-├── specialist_camera/   mei (MEI projection both ways, rescaling)
+├── specialist_camera/   mei (MEI projection both ways, rescaling), image (the
+│                        lens as the policy sees it)
 └── specialist_dataset/  the dataset contract: schema (entity paths, timelines,
                          sessions), read (layers as numpy), frames (lens frame
-                         times, H.264 decoding), poses, fiducials
+                         times, H.264 decoding), poses, fiducials, state
+                         (state-stream helpers)
 
 src/specialist/
 ├── vi_ba/       the solve: single_camera (per-camera prep), tracks +

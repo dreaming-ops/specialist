@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import itertools
+from collections.abc import Iterator, Sequence
+from typing import Any
 
 import datafusion
 import numpy as np
@@ -15,7 +17,7 @@ from specialist_dataset.read import Recording
 Float64Array = npt.NDArray[np.float64]
 Int64Array = npt.NDArray[np.int64]
 
-__all__ = ["LensVideo", "LensFrames", "lens_times"]
+__all__ = ["LensVideo", "LensFrames", "decode_samples", "lens_times"]
 
 _DECODE_THREADS = 16
 
@@ -108,6 +110,46 @@ def _sync_samples(markers: pa.ChunkedArray) -> Int64Array:
   return out
 
 
+def decode_samples(video: LensVideo, samples: Int64Array) -> Iterator[tuple[int, Any]]:
+  """``(sample, frame)`` for ascending ``samples``, one pass from a sync sample."""
+  import av
+
+  wanted = {int(s) for s in samples}
+  first, last = video.decode_start(int(samples[0])), int(samples[-1])
+  context = av.CodecContext.create("h264", "r")
+  context.thread_count = _DECODE_THREADS
+  context.thread_type = "FRAME"
+  packets = itertools.chain(
+    (av.Packet(video.packet(source)) for source in range(first, last + 1)), [None]
+  )
+  emitted, found = first, 0
+  packet = None
+  try:
+    for packet in packets:
+      for decoded in context.decode(packet):
+        if emitted in wanted:
+          found += 1
+          yield emitted, decoded
+        emitted += 1
+  finally:
+    # Freeing an undrained threaded decoder blocks forever.
+    if packet is not None:
+      for _ in context.decode(None):
+        pass
+  if found != len(wanted):
+    raise RuntimeError(
+      f"{video.entity}: {len(wanted) - found} of {len(wanted)} samples never decoded, "
+      f"from sample {emitted}"
+    )
+
+
+def _luma(decoded: Any) -> np.ndarray:
+  """The full-resolution luma plane of a 4:2:0 frame, without a swscale conversion."""
+  plane = decoded.planes[0]
+  rows = np.frombuffer(plane, dtype=np.uint8).reshape(-1, plane.line_size)
+  return np.ascontiguousarray(rows[: int(decoded.height), : int(decoded.width)])
+
+
 class LensFrames(Sequence[np.ndarray]):
   """A lens's frames at ascending ``samples``, decoded and held one band at a time."""
 
@@ -126,42 +168,11 @@ class LensFrames(Sequence[np.ndarray]):
     return self._len
 
   def _decode_band(self, first: int) -> list[np.ndarray]:
-    import av
-
-    band_rows = self._samples[first : first + self.band]
-    wanted = {int(r) for r in band_rows}
-    last = int(band_rows[-1])
-    row = self._video.decode_start(int(band_rows[0]))
-    context = av.CodecContext.create("h264", "r")
-    context.thread_count = _DECODE_THREADS
-    context.thread_type = "FRAME"
-    frames: dict[int, np.ndarray] = {}
-
-    def take(decoded: object, at: int) -> None:
-      if at in wanted:
-        # 4:2:0, so plane 0 is the full-resolution luma.
-        plane = decoded.planes[0]  # type: ignore[attr-defined]
-        height = int(decoded.height)  # type: ignore[attr-defined]
-        width = int(decoded.width)  # type: ignore[attr-defined]
-        rows = np.frombuffer(plane, dtype=np.uint8).reshape(-1, plane.line_size)
-        frames[at] = np.ascontiguousarray(rows[:height, :width])
-
-    emitted = row
-    for source in range(row, last + 1):
-      for decoded in context.decode(av.Packet(self._video.packet(source))):
-        take(decoded, emitted)
-        emitted += 1
-    # Frame threading holds the tail of the band until the context is drained.
-    for decoded in context.decode(None):
-      take(decoded, emitted)
-      emitted += 1
-    missing = sorted(wanted - set(frames))
-    if missing:
-      raise RuntimeError(
-        f"{self._video.entity}: no frame decoded for rows {missing[:4]} "
-        f"of band [{first}, {first + len(band_rows)})"
-      )
-    return [frames[int(r)] for r in band_rows]
+    band = self._samples[first : first + self.band]
+    frames = {
+      sample: _luma(decoded) for sample, decoded in decode_samples(self._video, band)
+    }
+    return [frames[int(s)] for s in band]
 
   def __getitem__(self, index: int) -> np.ndarray:  # type: ignore[override]
     if index < 0:

@@ -54,6 +54,15 @@ def test_keyframe_index_buckets_session_frames_by_stride() -> None:
   assert rows[stride] == 1 and rows[2 * stride] == 2
 
 
+def test_a_state_layer_is_named_by_its_configuration() -> None:
+  """The directory name carries the configuration; the entity paths inside never do."""
+  assert schema.state_layer(12, 100.0) == "state_s12_r100"
+  assert schema.state_layer(3, 1000.0) == "state_s3_r1000"
+  assert schema.state_image("left") == "state/left/image"
+  assert schema.state_pose("right") == "state/right/pose"
+  assert schema.slot_of(f"/{schema.state_image('left')}") is None
+
+
 def test_a_selector_names_the_field_a_query_addresses() -> None:
   assert (
     schema.selector(schema.state("cam00", "pose"), schema.POSE_TRANSLATION)

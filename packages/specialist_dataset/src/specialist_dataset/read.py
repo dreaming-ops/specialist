@@ -15,6 +15,7 @@ from specialist_camera import LensName, MeiParams, rescale
 
 from specialist_dataset import schema
 from specialist_dataset.poses import quats_to_matrices
+from specialist_dataset.state import nearest
 
 Float64Array = npt.NDArray[np.float64]
 
@@ -101,17 +102,35 @@ class Recording:
         out[name[len(prefix) :]] = values[-1]
     return out
 
+  def property(self, name: str) -> dict[str, Any]:
+    """Field name to value for one recording property, as stored."""
+    table = self._entry.segment_table().to_arrow_table()
+    prefix = f"property:{name}:"
+    out: dict[str, Any] = {}
+    for column in table.schema.names:
+      if column.startswith(prefix):
+        values = table.column(column).combine_chunks().drop_null().to_pylist()
+        if values:
+          out[column[len(prefix) :]] = values[0]
+    return out
+
+  def values(
+    self, entity: str, component: str, width: int | None = None
+  ) -> tuple[Float64Array, Float64Array]:
+    """One component's ``(times, values)`` in index order, values ``(rows, width)``."""
+    column = schema.selector(entity, component)
+    table = self.series(f"/{entity}")
+    if column not in table.schema.names:
+      raise ValueError(f"{self.path} has no {component} at /{entity}")
+    rows = _rows_with(table, column)
+    flat = _values(rows, column)
+    return self.seconds(rows), flat.reshape(rows.num_rows, width or -1)
+
   def scalars(
     self, entity: str, width: int | None = None
   ) -> tuple[Float64Array, Float64Array]:
     """One entity's scalar series: ``(times, values)`` in index order."""
-    column = schema.selector(entity, schema.SCALARS)
-    table = self.series(f"/{entity}")
-    if column not in table.schema.names:
-      raise ValueError(f"{self.path} has no samples at /{entity}")
-    rows = _rows_with(table, column)
-    flat = _values(rows, column)
-    return self.seconds(rows), flat.reshape(rows.num_rows, width or -1)
+    return self.values(entity, schema.SCALARS, width)
 
   def entity_paths(self) -> set[str]:
     """Every entity the recording holds, without a leading slash."""
@@ -207,12 +226,7 @@ def check_frame_alignment(
   for slot, kf_times in run.kf_times_by_slot.items():
     if slot not in frame_times:
       raise ValueError(f"{slot} has no video frame times")
-    times = frame_times[slot]
-    positions = np.searchsorted(times, kf_times)
-    lo = times[np.clip(positions - 1, 0, len(times) - 1)]
-    hi = times[np.clip(positions, 0, len(times) - 1)]
-    nearest = np.minimum(np.abs(kf_times - lo), np.abs(kf_times - hi))
-    worst = float(nearest.max())
+    worst = float(nearest(frame_times[slot], kf_times)[1].max())
     if worst > _ALIGNMENT_TOLERANCE:
       raise ValueError(
         f"{slot}: keyframe times miss the video frames by up to "

@@ -10,7 +10,11 @@ import rerun as rr
 import rerun.blueprint as rrb
 from rerun.experimental import Chunk, RrdReader
 
-from specialist.vi_ba.blueprint import blueprint_for_slots, segment_card_blueprint
+from specialist.vi_ba.blueprint import (
+  blueprint_for_slots,
+  state_blueprint,
+  state_card_blueprint,
+)
 from specialist.vi_ba.viz import (
   Layers,
   _camera_indexes,
@@ -64,6 +68,80 @@ def _ranged(blueprint: rrb.Blueprint, rrd: Path) -> set[str]:
   return {c.entity_path for c in columns if c.component == "VisibleTimeRanges:ranges"}
 
 
+def _views(blueprint: rrb.Blueprint, rrd: Path) -> dict[str, str]:
+  """Each view's name and the entity path it takes as its origin."""
+  with rr.RecordingStream("app", recording_id="bp", send_properties=False) as stream:
+    stream.save(str(rrd))
+    stream.send_blueprint(blueprint, make_active=True, make_default=True)
+  reader = RrdReader(str(rrd))
+  views: dict[str, str] = {}
+  for chunk in reader.store(store=reader.blueprints()[0]).stream().to_chunks():
+    batch = chunk.to_record_batch()
+    if "ViewBlueprint:space_origin" not in batch.schema.names:
+      continue
+    names = batch.column("ViewBlueprint:display_name").to_pylist()
+    origins = batch.column("ViewBlueprint:space_origin").to_pylist()
+    for name, origin in zip(names, origins, strict=True):
+      if name and origin:
+        views[name[0]] = origin[0]
+  return views
+
+
+def _overrides(blueprint: rrb.Blueprint, rrd: Path, view: str) -> set[tuple[str, str]]:
+  """Each entity the named view overrides, with the component overridden."""
+  with rr.RecordingStream("app", recording_id="bp", send_properties=False) as stream:
+    stream.save(str(rrd))
+    stream.send_blueprint(blueprint, make_active=True, make_default=True)
+  reader = RrdReader(str(rrd))
+  store = reader.store(store=reader.blueprints()[0])
+  names: dict[str, str] = {}
+  for chunk in store.stream().to_chunks():
+    batch = chunk.to_record_batch()
+    if "ViewBlueprint:display_name" in batch.schema.names:
+      for name in batch.column("ViewBlueprint:display_name").to_pylist():
+        if name:
+          names[str(chunk.entity_path)] = name[0]
+  out = set()
+  for column in store.schema().component_columns():
+    root, marker, entity = column.entity_path.partition("/ViewContents/overrides/")
+    if marker and names.get(root) == view:
+      out.add((entity.split("/visualizers")[0], column.component))
+  return out
+
+
+def test_the_state_dashboard_shows_each_hand_by_name(tmp_path: Path) -> None:
+  views = _views(state_blueprint(["cam00"]), tmp_path / "o.rrd")
+  assert views["left"] == "/state/left/image"
+  assert views["right"] == "/state/right/image"
+  assert not any(o.endswith(("/front", "/rear")) for o in views.values())
+  plain = _views(blueprint_for_slots(["cam00"]), tmp_path / "p.rrd")
+  assert plain["cam00/front"] == "/camera/cam00/front"
+  assert "left" not in plain
+
+
+def test_the_state_card_is_one_pane_over_both_hands(tmp_path: Path) -> None:
+  views = _views(state_card_blueprint(240), tmp_path / "c.rrd")
+  assert views == {"state": "/state"}
+
+
+def test_the_state_dashboard_keeps_the_standard_scene(tmp_path: Path) -> None:
+  """The state dashboard keeps every standard 3D-view override and adds a hand triad."""
+  plain = _overrides(
+    blueprint_for_slots(["cam00"], anchor_tag_ids=[7], anchor_tag_size=0.1),
+    tmp_path / "p.rrd",
+    "3D",
+  )
+  state = _overrides(
+    state_blueprint(["cam00"], anchor_tag_ids=[7], anchor_tag_size=0.1),
+    tmp_path / "o.rrd",
+    "3D",
+  )
+  assert ("camera/cam00/landmark/front", "EntityBehavior:visible") in plain
+  assert ("world/anchor/7", "LineStrips3D:strips") in plain
+  assert plain <= state
+  assert ("state/left/pose", "TransformAxes3D:axis_length") in state
+
+
 def _visualized(blueprint: rrb.Blueprint, rrd: Path) -> set[str]:
   """The entity paths the blueprint puts an explicit visualizer set on."""
   with rr.RecordingStream("app", recording_id="bp", send_properties=False) as stream:
@@ -90,12 +168,7 @@ def test_the_written_blueprint_carries_an_override_for_every_anchor(
 
 def test_every_view_that_draws_the_ribbon_sets_the_window(tmp_path: Path) -> None:
   """The samples carry one step each, so the view sets the visible time range."""
-  views = {
-    "dashboard": blueprint_for_slots(["cam00"]),
-    "card": segment_card_blueprint(["cam00"]),
-  }
-  for name, blueprint in views.items():
-    ranged = _ranged(blueprint, tmp_path / f"{name}.rrd")
-    assert any(
-      p.endswith("overrides/camera/cam00/trajectory/visualizers") for p in ranged
-    ), f"{name}: {ranged}"
+  ranged = _ranged(blueprint_for_slots(["cam00"]), tmp_path / "dashboard.rrd")
+  assert any(
+    p.endswith("overrides/camera/cam00/trajectory/visualizers") for p in ranged
+  ), ranged

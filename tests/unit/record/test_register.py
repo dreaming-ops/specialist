@@ -45,6 +45,28 @@ def test_dataset_layers_discovers_by_directory(tmp_path: Path) -> None:
   assert sorted(layers) == ["estimate", "mocap"]
 
 
+def test_dataset_layers_registers_the_one_state_layer_named(
+  tmp_path: Path,
+) -> None:
+  """Only the named state layer registers, none when unnamed; a missing one exits."""
+  for name in ("base", "estimate", "state_s12", "state_s8"):
+    _write_rrd((tmp_path / name).mkdir() or tmp_path / name / "s1.rrd", "s1")
+  _, layers = dataset_layers(tmp_path, state="state_s12")
+  assert sorted(layers) == ["estimate", "state_s12"]
+  _, layers = dataset_layers(tmp_path)
+  assert sorted(layers) == ["estimate"]
+  with pytest.raises(SystemExit, match="state_s4"):
+    dataset_layers(tmp_path, state="state_s4")
+
+
+def test_a_state_layer_alone_stands_as_the_segment(tmp_path: Path) -> None:
+  _write_rrd(
+    (tmp_path / "state_s12").mkdir() or tmp_path / "state_s12" / "s1.rrd", "s1"
+  )
+  bases, layers = dataset_layers(tmp_path, state="state_s12")
+  assert bases == [] and sorted(layers) == ["state_s12"]
+
+
 def test_dataset_layers_requires_a_base(tmp_path: Path) -> None:
   (tmp_path / "estimate").mkdir()
   _write_rrd(tmp_path / "estimate" / "s1.rrd", "s1")

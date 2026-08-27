@@ -8,6 +8,7 @@ from pathlib import Path
 import gtsam
 import numpy as np
 import numpy.typing as npt
+from scipy.spatial.transform import Rotation
 
 from specialist.loader.audio_sync import resolve_ffmpeg
 from specialist.loader.parse_insv import InsvData
@@ -97,22 +98,38 @@ def encode_clip(
   return path
 
 
-def camera_estimate(slot: str, *, offset: float = 0.0) -> CameraEstimate:
-  """One solved camera with one of everything a layer holds."""
+# The trajectory turns SPIN rad/s about world z, its body tilted TILT rad about its x.
+SPIN = 0.7
+TILT = 0.3
+
+
+def camera_estimate(
+  slot: str,
+  *,
+  offset: float = 0.0,
+  hold: float = 0.0,
+  rate: float = 1000.0,
+) -> CameraEstimate:
+  """One solved camera with every layer field, sliding along x after ``hold`` s."""
   n = 4
   times: npt.NDArray[np.float64] = np.arange(n, dtype=np.float64) * 0.1
   poses = [
     gtsam.Pose3(gtsam.Rot3.Ry(0.05 * i), gtsam.Point3(offset + 0.1 * i, 0.02 * i, 1.0))
     for i in range(n)
   ]
-  hr_t = np.linspace(0.0, times[-1], 10 * n + 1)
+  hr_t = np.arange(round(times[-1] * rate) + 1) / rate
+  if hold:
+    hr_t = np.concatenate([np.arange(-0.5 - hold, -0.5 + 1e-9, 0.025), hr_t])
   zeros = np.zeros_like(hr_t)
+  turn = Rotation.from_rotvec(np.outer(SPIN * hr_t, [0.0, 0.0, 1.0])) * (
+    Rotation.from_rotvec([TILT, 0.0, 0.0])
+  )
   data = CameraEstimate(
     slot=slot,
     highrate_times=hr_t,
-    highrate_positions=np.stack([hr_t, zeros, zeros], axis=1),
-    highrate_quats=np.tile(np.array([0.0, 0.0, 0.0, 1.0]), (len(hr_t), 1)),
-    highrate_vels=np.ones((len(hr_t), 3)),
+    highrate_positions=np.stack([offset + np.maximum(hr_t, 0.0), zeros, zeros], axis=1),
+    highrate_quats=turn.as_quat(),
+    highrate_vels=np.stack([hr_t >= 0.0, zeros, zeros], axis=1),
     body_poses=poses,
     keyframe_times=times,
     keyframe_frames=np.arange(n, dtype=np.int64) * 3,
