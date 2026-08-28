@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import math
-import socket
 import subprocess
 from dataclasses import asdict
 from datetime import datetime, timezone
@@ -19,12 +18,10 @@ from rerun.experimental import (
 from specialist_dataset import schema
 
 from specialist.vi_ba.summary import CameraSummary, Summary
-from specialist.vi_ba.viz import Layers, estimate_chunks, run_blueprint
+from specialist.vi_ba.viz import Layers, estimate_chunks
 from specialist.vi_ba.viz_build import RunEstimate
 
 __all__ = ["write_estimate_layers"]
-
-_VIEWER_PORT = 9876
 
 
 def _git_sha() -> str:
@@ -77,17 +74,6 @@ def _stream(session_id: str) -> rr.RecordingStream:
   )
 
 
-def _viewer_sink() -> list[rr.GrpcSink]:
-  """Spawn a viewer and return a sink into it, or none when it cannot be opened."""
-  try:
-    rr.spawn(connect=False)
-    socket.create_connection(("127.0.0.1", _VIEWER_PORT), timeout=5.0).close()
-  except Exception as exc:  # noqa: BLE001 - the viewer is optional; the layers are not
-    print(f"  [warn] [layer] viewer not opened ({exc}); writing the layers without it")
-    return []
-  return [rr.GrpcSink(url=f"rerun+http://127.0.0.1:{_VIEWER_PORT}/proxy")]
-
-
 def write_estimate_layers(
   estimate_path: Path,
   viz_path: Path,
@@ -95,12 +81,10 @@ def write_estimate_layers(
   summary: Summary,
   anchor_tag_size: float,
   session_id: str,
-  open_viewer: bool,
   urdf_path: Path,
   timeline_start: float,
   frame_period: float,
 ) -> None:
-  """Write the run's estimate and viz layers, and open the viewer if asked."""
   estimated_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
   estimate_path.parent.mkdir(parents=True, exist_ok=True)
   viz_path.parent.mkdir(parents=True, exist_ok=True)
@@ -110,22 +94,10 @@ def write_estimate_layers(
   for partial in partials.values():
     partial.unlink(missing_ok=True)
 
-  viewer = _viewer_sink() if open_viewer else []
-
   kept: list[Chunk] = []
   try:
     with _stream(session_id) as viz_stream:
-      # The dashboard goes to the live viewer only, never into a layer file.
-      if viewer:
-        viz_stream.set_sinks(*viewer)
-        viz_stream.send_blueprint(
-          run_blueprint(
-            estimate.cameras, estimate.world_T_anchor.keys(), anchor_tag_size
-          ),
-          make_active=True,
-          make_default=True,
-        )
-      viz_stream.set_sinks(rr.FileSink(partials[viz_path]), *viewer)
+      viz_stream.set_sinks(rr.FileSink(partials[viz_path]))
       estimate_chunks(
         Layers(
           estimate=kept.append,
@@ -144,7 +116,7 @@ def write_estimate_layers(
       optimize=OptimizationProfile.OBJECT_STORE
     )
     with _stream(session_id) as estimate_stream:
-      estimate_stream.set_sinks(rr.FileSink(partials[estimate_path]), *viewer)
+      estimate_stream.set_sinks(rr.FileSink(partials[estimate_path]))
       send_chunks(store, recording=estimate_stream)
       _send_run_properties(summary, estimate.per_camera, estimate_stream, estimated_at)
     for path, partial in partials.items():

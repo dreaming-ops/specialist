@@ -87,8 +87,7 @@ uv run python scripts/estimate.py --base logs/base/<session-id>.rrd \
 ```
 
 A single camera uses the same command, with no cross-camera factors.
-`--keyframe-every` overrides the automatic ~0.10 s keyframe stride, and
-`--no-open-viewer` keeps a headless box from spawning one.
+`--keyframe-every` overrides the automatic ~0.10 s keyframe stride.
 
 The run writes two layers sharing the base recording's id:
 `logs/estimate/<session-id>.rrd` carries what a consumer reads — body poses,
@@ -98,8 +97,8 @@ carries what is only drawn: the trajectory ribbon, the image overlays, the
 factor rays, the axis triads and the robot meshes. Re-running a session
 refuses to overwrite either unless `--overwrite` is passed, so point
 experimental runs at their own `--output-dir`.
-It spawns a viewer on the way out; to re-open a session later,
-load the layers beside their base — the shared id merges them — with
+To look at a session, load the layers beside their base — the
+shared id merges them — with
 `uv run rerun logs/base/<id>.rrd logs/estimate/<id>.rrd logs/viz/<id>.rrd`.
 
 **3. Register** (optional) the pair on a Rerun catalog, which installs the

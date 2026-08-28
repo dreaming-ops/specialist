@@ -195,7 +195,6 @@ def main(args: Args) -> None:
     anchor_tag_size=args.anchor.tag_size,
     urdf_path=urdf_path,
     session_id=session.session_id,
-    open_viewer=args.open_viewer,
   )
   print(f"Wrote {rrd_path} and {viz_path}")
 

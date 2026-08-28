@@ -112,18 +112,10 @@ def _without_pixels(slots: list[str]) -> list[str]:
 
 def blueprint_for_slots(
   slots: list[str],
-  floor_z: float | None = None,
   anchor_tag_ids: Iterable[int] = (),
   anchor_tag_size: float = 0.1,
 ) -> rrb.Blueprint:
   """A 3D view beside one image-pair column per camera."""
-  line_grid = (
-    rrb.LineGrid3D(
-      plane=rr.datatypes.Plane3D(normal=(0.0, 0.0, 1.0), distance=float(floor_z))
-    )
-    if floor_z is not None
-    else None
-  )
   hidden = rrb.EntityBehavior(visible=False)
   overrides: dict[rr.datatypes.EntityPath | str, Any] = {**_trail_overrides(slots)}
   overrides.update(_triad_overrides(slots, anchor_tag_ids, anchor_tag_size))
@@ -152,7 +144,6 @@ def blueprint_for_slots(
         origin="/",
         contents=["+ /**", *pixels],
         overrides=overrides,
-        line_grid=line_grid,
       ),
       rrb.Horizontal(*image_columns) if len(image_columns) > 1 else image_columns[0],
       column_shares=[2, max(1, len(slots))],

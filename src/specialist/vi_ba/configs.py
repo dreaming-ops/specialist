@@ -119,7 +119,6 @@ class Args:
 
   output_dir: Path = Path("logs")
   urdf_path: Path | None = None
-  open_viewer: bool = True
   # Replace this session's existing estimate and viz layers; off refuses.
   overwrite: bool = False
 
