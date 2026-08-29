@@ -30,22 +30,6 @@ def test_a_camera_path_reports_its_slot_and_nothing_else_does() -> None:
   ) == ["cam00", "cam01"]
 
 
-def test_an_anchor_path_reports_its_tag_and_nothing_else_does() -> None:
-  assert schema.anchor_id_of(f"/{schema.anchor(3)}") == 3
-  assert schema.anchor_id_of(schema.anchor(0)) == 0
-  assert schema.anchor_id_of(f"/{schema.video('cam00', 'front')}") is None
-  assert schema.anchor_id_of("/world") is None
-  assert schema.anchor_id_of(f"/{schema.anchor(3)}/label") is None
-  assert schema.anchor_id_of(f"/{schema.anchor(3)}/") == 3
-  assert schema.anchor_id_of("/world/anchor/\uff13") is None
-  assert schema.anchor_id_of("/world/anchor/label") is None
-  assert schema.anchor_id_of("/world/floor/3") is None
-  assert schema.anchor_ids_in(["/world/anchor/3", "/world/anchor/8"]) == [3, 8]
-  assert schema.anchor_ids_in(
-    [schema.anchor(1), f"/{schema.anchor(0)}", schema.anchor(1), schema.imu("cam00")]
-  ) == [0, 1]
-
-
 def test_keyframe_index_buckets_session_frames_by_stride() -> None:
   stride = schema.keyframe_stride(60.0)
   assert stride == 6
@@ -68,6 +52,3 @@ def test_a_selector_names_the_field_a_query_addresses() -> None:
     schema.selector(schema.state("cam00", "pose"), schema.POSE_TRANSLATION)
     == "/camera/cam00/state/pose:Transform3D:translation"
   )
-  translation, quaternion = schema.pose_selectors(schema.camera("cam01"))
-  assert translation == "/camera/cam01:Transform3D:translation"
-  assert quaternion == "/camera/cam01:Transform3D:quaternion"

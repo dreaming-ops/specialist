@@ -17,6 +17,7 @@ from specialist_dataset import schema
 from specialist.record.layer import write_estimate_layers
 from specialist.record.session import SessionRecording
 from specialist.vi_ba import gpu_flow
+from specialist.vi_ba.blueprint import blueprint_for_slots
 from specialist.vi_ba.compose import CameraKeys, anchored_keyframes, cross_sightings
 from specialist.vi_ba.configs import Args, CameraArgs, validate
 from specialist.vi_ba.features import set_precompute_concurrency
@@ -196,7 +197,16 @@ def main(args: Args) -> None:
     urdf_path=urdf_path,
     session_id=session.session_id,
   )
-  print(f"Wrote {rrd_path} and {viz_path}")
+  # The dashboard for sessions opened from their files; each solve rewrites it.
+  blueprints_dir = args.output_dir / "blueprints"
+  blueprints_dir.mkdir(parents=True, exist_ok=True)
+  rbl = blueprints_dir / "specialist.rbl"
+  blueprint_for_slots(
+    [c.slot for c in estimate.cameras],
+    anchor_tag_ids=sorted(estimate.world_T_anchor),
+    anchor_tag_size=args.anchor.tag_size,
+  ).save(schema.APPLICATION_ID, str(rbl))
+  print(f"Wrote {rrd_path}, {viz_path} and {rbl}")
 
 
 if __name__ == "__main__":

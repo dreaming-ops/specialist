@@ -193,7 +193,7 @@ def test_an_anchor_records_the_width_it_was_solved_against(
   estimate, _ = estimated_run
   sizes = set()
   for chunk in _chunks(estimate):
-    if schema.anchor_id_of(str(chunk.entity_path)) is None:
+    if not str(chunk.entity_path).startswith(f"/{schema.WORLD}/anchor/"):
       continue
     batch = chunk.to_record_batch()
     if "tag_size" in batch.schema.names:

@@ -251,20 +251,6 @@ def anchor(tag_id: int) -> str:
   return f"{WORLD}/anchor/{tag_id}"
 
 
-def anchor_id_of(path: str) -> int | None:
-  """The tag an anchor path addresses, or ``None`` when the path is not one."""
-  parts = path.strip("/").split("/")
-  if len(parts) != 3 or parts[:2] != [WORLD, "anchor"]:
-    return None
-  tag = parts[2]
-  return int(tag) if tag.isascii() and tag.isdigit() else None
-
-
-def anchor_ids_in(paths: Iterable[str]) -> list[int]:
-  """The world-static tags a recording holds, read off its entity paths."""
-  return sorted({tag for tag in map(anchor_id_of, paths) if tag is not None})
-
-
 def slot_of(path: str) -> str | None:
   """The camera slot an entity path belongs to, or ``None``."""
   parts = path.strip("/").split("/")
@@ -285,8 +271,3 @@ POSE_QUATERNION = "Transform3D:quaternion"
 def selector(entity: str, component: str) -> str:
   """One field of one entity, fully qualified."""
   return f"/{entity}:{component}"
-
-
-def pose_selectors(entity: str) -> tuple[str, str]:
-  """The translation and quaternion of a stored pose, in that order."""
-  return selector(entity, POSE_TRANSLATION), selector(entity, POSE_QUATERNION)
