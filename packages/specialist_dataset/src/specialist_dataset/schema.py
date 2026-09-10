@@ -1,9 +1,4 @@
-"""The single source of dataset entity paths, timeline names and timeline decoding.
-
-A session is the simultaneous captures, one per camera, converted into one base
-recording; its id is the Rerun recording id, so the segment id of each of its layer
-files. A capture is one camera's .insv pair.
-"""
+"""The single source of dataset entity paths, timeline names and timeline decoding."""
 
 from __future__ import annotations
 

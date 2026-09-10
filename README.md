@@ -44,6 +44,11 @@ uv run pytest
 
 ## Run
 
+A capture is one camera's `.insv` pair. A session is the simultaneous captures,
+one per camera, converted into one base recording. The session id names the
+first capture's start instant and camera serial. It is also the Rerun recording
+id, and so the segment id, of each layer file of the session.
+
 A session goes through four steps:
 
 - The raw captures convert once into a base recording.
@@ -69,14 +74,11 @@ recording to the span that every capture covers.
 
 ```
 uv run python scripts/convert.py \
-  --input-insvs path/to/g0_00.insv path/to/g1_00.insv \
-  --session-id <session-id> --output-dir logs
+  --input-insvs path/to/g0_00.insv path/to/g1_00.insv --output-dir logs
 ```
 
-This writes `logs/base/<session-id>.rrd`: the remuxed per-lens video with its
-real PTS, the native-rate IMU, the calibration, and each capture's clock shift,
-found by correlating the captures' audio; conversion stops when the audio peak is
-ambiguous.
+This writes `logs/base/<session-id>.rrd`. The converter stops when the
+audio-sync peak is ambiguous.
 
 **2. Estimate.** `estimate.py` reads the base recording. The recording carries
 the camera slots, the session window and the session id, so you pass none of

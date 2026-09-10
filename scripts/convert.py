@@ -1,12 +1,12 @@
 """Convert one session's ``.insv`` captures into a base recording.
 
 Usage:
-    uv run python scripts/convert.py --input-insvs camA_00.insv camB_00.insv \
-        --session-id <session-id>
+    uv run python scripts/convert.py --input-insvs camA_00.insv camB_00.insv
 """
 
 from __future__ import annotations
 
+import re
 import sys
 import tempfile
 from dataclasses import dataclass
@@ -34,8 +34,6 @@ class Args:
 
   # One _00_ master .insv per capture; the first defines the session clock.
   input_insvs: tuple[Path, ...]
-  # Recording id shared by this session's base recording and its layers.
-  session_id: str
   # Dataset root; the base recording lands as ``base/<session-id>.rrd``.
   output_dir: Path = Path("logs")
   # Replace an existing base recording.
@@ -45,15 +43,30 @@ class Args:
   duration: float | None = None
 
 
+_CAPTURE_STAMP = re.compile(r"_(\d{8}_\d{6})_")
+
+
+def session_name(master: Path, serial: str) -> str:
+  """The instant the clock-defining capture started, and the device that took it."""
+  stamp = _CAPTURE_STAMP.search(master.name)
+  if not stamp or not serial:
+    raise SystemExit(
+      f"{master.name} (serial {serial!r}) carries no capture instant or "
+      "serial to name the session from"
+    )
+  return f"{stamp[1]}_{serial}"
+
+
 def main(args: Args) -> None:
   sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
-  out_path = schema.layer_rrd(args.output_dir, schema.BASE, args.session_id)
+  loaded = [load_insv(master) for master in args.input_insvs]
+  serials = [str(insv.capture.get("serial_number", "")) for insv in loaded]
+  slots = schema.camera_slots(serials)
+  print(f"camera slots: {dict(zip(slots, args.input_insvs, strict=True))}")
+  session_id = session_name(args.input_insvs[0], serials[0])
+  out_path = schema.layer_rrd(args.output_dir, schema.BASE, session_id)
   if out_path.exists() and not args.overwrite:
-    raise SystemExit(
-      f"{out_path} exists; pass --overwrite to replace it (a registered base "
-      f"must then be re-registered with register.py --replace-base "
-      f"{args.session_id}, or its byte-range index goes stale)"
-    )
+    raise SystemExit(f"{out_path} exists; pass --overwrite to replace it")
   captures = [probe_capture(master) for master in args.input_insvs]
   # Capture clock minus session clock (s), per capture.
   offsets, confidences = [0.0], [float("inf")]
@@ -76,10 +89,6 @@ def main(args: Args) -> None:
 
   video_streams = []
   sidecars = []
-  loaded = [load_insv(master) for master in args.input_insvs]
-  serials = [str(insv.capture.get("serial_number", "")) for insv in loaded]
-  slots = schema.camera_slots(serials)
-  print(f"camera slots: {dict(zip(slots, args.input_insvs, strict=True))}")
   with tempfile.TemporaryDirectory(prefix="remux-") as tmp:
     for master, capture, insv, slot, offset, confidence in zip(
       args.input_insvs, captures, loaded, slots, offsets, confidences, strict=True
@@ -95,7 +104,7 @@ def main(args: Args) -> None:
       sidecars.append(capture_chunk(slot, insv, master.name, -offset, confidence))
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    write_base_recording(out_path, args.session_id, video_streams, sidecars)
+    write_base_recording(out_path, session_id, video_streams, sidecars)
   print(f"Wrote {out_path} ({out_path.stat().st_size / 1e6:.1f} MB)")
 
 
