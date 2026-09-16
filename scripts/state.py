@@ -109,10 +109,13 @@ def stored_width(session: SessionRecording, slots: list[str], scale: int) -> int
 
 
 def hand_slots(
+  slots: list[str],
   keyframes: dict[str, Any],
   places: dict[str, Any],
-) -> tuple[str, str]:
-  """Which slot rode the operator's left hand, and which the right."""
+) -> tuple[str | None, str]:
+  """The slots on the ``(left, right)`` hands; a lone camera rode the right."""
+  if len(slots) == 1:
+    return None, slots[0]
   with refusing():
     return hands(keyframes, places)
 
@@ -241,12 +244,12 @@ def layer_account(
   args: Args,
   estimate: Recording,
   slot: str,
-  converted_at: int,
+  session: SessionRecording,
   layer: str,
   window: tuple[float, float],
   covered: float,
 ) -> dict[str, Any]:
-  """The ``state`` recording property: config, provenance, stamps and kept fraction."""
+  """The ``state`` property: config, provenance, stamps and kept fraction."""
   run = estimate.property(schema.ESTIMATE)
   return {
     "config": layer,
@@ -261,7 +264,7 @@ def layer_account(
     "rerun_version": rr.__version__,
     "estimate_git_sha": _one(run["git_sha"]),
     "urdf_sha": _one(estimate.row(schema.gripper(slot)).get("urdf_sha", ["unknown"])),
-    "converted_at": converted_at,
+    "converted_at": session.converted_at,
     "estimated_at": _one(run["estimated_at"]),
     "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
   }
@@ -271,8 +274,8 @@ def main(args: Args) -> None:
   sys.stdout.reconfigure(line_buffering=True)  # type: ignore[union-attr]
   session = SessionRecording(args.base)
   slots = session.slots
-  if len(slots) != 2:
-    raise SystemExit(f"the state layer takes a two-camera session, got {slots}")
+  if not 1 <= len(slots) <= 2:
+    raise SystemExit(f"the state layer takes one or two cameras, got {slots}")
   estimate_path = args.estimate or schema.layer_rrd(
     args.base.parent.parent, schema.ESTIMATE, session.session_id
   )
@@ -319,19 +322,18 @@ def main(args: Args) -> None:
   with refusing():
     frames = image_frames(times, fps, window)
   left, right = hand_slots(
-    keyframes, {s: poses.kf_translations_by_slot[s] for s in slots}
+    slots, keyframes, {s: poses.kf_translations_by_slot[s] for s in slots}
   )
+  named = f"right {right}" if left is None else f"left {left}, right {right}"
   print(
     f"session {session.session_id}: {layer}, window [{window[0]:.2f}, "
-    f"{window[1]:.2f}] s, left {left}, right {right}"
+    f"{window[1]:.2f}] s, {named}"
   )
 
   covered = min(float(t[-1]) for t in times.values()) - max(
     float(t[0]) for t in times.values()
   )
-  account = layer_account(
-    args, estimate, left, session.converted_at, layer, window, covered
-  )
+  account = layer_account(args, estimate, right, session, layer, window, covered)
 
   states: dict[str, tuple[Int64Array, State]] = {}
   for slot in slots:
@@ -343,7 +345,8 @@ def main(args: Args) -> None:
   frames = {slot: picked[kept] for slot, picked in frames.items()}
 
   chunks: list[Chunk] = []
-  for hand, slot in zip(schema.HANDS, (left, right), strict=True):
+  rode = [(h, c) for h, c in zip(schema.HANDS, (left, right), strict=True) if c]
+  for hand, slot in rode:
     started = time.time()
     video = session.lens_video(slot, _LENS)
     if not np.array_equal(video.times, times[slot]):

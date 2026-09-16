@@ -120,7 +120,8 @@ state ──┬── images ───── augment ── normalize ───�
 ```
 
 `state.py` writes the layer from the base recording and the estimate, keyed by
-hand under `state/left` and `state/right`. Per hand, the layer holds:
+hand under `state/left` and `state/right`. A lone camera rides the right hand.
+Per hand, the layer holds:
 
 - the rear lens, block-averaged to 360x360 (`--scale 8`) and blanked outside
   the fisheye disc, as one JPEG for every frame inside the usable window;
