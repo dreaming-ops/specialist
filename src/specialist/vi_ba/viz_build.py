@@ -23,9 +23,9 @@ from specialist.vi_ba.compose import (
 from specialist.vi_ba.configs import Args
 from specialist.vi_ba.finger_kinematics import pin_angles_to_keyframes
 from specialist.vi_ba.geometry import bounding_box_diagonal
+from specialist.vi_ba.gpu_lm import OptimizeResult
 from specialist.vi_ba.highrate import propagate_highrate
 from specialist.vi_ba.landmark_cull import cull_and_reproject
-from specialist.vi_ba.optimize import OptimizeResult
 from specialist.vi_ba.reference_solve import ReferenceSolve
 from specialist.vi_ba.single_camera import PreparedCamera
 from specialist.vi_ba.summary import CameraSummary
@@ -152,18 +152,18 @@ def _build_camera_estimate(
   base_tag_corners_world: dict[str, list[Float64Array]],
 ) -> tuple[CameraEstimate, CameraSummary]:
   """One camera's estimate and summary line from the solved values."""
-  body_R_rear_lens = result.values.atRot3(keys.seat_key(camera.name))
+  body_R_rear_lens = result.values.atRot3(keys.seat_key(camera.slot))
   factory_body_R_rear_lens = camera.rear.setup.body_T_lens.rotation()
   body_T_rear_lens = gtsam.Pose3(
     body_R_rear_lens, camera.rear.setup.body_T_lens.translation()
   )
   seat_rotation = gtsam.Rot3.Logmap(factory_body_R_rear_lens.between(body_R_rear_lens))
   print(
-    f"  [{camera.name}/viz] rear seat correction: "
+    f"  [{camera.slot}/viz] rear seat correction: "
     f"{np.degrees(np.linalg.norm(seat_rotation)):.2f} deg"
   )
   points, reprojections, rmse_per_kf = cull_and_reproject(
-    points_from_values(result.values, keys, camera.name, lens_keep),
+    points_from_values(result.values, keys, camera.slot, lens_keep),
     camera.front.tracks,
     poses,
     camera.front.setup,
@@ -195,7 +195,7 @@ def _build_camera_estimate(
     camera, anchor_corners_by_tag, cross_obs
   )
   summary = CameraSummary(
-    slot=camera.name,
+    slot=camera.slot,
     n_keyframes=camera.n_keyframes,
     anchor_obs=len(anchored_keyframes(camera)),
     front_rmse=front_rmse,
@@ -209,15 +209,15 @@ def _build_camera_estimate(
     seat_cross_obs=seat_cross_obs,
   )
   print(
-    f"  [{camera.name}] kf={camera.n_keyframes} bbox={bbox_diagonal:.3f} m "
+    f"  [{camera.slot}] kf={camera.n_keyframes} bbox={bbox_diagonal:.3f} m "
     f"front_rmse={front_rmse:.2f}px"
   )
   biases_final = [
-    result.values.atConstantBias(keys.bias_key(camera.name, i))
+    result.values.atConstantBias(keys.bias_key(camera.slot, i))
     for i in range(camera.n_keyframes)
   ]
   velocities_final = [
-    np.asarray(result.values.atVector(keys.velocity_key(camera.name, i)))
+    np.asarray(result.values.atVector(keys.velocity_key(camera.slot, i)))
     for i in range(camera.n_keyframes)
   ]
   # The propagated series keeps the IMU sample times and never resamples.
@@ -241,7 +241,7 @@ def _build_camera_estimate(
     base_tag_corners_world,
   )
   estimate = CameraEstimate(
-    slot=camera.name,
+    slot=camera.slot,
     body_poses=poses,
     keyframe_times=np.asarray(camera.keyframe_times, dtype=np.float64),
     keyframe_frames=np.asarray(camera.keyframe_frames, dtype=np.int64),
@@ -292,11 +292,11 @@ def _base_tag_corners_world(
 ) -> dict[str, list[Float64Array]]:
   """Each camera's base-tag corners in the world, per keyframe."""
   return {
-    t.name: [
-      tag_corners_in_frame(pose.compose(t.body_T_base_tag).matrix(), tag_size)
-      for pose in optimized_body_poses[t.name]
+    camera.slot: [
+      tag_corners_in_frame(pose.compose(camera.body_T_base_tag).matrix(), tag_size)
+      for pose in optimized_body_poses[camera.slot]
     ]
-    for t in cameras
+    for camera in cameras
   }
 
 
@@ -328,24 +328,24 @@ def build_run_estimate(
     cameras, solve.body_poses, args.gripper.tag_size
   )
   tag_sizes = _tag_size_by_id(args, cameras)
-  by_observer: dict[str, list[CrossSighting]] = {t.name: [] for t in cameras}
+  by_observer: dict[str, list[CrossSighting]] = {camera.slot: [] for camera in cameras}
   for sighting in cross_obs:
     by_observer[sighting.observer].append(sighting)
 
   built = [
     _build_camera_estimate(
-      t,
-      poses=solve.body_poses[t.name],
+      camera,
+      poses=solve.body_poses[camera.slot],
       result=solve.result,
       keys=keys,
-      lens_keep=solve.landmark_keep[t.name],
+      lens_keep=solve.landmark_keep[camera.slot],
       args=args,
       tag_size_by_id=tag_sizes,
-      cross_obs=by_observer[t.name],
+      cross_obs=by_observer[camera.slot],
       anchor_corners_by_tag=anchor_corners_by_tag,
       base_tag_corners_world=base_tag_corners,
     )
-    for t in cameras
+    for camera in cameras
   ]
   return RunEstimate(
     [e for e, _ in built],

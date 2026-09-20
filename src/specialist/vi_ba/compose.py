@@ -205,10 +205,10 @@ def align_to_shared_world(
 ) -> dict[int, gtsam.Pose3]:
   """Move every camera into the world whose origin and x heading are the reference
   anchor's, returning each sighted anchor's world pose."""
-  locals_by_camera = {t.name: t.anchor_locals_by_tag for t in cameras}
+  locals_by_camera = {camera.slot: camera.anchor_locals_by_tag for camera in cameras}
   sightings_by_camera = {
-    t.name: {tag_id: len(obs) for tag_id, obs in t.anchor_obs_by_tag.items()}
-    for t in cameras
+    camera.slot: {tag_id: len(obs) for tag_id, obs in camera.anchor_obs_by_tag.items()}
+    for camera in cameras
   }
   aligns, world_T_anchor = _bfs_world_alignments(
     locals_by_camera, sightings_by_camera, anchor_tag_ids
@@ -221,13 +221,15 @@ def align_to_shared_world(
   world_T_anchor = {
     tag_id: canon.compose(pose) for tag_id, pose in world_T_anchor.items()
   }
-  for t in cameras:
-    align = aligns[t.name]
+  for camera in cameras:
+    align = aligns[camera.slot]
     align_R = align.rotation().matrix()
     align_t = np.asarray(align.translation(), dtype=np.float64)
-    t.body_poses = [align.compose(p) for p in t.body_poses]
-    t.velocities = [align_R @ v for v in t.velocities]
-    t.front.points = {tid: align_R @ p + align_t for tid, p in t.front.points.items()}
+    camera.body_poses = [align.compose(p) for p in camera.body_poses]
+    camera.velocities = [align_R @ v for v in camera.velocities]
+    camera.front.points = {
+      tid: align_R @ p + align_t for tid, p in camera.front.points.items()
+    }
   return world_T_anchor
 
 
@@ -254,7 +256,7 @@ def cross_sightings(
     n = min(a.n_keyframes, b.n_keyframes)
     if not np.array_equal(a.keyframe_frames[:n], b.keyframe_frames[:n]):
       raise ValueError(
-        f"keyframe grids of {a.name!r} and {b.name!r} disagree over their "
+        f"keyframe grids of {a.slot!r} and {b.slot!r} disagree over their "
         f"shared span; cross-camera sightings would pair the wrong instants"
       )
   sightings: list[CrossSighting] = []
@@ -281,8 +283,8 @@ def cross_sightings(
             continue  # base-tag PnP gate: drop degenerate / behind-lens
           sightings.append(
             CrossSighting(
-              observer=observer.name,
-              owner=owner.name,
+              observer=observer.slot,
+              owner=owner.slot,
               keyframe=kf,
               setup=ch.setup,
               corners=det.corners,
@@ -378,13 +380,13 @@ def _add_corner_factors_for_anchor(
   corners = tag_corners_local(tag_size)
   anchor_key = keys.anchor_key(tag_id)
   n_sightings = 0
-  for t in cameras:
-    for ch, kf, det in anchor_sightings(t, tag_id):
+  for camera in cameras:
+    for ch, kf, det in anchor_sightings(camera, tag_id):
       n_sightings += 1
-      pose_key = keys.pose_key(t.name, kf)
+      pose_key = keys.pose_key(camera.slot, kf)
       bearing = tag_center_bearing(det, ch.setup.params)
       sighting_noise = corner_noise(det.corners, ch.setup, base_sigma)
-      seat_key = keys.seat_key(t.name) if ch.lens == "rear" else None
+      seat_key = keys.seat_key(camera.slot) if ch.lens == "rear" else None
       for corner, pixel in zip(corners, det.corners, strict=True):
         add_mei_tag_factor(
           graph,
@@ -443,9 +445,9 @@ def _add_seat_variables(
 ) -> None:
   """One rear-seat rotation variable per camera, with a prior at its factory value."""
   noise = gtsam.noiseModel.Isotropic.Sigma(3, _SEAT_PRIOR_SIGMA_ROT)
-  for t in cameras:
-    key = keys.seat_key(t.name)
-    rot = t.rear.setup.body_T_lens.rotation()
+  for camera in cameras:
+    key = keys.seat_key(camera.slot)
+    rot = camera.rear.setup.body_T_lens.rotation()
     values.insert(key, rot)
     graph.add(gtsam.PriorFactorRot3(key, rot, noise))
 
@@ -462,7 +464,7 @@ def seat_evidence(
     for ch, _kf, _det in anchor_sightings(camera, tag_id)
     if ch.lens == "rear"
   )
-  cross = sum(1 for s in cross_obs if s.observer == camera.name)
+  cross = sum(1 for s in cross_obs if s.observer == camera.slot)
   return anchors, cross
 
 
@@ -482,29 +484,33 @@ def _add_gripper_factors(
   base_tag_corners = tag_corners_local(args.gripper.tag_size)
   finger_factor_count = 0
   base_tag_factor_count = 0
-  for t in cameras:
+  for camera in cameras:
     reprojs = {
       idx: reproj
       for idx, joint in enumerate(FINGER_JOINTS)
-      if (reproj := t.finger_reproj.get(joint)) is not None
+      if (reproj := camera.finger_reproj.get(joint)) is not None
     }
-    bt_key = keys.base_tag_key(t.name)
-    values.insert(bt_key, t.body_T_base_tag)
-    graph.add(gtsam.PriorFactorPose3(bt_key, t.body_T_base_tag, base_tag_prior_noise))
-    for dets in t.rear.tags:
-      det = next((d for d in dets if d.tag_id == t.tags.base), None)
+    bt_key = keys.base_tag_key(camera.slot)
+    values.insert(bt_key, camera.body_T_base_tag)
+    graph.add(
+      gtsam.PriorFactorPose3(bt_key, camera.body_T_base_tag, base_tag_prior_noise)
+    )
+    for dets in camera.rear.tags:
+      det = next((d for d in dets if d.tag_id == camera.tags.base), None)
       if det is None:
         continue
-      bearing = tag_center_bearing(det, t.rear.setup.params)
-      base_tag_noise = corner_noise(det.corners, t.rear.setup, _BASE_TAG_REPROJ_SIGMA)
+      bearing = tag_center_bearing(det, camera.rear.setup.params)
+      base_tag_noise = corner_noise(
+        det.corners, camera.rear.setup, _BASE_TAG_REPROJ_SIGMA
+      )
       for corner, pixel in zip(base_tag_corners, det.corners, strict=True):
         add_mei_tag_factor(
           graph,
           make_mei_seated_base_tag_factor_cpp,
-          (bt_key, keys.seat_key(t.name)),
+          (bt_key, keys.seat_key(camera.slot)),
           pixel,
           base_tag_noise,
-          t.rear.setup,
+          camera.rear.setup,
           corner,
           bearing,
         )
@@ -517,17 +523,17 @@ def _add_gripper_factors(
         obs = reproj.observations.get(kf)
         if obs is None:
           continue
-        tkey = keys.theta_key(t.name, finger_idx, kf)
+        tkey = keys.theta_key(camera.slot, finger_idx, kf)
         values.insert(tkey, float(obs.theta_seed))
-        finger_noise = corner_noise(obs.pixels, t.rear.setup, _FINGER_REPROJ_SIGMA)
+        finger_noise = corner_noise(obs.pixels, camera.rear.setup, _FINGER_REPROJ_SIGMA)
         for corner, pixel in zip(reproj.joint_t_corners, obs.pixels, strict=True):
           add_mei_tag_factor(
             graph,
             make_mei_seated_finger_factor_cpp,
-            (tkey, bt_key, keys.seat_key(t.name)),
+            (tkey, bt_key, keys.seat_key(camera.slot)),
             pixel,
             finger_noise,
-            t.rear.setup,
+            camera.rear.setup,
             corner,
             obs.obs_bearing,
             reproj.base_T_joint,
@@ -538,11 +544,14 @@ def _add_gripper_factors(
         for finger_idx in (0, 1):
           if finger_idx not in seen_seed:  # unseen finger: inferred from the prior only
             values.insert(
-              keys.theta_key(t.name, finger_idx, kf), -next(iter(seen_seed.values()))
+              keys.theta_key(camera.slot, finger_idx, kf),
+              -next(iter(seen_seed.values())),
             )
         graph.add(
           _finger_symmetry_factor(
-            keys.theta_key(t.name, 0, kf), keys.theta_key(t.name, 1, kf), sym_noise
+            keys.theta_key(camera.slot, 0, kf),
+            keys.theta_key(camera.slot, 1, kf),
+            sym_noise,
           )
         )
   return base_tag_factor_count, finger_factor_count
@@ -559,7 +568,7 @@ def _add_cross_camera_factors(
   """Add each cross sighting's corner factors on the owner variables that
   ``_add_gripper_factors`` inserted; return the base and finger factor counts."""
   base_tag_corners = tag_corners_local(args.gripper.tag_size)
-  camera_by_slot = {t.name: t for t in cameras}
+  camera_by_slot = {camera.slot: camera for camera in cameras}
   base_count = finger_count = 0
   for sighting in cross_obs:
     obs_key = keys.pose_key(sighting.observer, sighting.keyframe)
@@ -616,29 +625,31 @@ def _add_smoothness_priors(
   smooth_count = 0
   vel_smooth_count = 0
   zero_t = gtsam.Point3(0.0, 0.0, 0.0)
-  for t in cameras:
-    anchored_kfs = anchored_keyframes(t)
-    for k in range(1, t.n_keyframes):
+  for camera in cameras:
+    anchored_kfs = anchored_keyframes(camera)
+    for k in range(1, camera.n_keyframes):
       # A pair with an anchored end would pull the free pose toward the pinned one.
       if (k - 1) in anchored_kfs or k in anchored_kfs:
         continue
       # The prep poses carry the IMU-propagated relative rotation.
-      prep_rel = t.body_poses[k - 1].inverse().compose(t.body_poses[k])
+      prep_rel = camera.body_poses[k - 1].inverse().compose(camera.body_poses[k])
       smooth_mean = gtsam.Pose3(prep_rel.rotation(), zero_t)
       graph.add(
         gtsam.BetweenFactorPose3(
-          keys.pose_key(t.name, k - 1),
-          keys.pose_key(t.name, k),
+          keys.pose_key(camera.slot, k - 1),
+          keys.pose_key(camera.slot, k),
           smooth_mean,
           smooth_noise,
         )
       )
       smooth_count += 1
-      vel_delta = np.asarray(t.velocities[k] - t.velocities[k - 1], dtype=np.float64)
+      vel_delta = np.asarray(
+        camera.velocities[k] - camera.velocities[k - 1], dtype=np.float64
+      )
       graph.add(
         gtsam.BetweenFactorVector(
-          keys.velocity_key(t.name, k - 1),
-          keys.velocity_key(t.name, k),
+          keys.velocity_key(camera.slot, k - 1),
+          keys.velocity_key(camera.slot, k),
           vel_delta,
           vel_smooth_noise,
         )
@@ -657,21 +668,21 @@ def assemble_joint_graph(
   """Build the joint factor graph and initial values over every camera and anchor."""
   graph = gtsam.NonlinearFactorGraph()
   values = gtsam.Values()
-  for t in cameras:
+  for camera in cameras:
     build_vi_graph(
-      body_poses=t.body_poses,
-      velocities=t.velocities,
-      biases=t.biases,
-      preintegrated=t.preintegrated,
-      front=t.front,
+      body_poses=camera.body_poses,
+      velocities=camera.velocities,
+      biases=camera.biases,
+      preintegrated=camera.preintegrated,
+      front=camera.front,
       sigma=args.frontend.reproj_sigma,
       velocity_prior_sigma=args.solver.velocity_prior_sigma,
       graph=graph,
       values=values,
-      pose_key_fn=partial(keys.pose_key, t.name),
-      velocity_key_fn=partial(keys.velocity_key, t.name),
-      bias_key_fn=partial(keys.bias_key, t.name),
-      front_landmark_key_fn=partial(keys.front_landmark_key, t.name),
+      pose_key_fn=partial(keys.pose_key, camera.slot),
+      velocity_key_fn=partial(keys.velocity_key, camera.slot),
+      bias_key_fn=partial(keys.bias_key, camera.slot),
+      front_landmark_key_fn=partial(keys.front_landmark_key, camera.slot),
     )
   _add_seat_variables(cameras, keys, graph, values)
   _add_anchor_factors(cameras, keys, args, world_T_anchor, graph, values)
@@ -685,9 +696,9 @@ def assemble_joint_graph(
     f"cross base {cross_base}, cross finger {cross_finger}; smoothness priors: "
     f"pose {poses_smoothed}, velocity {velocities_smoothed}"
   )
-  for t in cameras:
-    anchors, cross = seat_evidence(t, world_T_anchor, cross_obs)
-    print(f"[graph] {t.name} rear-seat evidence: {anchors} anchor, {cross} cross")
+  for camera in cameras:
+    anchors, cross = seat_evidence(camera, world_T_anchor, cross_obs)
+    print(f"[graph] {camera.slot} rear-seat evidence: {anchors} anchor, {cross} cross")
   return graph, values
 
 

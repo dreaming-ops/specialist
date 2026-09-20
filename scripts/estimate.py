@@ -60,14 +60,16 @@ def _print_capture_diagnostics(
   optimized_body_poses: dict[str, list[gtsam.Pose3]],
 ) -> None:
   print("\n=== max kf-to-kf speed (real motion if IMU agrees) ===")
-  for t in cameras:
-    poses = optimized_body_poses[t.name]
+  for camera in cameras:
+    poses = optimized_body_poses[camera.slot]
     pts = np.array([translation(p) for p in poses])
-    kf_t = np.asarray(t.keyframe_times, dtype=np.float64)
+    kf_t = np.asarray(camera.keyframe_times, dtype=np.float64)
     dt = np.diff(kf_t)
     speed = np.linalg.norm(np.diff(pts, axis=0), axis=1) / np.where(dt > 0, dt, 1.0)
     i = int(np.argmax(speed))
-    print(f"  [{t.name}] max={speed[i]:.2f} m/s at kf {i}→{i + 1} (t={kf_t[i]:.2f}s)")
+    print(
+      f"  [{camera.slot}] max={speed[i]:.2f} m/s at kf {i}→{i + 1} (t={kf_t[i]:.2f}s)"
+    )
 
 
 def main(args: Args) -> None:
@@ -76,8 +78,7 @@ def main(args: Args) -> None:
   stage = tempfile.TemporaryDirectory(prefix="lenses-")
   session = SessionRecording(args.base, Path(stage.name))
   slots = tuple(session.slots)
-  if args.solver.gpu == "require":
-    assert_backend()
+  assert_backend()
   rrd_path = schema.layer_rrd(args.output_dir, schema.ESTIMATE, session.session_id)
   viz_path = schema.layer_rrd(args.output_dir, schema.VIZ, session.session_id)
   existing = [p for p in (rrd_path, viz_path) if p.exists()]
@@ -167,7 +168,7 @@ def main(args: Args) -> None:
   solve = solve_joint(cameras, keys, args, cross_obs)
   mark("joint LM (cull-reoptimize)")
 
-  adopt_ba_refined_estimates(cameras, solve.result, keys)
+  adopt_ba_refined_estimates(cameras, solve.result, keys, joints)
 
   estimate = build_run_estimate(cameras, solve, keys, args, cross_obs)
   mark("estimate built")

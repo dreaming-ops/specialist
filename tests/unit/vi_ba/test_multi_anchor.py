@@ -116,7 +116,7 @@ def test_bfs_alignment_without_reference_sighting_raises() -> None:
 
 
 def _dummy_camera(
-  name: str,
+  slot: str,
   body_poses: list[gtsam.Pose3],
   anchor_obs: dict[int, dict[int, gtsam.Pose3]] | None = None,
   anchor_locals: dict[int, gtsam.Pose3] | None = None,
@@ -134,7 +134,7 @@ def _dummy_camera(
     calibrated_radius=calibrated_radius,
   )
   return PreparedCamera(
-    name=name,
+    slot=slot,
     # Every capture carries one; these tests never propagate it.
     imu=ImuSamples(
       t=np.zeros(1, dtype=np.float64),
@@ -354,7 +354,7 @@ def _pinned_solve_fixture() -> tuple[
   args = Args(
     base=Path("session_base.rrd"),
     anchor=AnchorCfg(tag_ids=(1, 5)),
-    solver=SolverCfg(velocity_prior_sigma=0.01, gpu="off"),
+    solver=SolverCfg(velocity_prior_sigma=0.01),
   )
   return [camera], CameraKeys(["a"]), args, world_T_ref, world_T_sec
 
@@ -487,7 +487,7 @@ def _anchor_corner_graph(
 ) -> gtsam.NonlinearFactorGraph:
   graph = gtsam.NonlinearFactorGraph()
   _add_corner_factors_for_anchor(
-    [camera], CameraKeys([camera.name]), base_sigma, tag_id, tag_size, graph
+    [camera], CameraKeys([camera.slot]), base_sigma, tag_id, tag_size, graph
   )
   return graph
 
@@ -563,7 +563,6 @@ def test_an_anchor_no_front_lens_resolved_is_reported(
   args = Args(
     base=Path("session_base.rrd"),
     anchor=AnchorCfg(tag_ids=(1, 5)),
-    solver=SolverCfg(gpu="off"),
   )
   graph = gtsam.NonlinearFactorGraph()
   values = gtsam.Values()

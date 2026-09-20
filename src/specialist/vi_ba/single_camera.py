@@ -193,7 +193,7 @@ def release_freed_memory() -> None:
 class PreparedCamera:
   """Everything one camera contributes to the joint graph + viz."""
 
-  name: str
+  slot: str
   body_poses: list[gtsam.Pose3]
   velocities: list[Float64Array]
   biases: list[gtsam.imuBias.ConstantBias]
@@ -595,7 +595,7 @@ def prepare_camera(args: CameraArgs, tags: GripperTags) -> PreparedCamera:
   lap("gripper tags")
 
   return PreparedCamera(
-    name=slot,
+    slot=slot,
     body_poses=body_poses,
     velocities=velocities,
     biases=biases,

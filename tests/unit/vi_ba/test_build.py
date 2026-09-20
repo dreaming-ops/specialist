@@ -7,13 +7,14 @@ import numpy as np
 import pytest
 from gtsam.symbol_shorthand import B, V, X
 
+from specialist.vi_ba import gpu_lm
 from specialist.vi_ba.build import LensChannel, LensSetup, build_vi_graph
+from specialist.vi_ba.gpu_lm import optimize_graph
 from specialist.vi_ba.imu import (
   ImuSamples,
   integrate_samples,
   make_preintegration_params,
 )
-from specialist.vi_ba.optimize import optimize_graph
 from tests.mei_fixtures import (
   WIDE_CALIBRATED_RADIUS,
   pinhole_mei_params,
@@ -58,7 +59,7 @@ def test_optimize_graph_rejects_non_finite_initial_error_before_solving(
   def _no_solve(*args: object, **kwargs: object) -> None:
     raise AssertionError("the optimizer must not run on a non-finite graph")
 
-  monkeypatch.setattr(gtsam, "LevenbergMarquardtOptimizer", _no_solve)
+  monkeypatch.setattr(gpu_lm, "_Cudss", _no_solve)
   with pytest.raises(RuntimeError, match="not finite"):
     optimize_graph(graph, values, max_iterations=50)
 

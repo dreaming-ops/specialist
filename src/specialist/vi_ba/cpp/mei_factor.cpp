@@ -1,4 +1,4 @@
-// MEI reprojection factors with analytical Jacobians, mirroring mei_project.
+// Native MEI reprojection factors, threaded factor-graph passes and feature-tracking kernels.
 
 #include <gtsam/base/VectorSpace.h>
 #include <gtsam/geometry/Point3.h>
@@ -941,7 +941,7 @@ static py::tuple propagate_points(
 }
 
 PYBIND11_MODULE(_mei_factor_cpp, m) {
-  m.doc() = "Native MEI reprojection factors with analytical Jacobians.";
+  m.doc() = "Native MEI factors, threaded factor-graph passes and feature-tracking kernels.";
   m.def("linearize_raveled", &linearize_raveled, py::arg("graph"),
         py::arg("values"), py::arg("keys"), py::arg("offsets"),
         py::arg("n_threads"), py::arg("with_pattern"));

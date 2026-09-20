@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 import numpy as np
 
@@ -19,13 +19,10 @@ __all__ = [
   "Args",
   "CameraArgs",
   "FrontendCfg",
-  "GpuMode",
   "GripperCfg",
   "SolverCfg",
   "validate",
 ]
-
-GpuMode = Literal["require", "auto", "off"]
 
 
 @dataclass
@@ -81,9 +78,6 @@ class GripperCfg:
 class SolverCfg:
   max_iterations: int = 30
   velocity_prior_sigma: float = 0.1
-
-  # Schur/cuDSS: "require" aborts without it, "auto" falls back to CPU, "off" skips it.
-  gpu: GpuMode = "require"
 
 
 @dataclass

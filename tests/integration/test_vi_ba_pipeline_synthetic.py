@@ -8,8 +8,8 @@ from gtsam.symbol_shorthand import X
 
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.features import chain_tracks
+from specialist.vi_ba.gpu_lm import optimize_graph
 from specialist.vi_ba.init import body_poses_from_lens_poses, fill_lens_poses
-from specialist.vi_ba.optimize import optimize_graph
 from specialist.vi_ba.tracks import triangulate_lens
 from tests.mei_fixtures import (
   WIDE_CALIBRATED_RADIUS,

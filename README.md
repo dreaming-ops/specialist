@@ -170,7 +170,7 @@ src/specialist/
 ├── vi_ba/       the solve: single_camera (per-camera prep), tracks +
 │                features + gpu_flow (frontend), init (triangulation + VI
 │                alignment), build / compose (graph) + the native cpp/ MEI
-│                factor, optimize + gpu_lm (LM), reference_solve (the
+│                factor, gpu_lm (LM), reference_solve (the
 │                multi-tracker world gauge), finger_kinematics + urdf_joints
 │                (gripper joint recovery), imu,
 │                tag_detection, landmark_cull, highrate,

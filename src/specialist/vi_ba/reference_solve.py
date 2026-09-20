@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 import gtsam
 import numpy as np
 
+from specialist.vi_ba._mei_factor_cpp import prune_factors
 from specialist.vi_ba.compose import (
   CameraKeys,
   CrossSighting,
@@ -15,11 +16,11 @@ from specialist.vi_ba.compose import (
   assemble_joint_graph,
   points_from_values,
 )
-from specialist.vi_ba.configs import Args, GpuMode
+from specialist.vi_ba.configs import Args
+from specialist.vi_ba.gpu_lm import OptimizeResult, optimize_graph
 from specialist.vi_ba.landmark_cull import cull_outlier_landmarks
-from specialist.vi_ba.optimize import OptimizeResult, optimize_graph
 from specialist.vi_ba.single_camera import PreparedCamera
-from specialist.vi_ba.urdf_joints import FINGER_JOINTS
+from specialist.vi_ba.urdf_joints import FINGER_JOINTS, RevoluteJoint
 
 __all__ = [
   "ReferenceSolve",
@@ -31,18 +32,6 @@ __all__ = [
 _PRECULL_MAX_ITERATIONS = 8
 
 
-def _prune_factor_graph(
-  graph: gtsam.NonlinearFactorGraph, drop_keys: set[int]
-) -> gtsam.NonlinearFactorGraph:
-  """A copy of ``graph`` without the factors that touch a key in ``drop_keys``."""
-  pruned = gtsam.NonlinearFactorGraph()
-  for i in range(graph.size()):
-    factor = graph.at(i)
-    if not any(k in drop_keys for k in factor.keys()):
-      pruned.push_back(factor)
-  return pruned
-
-
 def _outlier_landmark_keys(
   cameras: list[PreparedCamera],
   keys: CameraKeys,
@@ -50,10 +39,12 @@ def _outlier_landmark_keys(
 ) -> set[int]:
   """The landmark keys the cull dropped, over every camera's front lens."""
   drop: set[int] = set()
-  for t in cameras:
-    keep = landmark_keep[t.name]
+  for camera in cameras:
+    keep = landmark_keep[camera.slot]
     drop.update(
-      keys.front_landmark_key(t.name, tid) for tid in t.front.points if tid not in keep
+      keys.front_landmark_key(camera.slot, tid)
+      for tid in camera.front.points
+      if tid not in keep
     )
   return drop
 
@@ -64,7 +55,6 @@ def _solve_with_cull_reoptimize(
   cameras: list[PreparedCamera],
   keys: CameraKeys,
   max_iterations: int,
-  gpu: GpuMode,
 ) -> tuple[OptimizeResult, LandmarkKeep]:
   """Solve, cull outlier landmarks and re-solve warm; return the kept tracks too."""
   print(f"\n[graph] joint graph: {graph.size()} factors, {values.size()} variables")
@@ -72,28 +62,33 @@ def _solve_with_cull_reoptimize(
     graph,
     values,
     max_iterations=min(max_iterations, _PRECULL_MAX_ITERATIONS),
-    gpu=gpu,
   )
   poses_by_camera = _solved_body_poses(cameras, keys, result.values)
   landmark_keep: LandmarkKeep = {}
-  for t in cameras:
-    poses_1 = poses_by_camera[t.name]
-    points = points_from_values(result.values, keys, t.name, t.front.points)
-    landmark_keep[t.name] = cull_outlier_landmarks(
-      points, t.front.tracks, poses_1, t.front.setup
+  for camera in cameras:
+    points = points_from_values(result.values, keys, camera.slot, camera.front.points)
+    landmark_keep[camera.slot] = cull_outlier_landmarks(
+      points, camera.front.tracks, poses_by_camera[camera.slot], camera.front.setup
     )
   first = result
   outlier_keys = _outlier_landmark_keys(cameras, keys, landmark_keep)
   if outlier_keys:
-    pruned = _prune_factor_graph(graph, outlier_keys)
     kept_values = gtsam.Values(result.values)
     for key in outlier_keys:
       kept_values.erase(key)
-    result = optimize_graph(pruned, kept_values, max_iterations=max_iterations, gpu=gpu)
+    result = optimize_graph(
+      prune_factors(graph, np.fromiter(outlier_keys, dtype=np.int64)),
+      kept_values,
+      max_iterations=max_iterations,
+      initial_lambda=first.final_lambda,
+    )
     print(f"  [solve] cull-reoptimize dropped {len(outlier_keys)} outlier landmarks")
   elif result.iterations >= _PRECULL_MAX_ITERATIONS:
     result = optimize_graph(
-      graph, result.values, max_iterations=max_iterations, gpu=gpu
+      graph,
+      result.values,
+      max_iterations=max_iterations,
+      initial_lambda=first.final_lambda,
     )
   else:
     return result, landmark_keep
@@ -111,8 +106,10 @@ def _solved_body_poses(
   cameras: list[PreparedCamera], keys: CameraKeys, values: gtsam.Values
 ) -> dict[str, list[gtsam.Pose3]]:
   return {
-    t.name: [values.atPose3(keys.pose_key(t.name, i)) for i in range(t.n_keyframes)]
-    for t in cameras
+    camera.slot: [
+      values.atPose3(keys.pose_key(camera.slot, i)) for i in range(camera.n_keyframes)
+    ]
+    for camera in cameras
   }
 
 
@@ -154,7 +151,7 @@ def _solve_joint_graph(
   """Solve the joint graph and read every anchor's world pose back out of it."""
   graph, values = assemble_joint_graph(cameras, keys, args, cross_obs, anchor_seed)
   result, landmark_keep = _solve_with_cull_reoptimize(
-    graph, values, cameras, keys, args.solver.max_iterations, args.solver.gpu
+    graph, values, cameras, keys, args.solver.max_iterations
   )
 
   solved: dict[int, gtsam.Pose3] = {}
@@ -187,17 +184,22 @@ def solve_joint(
 
 
 def adopt_ba_refined_estimates(
-  cameras: list[PreparedCamera], result: OptimizeResult, keys: CameraKeys
+  cameras: list[PreparedCamera],
+  result: OptimizeResult,
+  keys: CameraKeys,
+  joints: dict[str, RevoluteJoint],
 ) -> None:
-  """Store each camera's solved base-tag pose and joint angles."""
-  for t in cameras:
+  """Store each camera's solved base-tag pose and joint angles; NaN past a limit."""
+  for camera in cameras:
     for finger_idx, joint_name in enumerate(FINGER_JOINTS):
-      angles = [float("nan")] * t.n_keyframes
-      for kf in range(t.n_keyframes):
-        tkey = keys.theta_key(t.name, finger_idx, kf)
+      angles = [float("nan")] * camera.n_keyframes
+      joint = joints[joint_name]
+      for kf in range(camera.n_keyframes):
+        tkey = keys.theta_key(camera.slot, finger_idx, kf)
         if result.values.exists(tkey):
-          angles[kf] = float(result.values.atDouble(tkey))
-      t.joint_angles[joint_name] = angles
-    bt_key = keys.base_tag_key(t.name)
+          theta = float(result.values.atDouble(tkey))
+          angles[kf] = theta if joint.lower <= theta <= joint.upper else float("nan")
+      camera.joint_angles[joint_name] = angles
+    bt_key = keys.base_tag_key(camera.slot)
     if result.values.exists(bt_key):
-      t.body_T_base_tag = result.values.atPose3(bt_key)
+      camera.body_T_base_tag = result.values.atPose3(bt_key)
