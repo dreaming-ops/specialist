@@ -34,7 +34,7 @@ class FrontendCfg:
   orb_n_features: int = 4000
   # Target count of live flow-tracked corners.
   max_corners: int = 4000
-  # Run DIS optical flow on the GPU, falling back loudly to cv2 without torch/CUDA.
+  # GPU DIS optical flow; off, cv2 flow. Revisit matching runs on CUDA either way.
   gpu_flow: bool = True
 
   ransac_threshold: float = 4.5
@@ -42,6 +42,8 @@ class FrontendCfg:
   flow_scale: float = 0.25
 
   min_track_length: int = 3
+  # Keyframes a landmark's observations may span; 0 is unbounded.
+  max_track_span: int = 300
   # Bearing half-angle (rad) past which the essential-matrix RANSAC drops a match.
   feature_max_half_angle: float = float(np.deg2rad(70.0))
 
@@ -51,19 +53,10 @@ class FrontendCfg:
   # Max metric depth (m) for kept landmarks in the final (scaled) triangulation.
   max_landmark_depth: float = 5.0
 
-  init_min_shared_tracks: int = 30
-  vo_min_registered_ratio: float = 0.7
-  # Re-match ORB features between nearby non-adjacent keyframes to rejoin broken tracks.
-  revisit: bool = True
-
-  # Triangulate the revisit landmarks from the anchor-covisible views alone.
-  anchored_revisit: bool = True
   # Cap on triangulated landmarks, keeping the longest tracks.
   max_landmarks: int = 4000
   # Cap on observations per track in the joint BA: endpoints plus an even middle.
   max_obs_per_track: int = 8
-  # Per-thread AprilTag detectors so concurrent tag walks overlap.
-  parallel_tag_detect: bool = True
 
 
 @dataclass
@@ -100,12 +93,9 @@ class CameraArgs:
   session: SessionRecording
   slot: str  # the camera's slot in the base recording, e.g. cam00
   anchor: AnchorCfg
-  keyframe_every: int  # 0 = auto (round(fps/10))
   joints: dict[str, RevoluteJoint]
   frontend: FrontendCfg
   gripper: GripperCfg
-  # Set when siblings prepare concurrently; gates per-thread AprilTag detectors.
-  parallel_siblings: bool = False
 
 
 @dataclass
@@ -114,8 +104,6 @@ class Args:
 
   base: Path
   anchor: AnchorCfg
-  # Keyframe stride in frames, a multiple of the ~0.1 s lattice; 0 picks the lattice.
-  keyframe_every: int = 0
 
   output_dir: Path = Path("logs")
   urdf_path: Path | None = None

@@ -126,3 +126,19 @@ def test_device_batch_floors_at_zero_below_the_reserve() -> None:
 def test_device_batch_caps_at_the_maximum() -> None:
   batch = gpu_flow._device_batch(total=2**40, pair_memory=gpu_flow._PAIR_MEMORY)
   assert batch == gpu_flow._MAX_BATCH
+
+
+def test_only_the_first_launch_at_each_batch_size_holds_the_warm_lock() -> None:
+  class Dis:
+    held: list[bool] = []
+
+    def calc(self, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+      self.held.append(gpu_flow._warm_lock.locked())
+      return a
+
+  worker = gpu_flow._Worker.__new__(gpu_flow._Worker)
+  worker._fwd_dis = worker._bwd_dis = Dis()
+  worker._launched = {("fwd", 4)}
+  for which, n in (("fwd", 4), ("fwd", 3), ("fwd", 3), ("bwd", 3)):
+    worker._calc(which, np.zeros((n, 1)), np.zeros((n, 1)))
+  assert Dis.held == [False, True, False, True]

@@ -19,6 +19,8 @@ Float64Array = npt.NDArray[np.float64]
 
 # Distinct keys per variable role, so one Values serves any factor arity.
 _POSE, _LM, _OBS, _OWN, _BT, _THETA, _SEAT = 0, 1, 2, 3, 4, 5, 6
+# A zero bearing skips the hemisphere check.
+_UNARMED = np.zeros(3)
 _NOISE = gtsam.noiseModel.Isotropic.Sigma(2, 1.0)
 
 
@@ -77,9 +79,9 @@ def _maker(
   geometry: tuple[object, ...],
   params: MeiParams,
   **extra: int,
-) -> Callable[[Float64Array, Float64Array], gtsam.NonlinearFactor]:
+) -> Callable[..., gtsam.NonlinearFactor]:
   """Native factories take keys, pixel, noise, geometry, intrinsics, then bearing."""
-  return lambda pixel, bearing: factory(
+  return lambda pixel, bearing=_UNARMED: factory(
     *keys, pixel, _NOISE, *geometry, np.array(astuple(params)), bearing, **extra
   )
 
@@ -111,8 +113,8 @@ class _Case:
 
   name: str
   params: MeiParams
-  # (pixel, obs_bearing) -> the factor under test
-  make: Callable[[Float64Array, Float64Array], gtsam.NonlinearFactor]
+  # (pixel[, obs_bearing]) -> the factor under test
+  make: Callable[..., gtsam.NonlinearFactor]
   # (key, kind, dimension) per variable, in Jacobian column order
   blocks: tuple[tuple[int, str, int], ...]
   # (label, values, the point those values put in the lens frame)
@@ -121,6 +123,8 @@ class _Case:
   # A pixel shift that moves the Jacobian check off the optimum.
   offset: Float64Array = field(default_factory=lambda: np.array([2.0, -3.0]))
   step: float = 1e-4
+  # Whether the factory takes an observed bearing; the landmark factor takes none.
+  guarded: bool = True
 
   @property
   def columns(self) -> int:
@@ -140,8 +144,8 @@ def _mei_case(name: str, body_T_lens: gtsam.Pose3, params: MeiParams) -> _Case:
   return _Case(
     name=name,
     params=params,
-    make=_maker(
-      _mei_factor_cpp.make_mei_factor_cpp, (_POSE, _LM), (body_T_lens,), params
+    make=lambda pixel: _mei_factor_cpp.make_mei_factor_cpp(
+      _POSE, _LM, pixel, _NOISE, body_T_lens, np.array(astuple(params))
     ),
     blocks=((_POSE, "pose", 6), (_LM, "point", 3)),
     configurations=tuple(
@@ -153,6 +157,7 @@ def _mei_case(name: str, body_T_lens: gtsam.Pose3, params: MeiParams) -> _Case:
       for label, lens_xyz in landmarks
     ),
     residual_atol=1e-10,
+    guarded=False,
   )
 
 
@@ -420,6 +425,7 @@ def _cases() -> tuple[_Case, ...]:
 
 _CASES = _cases()
 _BY_NAME = {case.name: case for case in _CASES}
+_GUARDED = tuple(case for case in _CASES if case.guarded)
 
 
 def _parametrized(test: Callable[..., None]) -> Callable[..., None]:
@@ -471,7 +477,7 @@ def _pixel_for(case: _Case, p_lens: Float64Array) -> Float64Array:
 @_parametrized
 def test_zero_residual_at_the_reprojecting_configuration(case: _Case) -> None:
   for label, values, p_lens in case.configurations:
-    factor = case.make(_pixel_for(case, p_lens), np.zeros(3))
+    factor = case.make(_pixel_for(case, p_lens))
     err = factor.unwhitenedError(values)
     assert np.allclose(err, 0.0, atol=case.residual_atol), (label, err)
 
@@ -480,21 +486,21 @@ def test_zero_residual_at_the_reprojecting_configuration(case: _Case) -> None:
 def test_analytic_jacobians_match_a_central_finite_difference(case: _Case) -> None:
   for label, values, p_lens in case.configurations:
     pixel = _pixel_for(case, p_lens) + case.offset
-    factor = case.make(pixel, np.zeros(3))
+    factor = case.make(pixel)
     a, _ = factor.linearize(values).jacobian()
     assert a.shape == (2, case.columns), f"{label}: unexpected shape {a.shape}"
     fd = _finite_difference(factor, case, values)
     assert np.allclose(a, fd, atol=1e-6), f"{label}: analytic={a}, fd={fd}"
 
 
-@_parametrized
+@pytest.mark.parametrize("case", _GUARDED, ids=lambda c: c.name)
 def test_the_observed_bearing_deactivates_the_opposite_hemisphere(case: _Case) -> None:
   """Residual and Jacobian both go to zero."""
   label, values, p_lens = case.configurations[0]
   pixel = _pixel_for(case, p_lens) + np.array([5.0, -5.0])
   opposite = -p_lens / np.linalg.norm(p_lens)
 
-  off = case.make(pixel, np.zeros(3))
+  off = case.make(pixel)
   assert np.linalg.norm(off.unwhitenedError(values)) > 0.0, label
 
   on = case.make(pixel, opposite)
@@ -507,7 +513,7 @@ def test_a_perturbed_pose_moves_the_residual_far_past_the_pixel_noise() -> None:
   """A 5 cm translation answers with a residual far past the 1 px noise model."""
   case = _BY_NAME["mei front"]
   _label, values, p_lens = case.configurations[0]
-  factor = case.make(_pixel_for(case, p_lens), np.zeros(3))
+  factor = case.make(_pixel_for(case, p_lens))
   moved = _stepped(values, _POSE, "pose", 3, 0.05)
   assert np.linalg.norm(factor.unwhitenedError(moved)) > 1.0
 
@@ -515,7 +521,7 @@ def test_a_perturbed_pose_moves_the_residual_far_past_the_pixel_noise() -> None:
 def test_a_perturbed_finger_angle_moves_the_residual_far_past_the_pixel_noise() -> None:
   case = _BY_NAME["seated finger"]
   _label, values, p_lens = case.configurations[4]  # theta = 0.3
-  factor = case.make(_pixel_for(case, p_lens), np.zeros(3))
+  factor = case.make(_pixel_for(case, p_lens))
   moved = _stepped(values, _THETA, "scalar", 0, 0.2)
   assert np.linalg.norm(factor.unwhitenedError(moved)) > 1.0
 
@@ -544,8 +550,7 @@ def test_mei_cheirality_past_90_degrees_preserves_hemisphere() -> None:
     assert np.linalg.norm(bearing - base_ray) < 0.05
 
 
-def test_the_behind_camera_basin_the_bearing_guard_closes() -> None:
-  """Without a bearing, a ξ>1 factor stays active on a behind-camera landmark."""
+def test_a_landmark_behind_the_camera_short_of_the_fold_stays_active() -> None:
   case = _BY_NAME["mei front"]
   behind = np.array([1.0, 0.1, -0.36])  # 110 deg off-axis, short of the 121 deg fold
   pixel = mei_project(behind[None, :], case.params)[0]
@@ -553,8 +558,8 @@ def test_the_behind_camera_basin_the_bearing_guard_closes() -> None:
   values = _values(pose=gtsam.Pose3(), lm=gtsam.Point3(*behind))
   shifted = pixel + np.array([4.0, -4.0])
 
-  off = case.make(shifted, np.zeros(3))
-  assert np.linalg.norm(off.unwhitenedError(values)) > 0.0
+  factor = case.make(shifted)
+  assert np.linalg.norm(factor.unwhitenedError(values)) > 0.0
 
 
 def test_a_landmark_past_the_fold_deactivates_the_factor() -> None:
@@ -563,7 +568,7 @@ def test_a_landmark_past_the_fold_deactivates_the_factor() -> None:
   folded = np.array([0.3, 0.1, -0.8])  # 159 deg off-axis
   assert np.isnan(mei_project(folded[None, :], case.params)).all()
   values = _values(pose=gtsam.Pose3(), lm=gtsam.Point3(*folded))
-  factor = case.make(np.array([3000.0, 3000.0]), np.zeros(3))
+  factor = case.make(np.array([3000.0, 3000.0]))
   assert np.allclose(factor.unwhitenedError(values), 0.0)
   a, _ = factor.linearize(values).jacobian()
   assert np.allclose(a, 0.0)
@@ -571,11 +576,11 @@ def test_a_landmark_past_the_fold_deactivates_the_factor() -> None:
 
 def test_obs_bearing_keeps_same_hemisphere_active() -> None:
   """A peripheral past-90° detection with a same-side bearing stays fully active."""
-  case = _BY_NAME["mei front"]
-  periph = np.array([1.0, 0.0, -0.1])  # ~95° half-angle, z<0 but in-FOV
-  pixel = mei_project(periph[None, :], case.params)[0] + np.array([2.0, -3.0])
-  values = _values(pose=gtsam.Pose3(), lm=gtsam.Point3(*periph))
-  off = case.make(pixel, np.zeros(3)).unwhitenedError(values)
+  case = _BY_NAME["anchor tag"]
+  label, values, periph = case.configurations[3]
+  assert label == "past 90° half-angle"
+  pixel = _pixel_for(case, periph) + np.array([2.0, -3.0])
+  off = case.make(pixel).unwhitenedError(values)
   on = case.make(pixel, periph / np.linalg.norm(periph)).unwhitenedError(values)
   assert np.linalg.norm(on) > 0.0
   assert np.allclose(off, on)  # bearing on the observed side changes nothing

@@ -4,42 +4,27 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+from specialist_dataset import schema
 
-from specialist.vi_ba.single_camera import (
-  finger_stride,
-  keyframe_grid,
-  resolve_keyframe_every,
-)
+from specialist.vi_ba.single_camera import finger_stride, keyframe_grid
 
 
-def test_auto_targets_tenth_second() -> None:
-  assert resolve_keyframe_every(0, 60.0) == 6  # 0.10s
-  assert resolve_keyframe_every(0, 30.0) == 3  # 0.10s
-  assert resolve_keyframe_every(0, 59.94) == 6  # NTSC 60
-  assert resolve_keyframe_every(0, 29.97) == 3  # NTSC 30
-
-
-def test_explicit_value_overrides_auto() -> None:
-  assert resolve_keyframe_every(12, 60.0) == 12
-  assert resolve_keyframe_every(9, 30.0) == 9
-
-
-def test_an_override_off_the_lattice_is_refused() -> None:
-  """A non-divisor stride puts several keyframes in one auto-stride bucket."""
-  for keyframe_every, fps in ((2, 60.0), (4, 60.0), (2, 30.0)):
-    with pytest.raises(ValueError, match="keyframe lattice"):
-      resolve_keyframe_every(keyframe_every, fps)
+def test_stride_targets_a_tenth_second() -> None:
+  assert schema.keyframe_stride(60.0) == 6  # 0.10s
+  assert schema.keyframe_stride(30.0) == 3  # 0.10s
+  assert schema.keyframe_stride(59.94) == 6  # NTSC 60
+  assert schema.keyframe_stride(29.97) == 3  # NTSC 30
 
 
 def test_floors_at_one_for_very_low_fps() -> None:
-  assert resolve_keyframe_every(0, 5.0) == 1
+  assert schema.keyframe_stride(5.0) == 1
 
 
 def test_grid_snaps_to_the_stride_lattice() -> None:
   # Coverage starts at sample 4, so sample 6, the first on-lattice one, sets the phase.
   times = np.arange(20) / 60.0
   covered = np.arange(4, 20)
-  samples, _ = keyframe_grid(times, covered, fps=60.0, keyframe_every=6)
+  samples, _ = keyframe_grid(times, covered, fps=60.0)
   assert samples.tolist() == [6, 12, 18]
 
 
@@ -47,12 +32,12 @@ def test_grid_without_a_lattice_sample_starts_at_coverage() -> None:
   # Coverage so short no covered sample hits the lattice: fall back to phase 0.
   times = np.arange(20) / 60.0
   covered = np.arange(7, 11)
-  samples, _ = keyframe_grid(times, covered, fps=60.0, keyframe_every=6)
+  samples, _ = keyframe_grid(times, covered, fps=60.0)
   assert samples.tolist() == [7]
 
 
 @pytest.mark.parametrize(
-  ("keyframe_every", "fps", "expected"),
+  ("keyframe_stride", "fps", "expected"),
   [
     (6, 60.0, 2),  # divisors 1,2,3,6; 30 Hz cap allows 2
     (3, 30.0, 1),  # cap is 1 at native 30 fps
@@ -62,8 +47,8 @@ def test_grid_without_a_lattice_sample_starts_at_coverage() -> None:
   ],
 )
 def test_finger_stride_divides_the_keyframe_stride(
-  keyframe_every: int, fps: float, expected: int
+  keyframe_stride: int, fps: float, expected: int
 ) -> None:
-  stride = finger_stride(keyframe_every, fps)
+  stride = finger_stride(keyframe_stride, fps)
   assert stride == expected
-  assert keyframe_every % stride == 0
+  assert keyframe_stride % stride == 0

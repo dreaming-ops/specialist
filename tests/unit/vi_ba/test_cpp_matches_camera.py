@@ -43,7 +43,6 @@ def _cpp_projection(
     gtsam.noiseModel.Isotropic.Sigma(2, 1.0),
     body_T_lens,
     np.array(astuple(params)),
-    np.zeros(3),
   )
   values = gtsam.Values()
   values.insert(_POSE, gtsam.Pose3())

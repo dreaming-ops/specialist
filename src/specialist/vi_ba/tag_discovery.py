@@ -21,6 +21,7 @@ __all__ = [
   "GripperTags",
   "TagDiscoveryError",
   "discover_gripper_tags",
+  "discovery_samples",
   "uniform_picks",
   "validate_discovered",
 ]
@@ -65,6 +66,11 @@ def uniform_picks(n: int) -> npt.NDArray[np.int64]:
     return np.arange(n, dtype=np.int64)
   lo, hi = int(n * _PICK_TRIM), int(n * (1.0 - _PICK_TRIM)) - 1
   return np.unique(np.linspace(lo, hi, PICK_COUNT).round().astype(np.int64))
+
+
+def discovery_samples(sync_samples: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
+  """``PICK_COUNT`` of the lens's sync samples, spread uniformly."""
+  return sync_samples[uniform_picks(len(sync_samples))]
 
 
 def _tag_tracks(

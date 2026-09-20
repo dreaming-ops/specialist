@@ -43,3 +43,29 @@ def test_a_wrong_bias_is_absorbed_by_the_keyframe_correction() -> None:
     at_kf = pos[np.argmin(np.abs(t - kf_times[k + 1]))]
     truth = 0.5 * a * kf_times[k + 1] ** 2
     assert np.linalg.norm(at_kf - truth) < 1e-3
+
+
+def test_scan_integration_matches_sample_by_sample() -> None:
+  """Under a spinning, accelerating, biased motion they agree to rounding."""
+  from specialist.vi_ba.highrate import _integrate
+
+  rng = np.random.default_rng(2)
+  n = 400
+  dts = np.full(n, 0.001)
+  gyro = np.array([0.5, -1.2, 2.0]) + rng.normal(0, 0.01, (n, 3))
+  accel = np.array([0.3, 0.1, 9.9]) + rng.normal(0, 0.05, (n, 3))
+  R0 = gtsam.Rot3.Ypr(0.3, 0.2, 0.1).matrix()
+  v0, p0 = np.array([0.1, 0.2, 0.0]), np.array([1.0, 2.0, 3.0])
+  seg_p, seg_R, seg_v = _integrate(R0, v0, p0, dts, gyro, accel)
+
+  rotation, velocity, position = R0.copy(), v0.copy(), p0.copy()
+  from scipy.spatial.transform import Rotation
+
+  for j in range(n):
+    accel_world = rotation @ accel[j] + _GRAVITY
+    position = position + velocity * dts[j] + 0.5 * accel_world * dts[j] ** 2
+    velocity = velocity + accel_world * dts[j]
+    rotation = rotation @ Rotation.from_rotvec(gyro[j] * dts[j]).as_matrix()
+    np.testing.assert_allclose(seg_p[j], position, atol=1e-10)
+    np.testing.assert_allclose(seg_R[j], rotation, atol=1e-12)
+    np.testing.assert_allclose(seg_v[j], velocity, atol=1e-10)

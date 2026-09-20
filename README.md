@@ -93,7 +93,6 @@ uv run python scripts/estimate.py --base logs/base/<session-id>.rrd \
 ```
 
 A single camera uses the same command, with no cross-camera factors.
-`--keyframe-every` overrides the automatic ~0.10 s keyframe stride.
 
 The run writes two layers sharing the base recording's id:
 `logs/estimate/<session-id>.rrd` carries what a consumer reads — body poses,
@@ -169,7 +168,7 @@ packages/
 
 src/specialist/
 ├── vi_ba/       the solve: single_camera (per-camera prep), tracks +
-│                features + gpu_flow (frontend), init (incremental SfM + VI
+│                features + gpu_flow (frontend), init (triangulation + VI
 │                alignment), build / compose (graph) + the native cpp/ MEI
 │                factor, optimize + gpu_lm (LM), reference_solve (the
 │                multi-tracker world gauge), finger_kinematics + urdf_joints

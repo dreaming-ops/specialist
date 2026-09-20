@@ -15,22 +15,37 @@ Float64Array = npt.NDArray[np.float64]
 _GRAVITY = np.array(GRAVITY_WORLD)
 
 
-def _exp_so3(w: Float64Array) -> Float64Array:
-  angle = float(np.linalg.norm(w))
-  if angle < 1e-12:
-    return np.eye(3)
-  axis = w / angle
-  skew = np.array(
-    [
-      [0.0, -axis[2], axis[1]],
-      [axis[2], 0.0, -axis[0]],
-      [-axis[1], axis[0], 0.0],
-    ]
-  )
-  out: Float64Array = (
-    np.eye(3) + np.sin(angle) * skew + (1.0 - np.cos(angle)) * skew @ skew
-  )
+def _cumulative_products(deltas: Float64Array) -> Float64Array:
+  """``out[j] = deltas[0] @ ... @ deltas[j]`` over ``(n, 3, 3)`` rotations."""
+  out = deltas.copy()
+  step = 1
+  while step < len(out):
+    out[step:] = out[:-step] @ out[step:]
+    step *= 2
   return out
+
+
+def _integrate(
+  rotation: Float64Array,
+  velocity: Float64Array,
+  position: Float64Array,
+  dts: Float64Array,
+  gyro: Float64Array,
+  accel: Float64Array,
+) -> tuple[Float64Array, Float64Array, Float64Array]:
+  """Positions, rotations and velocities after each sample, from one start state."""
+  steps = Rotation.from_rotvec(gyro * dts[:, None]).as_matrix()
+  after = rotation @ _cumulative_products(steps)
+  before = np.concatenate([rotation[None], after[:-1]])
+  accel_world = np.einsum("nij,nj->ni", before, accel) + _GRAVITY
+  dv = accel_world * dts[:, None]
+  velocity_before = velocity + np.concatenate(
+    [np.zeros((1, 3)), np.cumsum(dv, axis=0)[:-1]]
+  )
+  positions = position + np.cumsum(
+    velocity_before * dts[:, None] + 0.5 * accel_world * dts[:, None] ** 2, axis=0
+  )
+  return positions, after, velocity_before + dv
 
 
 def propagate_highrate(
@@ -55,34 +70,32 @@ def propagate_highrate(
     inside = np.arange(bounds[k], bounds[k + 1])
     if len(inside) == 0:
       continue
-    rotation = kf_R[k].copy()
-    velocity = np.asarray(velocities[k], dtype=np.float64).copy()
-    position = kf_p[k].copy()
     gyro_bias = np.asarray(biases[k].gyroscope(), dtype=np.float64)
     accel_bias = np.asarray(biases[k].accelerometer(), dtype=np.float64)
-    prev_t = kf_t[k]
-    seg_p = np.empty((len(inside), 3))
-    seg_R = np.empty((len(inside), 3, 3))
-    seg_v = np.empty((len(inside), 3))
-    for row, j in enumerate(inside):
-      dt = float(imu.t[j] - prev_t)
-      prev_t = float(imu.t[j])
-      accel_world = rotation @ (imu.accel[j] - accel_bias) + _GRAVITY
-      position = position + velocity * dt + 0.5 * accel_world * dt * dt
-      velocity = velocity + accel_world * dt
-      rotation = rotation @ _exp_so3((imu.gyro[j] - gyro_bias) * dt)
-      seg_p[row] = position
-      seg_R[row] = rotation
-      seg_v[row] = velocity
-    dt = float(kf_t[k + 1] - prev_t)
+    sample_t = imu.t[inside]
+    dts = np.diff(np.concatenate(([kf_t[k]], sample_t)))
+    seg_p, seg_R, seg_v = _integrate(
+      kf_R[k],
+      kf_v[k],
+      kf_p[k],
+      dts,
+      imu.gyro[inside] - gyro_bias,
+      imu.accel[inside] - accel_bias,
+    )
+    # The step from the last sample to the next keyframe, from the last state.
+    position, rotation, velocity = seg_p[-1], seg_R[-1], seg_v[-1]
+    dt = float(kf_t[k + 1] - sample_t[-1])
     accel_world = rotation @ (imu.accel[inside[-1]] - accel_bias) + _GRAVITY
     end_p = position + velocity * dt + 0.5 * accel_world * dt * dt
-    end_R = rotation @ _exp_so3((imu.gyro[inside[-1]] - gyro_bias) * dt)
+    end_R = (
+      rotation
+      @ Rotation.from_rotvec((imu.gyro[inside[-1]] - gyro_bias) * dt).as_matrix()
+    )
     gap_p = kf_p[k + 1] - end_p
     gap_w = Rotation.from_matrix(end_R.T @ kf_R[k + 1]).as_rotvec()
     gap_v = kf_v[k + 1] - (velocity + accel_world * dt)
-    fraction = ((imu.t[inside] - kf_t[k]) / (kf_t[k + 1] - kf_t[k]))[:, None]
-    out_t.append(imu.t[inside])
+    fraction = ((sample_t - kf_t[k]) / (kf_t[k + 1] - kf_t[k]))[:, None]
+    out_t.append(sample_t)
     out_p.append(seg_p + fraction * gap_p)
     out_q.append(
       matrices_to_quats(seg_R @ Rotation.from_rotvec(fraction * gap_w).as_matrix())

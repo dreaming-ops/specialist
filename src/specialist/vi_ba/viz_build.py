@@ -1,4 +1,4 @@
-"""Turn one solved run into the payloads that leave the pipeline."""
+"""Each camera's estimate and summary from one solved joint graph."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ from specialist.vi_ba.optimize import OptimizeResult
 from specialist.vi_ba.reference_solve import ReferenceSolve
 from specialist.vi_ba.single_camera import PreparedCamera
 from specialist.vi_ba.summary import CameraSummary
-from specialist.vi_ba.tag_detection import TagDetection, estimate_lens_T_tag
+from specialist.vi_ba.tag_detection import TagDetection, estimate_lens_T_tags
 from specialist.vi_ba.urdf_joints import FINGER_JOINTS
 from specialist.vi_ba.viz import CameraEstimate, LensEstimate
 
@@ -100,30 +100,43 @@ def _project_tag_axes_per_kf(
   lens: LensSetup,
   tag_size_by_id: dict[int, float],
 ) -> list[Float64Array]:
-  out: list[Float64Array] = []
-  for tags in tags_per_kf:
-    strips: list[Float64Array] = []
-    for det in tags:
-      size = tag_size_by_id.get(int(det.tag_id))
-      if size is None:
-        continue
-      pose = estimate_lens_T_tag(det.corners, size, lens.params)
-      if pose is None:
-        continue
-      # The tag frame's origin-to-tip segments along x, y and z.
-      lens_tips = (
+  """Per keyframe, the pixel segments of each sized tag's frame axes."""
+  sightings = [
+    (kf, order, det, size)
+    for kf, tags in enumerate(tags_per_kf)
+    for order, det in enumerate(tags)
+    if (size := tag_size_by_id.get(int(det.tag_id))) is not None
+  ]
+  posed: dict[tuple[int, int], tuple[gtsam.Pose3, float]] = {}
+  for size in sorted({size for *_, size in sightings}):
+    mine = [s for s in sightings if s[3] == size]
+    solved = estimate_lens_T_tags(
+      np.stack([det.corners for _, _, det, _ in mine]), size, lens.params
+    )
+    for (kf, order, _, _), pose in zip(mine, solved, strict=True):
+      if pose is not None:
+        posed[kf, order] = (pose, size)
+  keys = sorted(posed)
+  strips: dict[int, list[Float64Array]] = {}
+  if keys:
+    # The tag frame's origin-to-tip segments along x, y and z.
+    lens_tips = np.stack(
+      [
         np.stack([np.zeros((3, 3)), size * np.eye(3)], axis=1).reshape(6, 3)
         @ pose.rotation().matrix().T
         + pose.translation()
-      )
-      if np.any(lens_tips[:, 2] <= 1e-3):
+        for pose, size in (posed[key] for key in keys)
+      ]
+    )
+    pix = mei_project(lens_tips.reshape(-1, 3), lens.params).reshape(-1, 6, 2)
+    for (kf, _), xyz, uv in zip(keys, lens_tips, pix, strict=True):
+      if np.any(xyz[:, 2] <= 1e-3) or not np.all(np.isfinite(uv)):
         continue
-      pix = mei_project(lens_tips, lens.params)
-      if not np.all(np.isfinite(pix)):
-        continue
-      strips.append(pix.reshape(3, 2, 2))
-    out.append(np.concatenate(strips) if strips else np.empty((0, 2, 2)))
-  return out
+      strips.setdefault(kf, []).append(uv.reshape(3, 2, 2))
+  return [
+    np.concatenate(strips[kf]) if kf in strips else np.empty((0, 2, 2))
+    for kf in range(len(tags_per_kf))
+  ]
 
 
 def _build_camera_estimate(

@@ -3,17 +3,31 @@
 #include <gtsam/base/VectorSpace.h>
 #include <gtsam/geometry/Point3.h>
 #include <gtsam/geometry/Pose3.h>
+#include <gtsam/linear/GaussianFactorGraph.h>
 #include <gtsam/linear/NoiseModel.h>
+#include <gtsam/linear/VectorValues.h>
 #include <gtsam/nonlinear/NonlinearFactor.h>
+#include <gtsam/nonlinear/NonlinearFactorGraph.h>
+#include <gtsam/nonlinear/Values.h>
 
 #include <pybind11/eigen.h>
+#include <pybind11/numpy.h>
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
 #include <Eigen/Dense>
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <functional>
+#include <limits>
 #include <memory>
 #include <optional>
+#include <stdexcept>
+#include <thread>
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
 
 namespace py = pybind11;
 using namespace gtsam;
@@ -409,11 +423,34 @@ class MeiSeatedCrossFingerFactorCpp
 // The make_* factories return NoiseModelFactor so Python sees its full API.
 static NoiseModelFactor::shared_ptr make_mei_factor_cpp(
     size_t poseKey, size_t pointKey, const Vector2& pixel,
-    const SharedNoiseModel& model, const Pose3& body_T_lens, const Intrinsics& intrinsics,
-    const Vector3& obs_bearing) {
+    const SharedNoiseModel& model, const Pose3& body_T_lens, const Intrinsics& intrinsics) {
   return std::make_shared<MeiFactorCpp>(
       poseKey, pointKey, model,
-      MeiCorner(body_T_lens, intrinsics, pixel, obs_bearing));
+      MeiCorner(body_T_lens, intrinsics, pixel, Vector3::Zero()));
+}
+
+// make_mei_factor_cpp per row, pushed onto `graph` in row order.
+static void add_mei_factors_cpp(
+    gtsam::NonlinearFactorGraph& graph,
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> pose_keys,
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> point_keys,
+    py::array_t<double, py::array::c_style | py::array::forcecast> pixels,
+    const SharedNoiseModel& model, const Pose3& body_T_lens, const Intrinsics& intrinsics) {
+  const py::ssize_t n = pose_keys.shape(0);
+  if (point_keys.shape(0) != n || pixels.ndim() != 2 || pixels.shape(0) != n ||
+      pixels.shape(1) != 2)
+    throw std::invalid_argument(
+        "pose_keys, point_keys and pixels (n, 2) must have one row per factor");
+  auto pk = pose_keys.unchecked<1>();
+  auto lk = point_keys.unchecked<1>();
+  auto px = pixels.unchecked<2>();
+  graph.reserve(graph.size() + static_cast<size_t>(n));
+  for (py::ssize_t i = 0; i < n; ++i) {
+    const Vector2 pixel(px(i, 0), px(i, 1));
+    graph.push_back(std::make_shared<MeiFactorCpp>(
+        static_cast<size_t>(pk(i)), static_cast<size_t>(lk(i)), model,
+        MeiCorner(body_T_lens, intrinsics, pixel, Vector3::Zero())));
+  }
 }
 
 static NoiseModelFactor::shared_ptr make_mei_seated_base_tag_factor_cpp(
@@ -469,11 +506,464 @@ static NoiseModelFactor::shared_ptr make_mei_anchor_tag_factor_cpp(
       c);
 }
 
+// work(t) for every t in [0, n_threads), index 0 on the calling thread.
+static void run_threads(int n_threads, const std::function<void(int)>& work) {
+  std::vector<std::thread> threads;
+  for (int t = 1; t < n_threads; ++t) threads.emplace_back(work, t);
+  work(0);
+  for (auto& th : threads) th.join();
+}
+
+static int graph_threads(int requested, size_t n) {
+  const int by_size = static_cast<int>(n / 1000) + 1;
+  return std::max(1, std::min(requested, by_size));
+}
+
+// Every factor's whitened block in graph order, plus (row, col) when `with_pattern`.
+static py::tuple linearize_raveled(
+    const gtsam::NonlinearFactorGraph& graph, const gtsam::Values& values,
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> keys,
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> offsets,
+    int n_threads, bool with_pattern) {
+  const size_t n = graph.size();
+  std::vector<std::pair<gtsam::Matrix, gtsam::Vector>> blocks(n);
+  std::vector<gtsam::KeyVector> block_keys(n);
+  std::unordered_map<gtsam::Key, std::pair<int64_t, int64_t>> columns;
+  if (with_pattern) {
+    if (offsets.ndim() != 2 || offsets.shape(1) != 2 ||
+        offsets.shape(0) != keys.shape(0))
+      throw std::invalid_argument("offsets must be (len(keys), 2)");
+    auto k = keys.unchecked<1>();
+    auto o = offsets.unchecked<2>();
+    for (py::ssize_t i = 0; i < k.shape(0); ++i)
+      columns[static_cast<gtsam::Key>(k(i))] = {o(i, 0), o(i, 1)};
+  }
+  std::vector<size_t> val_offset(n + 1, 0), row_offset(n + 1, 0);
+  py::array_t<double> vals, rhs;
+  py::array_t<int64_t> rows, cols;
+  {
+    py::gil_scoped_release release;
+    const int t_count = graph_threads(n_threads, n);
+    run_threads(t_count, [&](int t) {
+      const size_t begin = n * t / t_count, end = n * (t + 1) / t_count;
+      for (size_t i = begin; i < end; ++i) {
+        const auto& factor = graph[i];
+        if (!factor) continue;
+        const auto linear = factor->linearize(values);
+        if (!linear) continue;
+        blocks[i] = linear->jacobian();
+        if (with_pattern) block_keys[i] = linear->keys();
+      }
+    });
+    const char* fault = nullptr;
+    for (size_t i = 0; i < n; ++i) {
+      val_offset[i + 1] = val_offset[i] + static_cast<size_t>(blocks[i].first.size());
+      row_offset[i + 1] = row_offset[i] + static_cast<size_t>(blocks[i].second.size());
+      if (!with_pattern || blocks[i].first.size() == 0) continue;
+      int64_t width = 0;
+      for (const gtsam::Key key : block_keys[i]) {
+        const auto found = columns.find(key);
+        if (found == columns.end()) fault = "a factor key is not among keys";
+        else width += found->second.second;
+      }
+      if (width != blocks[i].first.cols())
+        fault = "a factor's columns do not match its keys";
+    }
+    if (fault != nullptr) throw std::invalid_argument(fault);
+    py::gil_scoped_acquire acquire;
+    vals = py::array_t<double>(static_cast<py::ssize_t>(val_offset[n]));
+    rhs = py::array_t<double>(static_cast<py::ssize_t>(row_offset[n]));
+    rows = py::array_t<int64_t>(static_cast<py::ssize_t>(with_pattern ? val_offset[n] : 0));
+    cols = py::array_t<int64_t>(static_cast<py::ssize_t>(with_pattern ? val_offset[n] : 0));
+  }
+  double* v_out = vals.mutable_data();
+  double* r_out = rhs.mutable_data();
+  int64_t* row_out = with_pattern ? rows.mutable_data() : nullptr;
+  int64_t* col_out = with_pattern ? cols.mutable_data() : nullptr;
+  {
+    py::gil_scoped_release release;
+    const int t_count = graph_threads(n_threads, n);
+    run_threads(t_count, [&](int t) {
+      const size_t begin = n * t / t_count, end = n * (t + 1) / t_count;
+      std::vector<int64_t> col_index;
+      for (size_t i = begin; i < end; ++i) {
+        const gtsam::Matrix& A = blocks[i].first;
+        const gtsam::Vector& b = blocks[i].second;
+        double* v = v_out + val_offset[i];
+        for (Eigen::Index r = 0; r < A.rows(); ++r)
+          for (Eigen::Index c = 0; c < A.cols(); ++c) *v++ = A(r, c);
+        double* rr = r_out + row_offset[i];
+        for (Eigen::Index r = 0; r < b.size(); ++r) *rr++ = b(r);
+        if (!with_pattern || A.size() == 0) continue;
+        col_index.clear();
+        for (const gtsam::Key key : block_keys[i]) {
+          const auto& column = columns.find(key)->second;
+          for (int64_t c = 0; c < column.second; ++c)
+            col_index.push_back(column.first + c);
+        }
+        int64_t* ro = row_out + val_offset[i];
+        int64_t* co = col_out + val_offset[i];
+        const int64_t row0 = static_cast<int64_t>(row_offset[i]);
+        for (Eigen::Index r = 0; r < A.rows(); ++r)
+          for (Eigen::Index c = 0; c < A.cols(); ++c) {
+            *ro++ = row0 + r;
+            *co++ = col_index[static_cast<size_t>(c)];
+          }
+      }
+    });
+  }
+  return py::make_tuple(vals, rhs, rows, cols);
+}
+
+// A copy of `graph` without the factors that touch any of `drop_keys`.
+static gtsam::NonlinearFactorGraph prune_factors(
+    const gtsam::NonlinearFactorGraph& graph,
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> drop_keys) {
+  std::unordered_set<gtsam::Key> dropped;
+  auto d = drop_keys.unchecked<1>();
+  for (py::ssize_t i = 0; i < d.shape(0); ++i)
+    dropped.insert(static_cast<gtsam::Key>(d(i)));
+  gtsam::NonlinearFactorGraph kept;
+  kept.reserve(graph.size());
+  for (const auto& factor : graph) {
+    if (!factor) continue;
+    const auto& keys = factor->keys();
+    if (std::none_of(keys.begin(), keys.end(),
+                     [&](gtsam::Key k) { return dropped.count(k) > 0; }))
+      kept.push_back(factor);
+  }
+  return kept;
+}
+
+// graph.error(values) on `n_threads`, summed in factor order.
+static double graph_error(const gtsam::NonlinearFactorGraph& graph,
+                          const gtsam::Values& values, int n_threads) {
+  const size_t n = graph.size();
+  std::vector<double> errors(n, 0.0);
+  py::gil_scoped_release release;
+  const int t_count = graph_threads(n_threads, n);
+  run_threads(t_count, [&](int t) {
+    const size_t begin = n * t / t_count, end = n * (t + 1) / t_count;
+    for (size_t i = begin; i < end; ++i)
+      if (graph[i]) errors[i] = graph[i]->error(values);
+  });
+  double total = 0.0;
+  for (size_t i = 0; i < n; ++i)
+    if (graph[i]) total += errors[i];
+  return total;
+}
+
+// A flat tangent vector as per-key VectorValues, key i at offsets[i].
+static gtsam::VectorValues scatter_delta(
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> keys,
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> offsets,
+    py::array_t<double, py::array::c_style | py::array::forcecast> delta) {
+  if (offsets.ndim() != 2 || offsets.shape(1) != 2 ||
+      offsets.shape(0) != keys.shape(0))
+    throw std::invalid_argument("offsets must be (len(keys), 2)");
+  auto k = keys.unchecked<1>();
+  auto o = offsets.unchecked<2>();
+  const double* d = delta.data();
+  const int64_t n_delta = static_cast<int64_t>(delta.shape(0));
+  gtsam::VectorValues out;
+  for (py::ssize_t i = 0; i < k.shape(0); ++i) {
+    const int64_t off = o(i, 0), dim = o(i, 1);
+    if (off < 0 || dim < 0 || off + dim > n_delta)
+      throw std::invalid_argument("an offset runs past delta");
+    out.insert(static_cast<gtsam::Key>(k(i)),
+               gtsam::Vector(Eigen::Map<const gtsam::Vector>(d + off, dim)));
+  }
+  return out;
+}
+
+// cv2::goodFeaturesToTrack's greedy min-distance pass over ordered candidates.
+static std::vector<int64_t> greedy_corners(const int32_t* x, const int32_t* y,
+                                           int n, int width, int height,
+                                           double min_distance, int max_corners) {
+  const int cell = static_cast<int>(std::lround(min_distance));
+  const int grid_w = (width + cell - 1) / cell;
+  const int grid_h = (height + cell - 1) / cell;
+  std::vector<std::vector<std::pair<float, float>>> grid(
+      static_cast<size_t>(grid_w) * grid_h);
+  const double min_sq = min_distance * min_distance;
+  std::vector<int64_t> kept;
+  kept.reserve(static_cast<size_t>(std::max(0, std::min(n, max_corners))));
+  for (int i = 0; i < n && static_cast<int>(kept.size()) < max_corners; ++i) {
+    const float px = static_cast<float>(x[i]);
+    const float py_ = static_cast<float>(y[i]);
+    const int cx = static_cast<int>(px) / cell;
+    const int cy = static_cast<int>(py_) / cell;
+    const int x1 = std::max(cx - 1, 0), y1 = std::max(cy - 1, 0);
+    const int x2 = std::min(cx + 1, grid_w - 1), y2 = std::min(cy + 1, grid_h - 1);
+    bool good = true;
+    for (int yy = y1; yy <= y2 && good; ++yy)
+      for (int xx = x1; xx <= x2 && good; ++xx)
+        for (const auto& q : grid[static_cast<size_t>(yy) * grid_w + xx]) {
+          const float dx = px - q.first, dy = py_ - q.second;
+          if (dx * dx + dy * dy < min_sq) {
+            good = false;
+            break;
+          }
+        }
+    if (good) {
+      grid[static_cast<size_t>(cy) * grid_w + cx].emplace_back(px, py_);
+      kept.push_back(i);
+    }
+  }
+  return kept;
+}
+
+static int scan_threads(int rows) {
+  const int cores = static_cast<int>(std::thread::hardware_concurrency());
+  return std::max(1, std::min({8, cores, rows / 64}));
+}
+
+// cv2::goodFeaturesToTrack on a computed corner response; (N, 2) pixels.
+static py::array_t<double> detect_corners(
+    py::array_t<float, py::array::c_style | py::array::forcecast> response,
+    py::object mask_obj, double quality_level, double min_distance,
+    int max_corners) {
+  if (response.ndim() != 2) throw std::invalid_argument("response must be 2-D");
+  const int h = static_cast<int>(response.shape(0));
+  const int w = static_cast<int>(response.shape(1));
+  py::array_t<uint8_t, py::array::c_style | py::array::forcecast> mask_arr;
+  const uint8_t* mask = nullptr;
+  if (!mask_obj.is_none()) {
+    mask_arr = mask_obj.cast<
+        py::array_t<uint8_t, py::array::c_style | py::array::forcecast>>();
+    if (mask_arr.ndim() != 2 || mask_arr.shape(0) != h || mask_arr.shape(1) != w)
+      throw std::invalid_argument("mask must match the response's shape");
+    mask = mask_arr.data();
+  }
+  const float* r = response.data();
+  std::vector<int32_t> xs, ys;
+  std::vector<int64_t> kept;
+  {
+    py::gil_scoped_release release;
+    const size_t n_px = static_cast<size_t>(h) * w;
+    const int n_threads = scan_threads(h);
+    std::vector<double> part_max(n_threads, -std::numeric_limits<double>::infinity());
+    std::vector<char> part_any(n_threads, 0);
+    run_threads(n_threads, [&](int t) {
+      const size_t begin = n_px * t / n_threads, end = n_px * (t + 1) / n_threads;
+      double best = -std::numeric_limits<double>::infinity();
+      bool any = false;
+      for (size_t i = begin; i < end; ++i) {
+        if (mask != nullptr && mask[i] == 0) continue;
+        any = true;
+        if (r[i] > best) best = r[i];
+      }
+      part_max[t] = best;
+      part_any[t] = any;
+    });
+    double max_value = -std::numeric_limits<double>::infinity();
+    bool any = false;
+    for (int t = 0; t < n_threads; ++t) {
+      if (!part_any[t]) continue;
+      any = true;
+      if (part_max[t] > max_value) max_value = part_max[t];
+    }
+    if (!any || max_corners <= 0 || h < 3 || w < 3)
+      return py::array_t<double>(std::vector<py::ssize_t>{0, 2});
+    const float thr = static_cast<float>(max_value * quality_level);
+    std::vector<std::vector<int32_t>> part_x(n_threads), part_y(n_threads);
+    std::vector<std::vector<float>> part_v(n_threads);
+    auto scan = [&](int t) {
+      const int y_begin = std::max(1, 1 + (h - 2) * t / n_threads);
+      const int y_end = std::max(1, 1 + (h - 2) * (t + 1) / n_threads);
+      for (int y = y_begin; y < y_end; ++y) {
+        const float* row = r + static_cast<size_t>(y) * w;
+        const float* up = row - w;
+        const float* down = row + w;
+        const uint8_t* mrow =
+            mask == nullptr ? nullptr : mask + static_cast<size_t>(y) * w;
+        for (int x = 1; x < w - 1; ++x) {
+          const float v = row[x];
+          if (!(v > thr)) continue;
+          if (mrow != nullptr && mrow[x] == 0) continue;
+          if (up[x - 1] > v || up[x] > v || up[x + 1] > v || row[x - 1] > v ||
+              row[x + 1] > v || down[x - 1] > v || down[x] > v || down[x + 1] > v)
+            continue;
+          part_x[t].push_back(x);
+          part_y[t].push_back(y);
+          part_v[t].push_back(v);
+        }
+      }
+    };
+    run_threads(n_threads, scan);
+    std::vector<float> vs;
+    for (int t = 0; t < n_threads; ++t) {
+      xs.insert(xs.end(), part_x[t].begin(), part_x[t].end());
+      ys.insert(ys.end(), part_y[t].begin(), part_y[t].end());
+      vs.insert(vs.end(), part_v[t].begin(), part_v[t].end());
+    }
+    // The ranking (response desc, raster) is produced a doubling leading run at a time.
+    const size_t n_cand = xs.size();
+    std::vector<int64_t> order(n_cand);
+    for (size_t i = 0; i < n_cand; ++i) order[i] = static_cast<int64_t>(i);
+    const auto ahead = [&vs](int64_t a, int64_t b) {
+      return vs[a] > vs[b] || (vs[a] == vs[b] && a < b);
+    };
+    std::vector<int32_t> sx, sy;
+    size_t run = std::min(n_cand, static_cast<size_t>(16) * max_corners);
+    while (true) {
+      if (run < n_cand)
+        std::nth_element(order.begin(), order.begin() + run, order.end(), ahead);
+      std::sort(order.begin(), order.begin() + run, ahead);
+      sx.resize(run);
+      sy.resize(run);
+      for (size_t i = 0; i < run; ++i) {
+        sx[i] = xs[static_cast<size_t>(order[i])];
+        sy[i] = ys[static_cast<size_t>(order[i])];
+      }
+      kept = greedy_corners(sx.data(), sy.data(), static_cast<int>(run), w, h,
+                            min_distance, max_corners);
+      if (run == n_cand || static_cast<int>(kept.size()) >= max_corners) break;
+      run = std::min(n_cand, run * 2);
+    }
+    xs.swap(sx);
+    ys.swap(sy);
+  }
+  py::array_t<double> out(
+      std::vector<py::ssize_t>{static_cast<py::ssize_t>(kept.size()), 2});
+  auto o = out.mutable_unchecked<2>();
+  for (size_t i = 0; i < kept.size(); ++i) {
+    o(static_cast<py::ssize_t>(i), 0) = xs[static_cast<size_t>(kept[i])];
+    o(static_cast<py::ssize_t>(i), 1) = ys[static_cast<size_t>(kept[i])];
+  }
+  return out;
+}
+
+// 255 everywhere but on the (dy, dx) disc stamped around every center.
+static py::array_t<uint8_t> free_mask(
+    int height, int width,
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> centers,
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> dy,
+    py::array_t<int64_t, py::array::c_style | py::array::forcecast> dx) {
+  if (centers.ndim() != 2 || centers.shape(1) != 2 || dy.shape(0) != dx.shape(0))
+    throw std::invalid_argument("centers must be (n, 2) and dy, dx alike");
+  py::array_t<uint8_t> out(std::vector<py::ssize_t>{height, width});
+  uint8_t* m = out.mutable_data();
+  auto c = centers.unchecked<2>();
+  const int64_t* oy = dy.data();
+  const int64_t* ox = dx.data();
+  const py::ssize_t n_off = dy.shape(0);
+  {
+    py::gil_scoped_release release;
+    std::fill(m, m + static_cast<size_t>(height) * width, 255);
+    for (py::ssize_t i = 0; i < c.shape(0); ++i) {
+      const int64_t cx = c(i, 0), cy = c(i, 1);
+      for (py::ssize_t k = 0; k < n_off; ++k) {
+        const int64_t y = cy + oy[k], x = cx + ox[k];
+        if (y < 0 || y >= height || x < 0 || x >= width) continue;
+        m[static_cast<size_t>(y) * width + x] = 0;
+      }
+    }
+  }
+  return out;
+}
+
+// Bilinear flow sample at a subpixel position, lifted back through `scale`.
+static void sample_flow(const float* flow, int fh, int fw, double scale,
+                        double x_in, double y_in, double& dx, double& dy) {
+  const double x_max = static_cast<double>(fw) - 1.001;
+  const double y_max = static_cast<double>(fh) - 1.001;
+  const double x = std::min(std::max((x_in + 0.5) * scale - 0.5, 0.0), x_max);
+  const double y = std::min(std::max((y_in + 0.5) * scale - 0.5, 0.0), y_max);
+  const int64_t x0 = static_cast<int64_t>(x);
+  const int64_t y0 = static_cast<int64_t>(y);
+  const double fx = x - static_cast<double>(x0);
+  const double fy = y - static_cast<double>(y0);
+  const float* f00 = flow + (y0 * fw + x0) * 2;
+  const float* f01 = f00 + 2;
+  const float* f10 = f00 + static_cast<int64_t>(fw) * 2;
+  const float* f11 = f10 + 2;
+  double s[2];
+  for (int c = 0; c < 2; ++c) {
+    s[c] = (1.0 - fx) * (1.0 - fy) * static_cast<double>(f00[c]) +
+           fx * (1.0 - fy) * static_cast<double>(f01[c]) +
+           (1.0 - fx) * fy * static_cast<double>(f10[c]) +
+           fx * fy * static_cast<double>(f11[c]);
+    if (scale != 1.0) s[c] = s[c] / scale;
+  }
+  dx = s[0];
+  dy = s[1];
+}
+
+// Prior points moved by the forward flow, gated by fb error and the frame border.
+static py::tuple propagate_points(
+    py::array_t<float, py::array::c_style | py::array::forcecast> flow_fwd,
+    py::array_t<float, py::array::c_style | py::array::forcecast> flow_bwd,
+    py::array_t<double, py::array::c_style | py::array::forcecast> prev_xy,
+    double scale, int height, int width, double fb_threshold) {
+  if (flow_fwd.ndim() != 3 || flow_fwd.shape(2) != 2 ||
+      flow_bwd.ndim() != 3 || flow_bwd.shape(2) != 2 ||
+      flow_fwd.shape(0) != flow_bwd.shape(0) ||
+      flow_fwd.shape(1) != flow_bwd.shape(1))
+    throw std::invalid_argument("flows must be (H, W, 2) and alike");
+  if (prev_xy.ndim() != 2 || prev_xy.shape(1) != 2)
+    throw std::invalid_argument("prev_xy must be (N, 2)");
+  const int fh = static_cast<int>(flow_fwd.shape(0));
+  const int fw = static_cast<int>(flow_fwd.shape(1));
+  const py::ssize_t n = prev_xy.shape(0);
+  py::array_t<double> next(std::vector<py::ssize_t>{n, 2});
+  py::array_t<bool> ok(n);
+  const float* fwd = flow_fwd.data();
+  const float* bwd = flow_bwd.data();
+  const double* prev = prev_xy.data();
+  double* nxt = next.mutable_data();
+  bool* good = ok.mutable_data();
+  {
+    py::gil_scoped_release release;
+    const double x_lim = static_cast<double>(width - 1);
+    const double y_lim = static_cast<double>(height - 1);
+    for (py::ssize_t i = 0; i < n; ++i) {
+      const double px = prev[2 * i], py_ = prev[2 * i + 1];
+      if (!(std::isfinite(px) && std::isfinite(py_))) {
+        nxt[2 * i] = nxt[2 * i + 1] = std::numeric_limits<double>::quiet_NaN();
+        good[i] = false;
+        continue;
+      }
+      double dx, dy;
+      sample_flow(fwd, fh, fw, scale, px, py_, dx, dy);
+      const double nx = px + dx, ny = py_ + dy;
+      double bx, by;
+      sample_flow(bwd, fh, fw, scale, nx, ny, bx, by);
+      const double ex = (nx + bx) - px, ey = (ny + by) - py_;
+      const double fb = std::sqrt(ex * ex + ey * ey);
+      nxt[2 * i] = nx;
+      nxt[2 * i + 1] = ny;
+      good[i] = std::isfinite(fb) && fb < fb_threshold && nx >= 1.0 &&
+                nx < x_lim && ny >= 1.0 && ny < y_lim;
+    }
+  }
+  return py::make_tuple(next, ok);
+}
+
 PYBIND11_MODULE(_mei_factor_cpp, m) {
   m.doc() = "Native MEI reprojection factors with analytical Jacobians.";
+  m.def("linearize_raveled", &linearize_raveled, py::arg("graph"),
+        py::arg("values"), py::arg("keys"), py::arg("offsets"),
+        py::arg("n_threads"), py::arg("with_pattern"));
+  m.def("graph_error", &graph_error, py::arg("graph"), py::arg("values"),
+        py::arg("n_threads"));
+  m.def("prune_factors", &prune_factors, py::arg("graph"), py::arg("drop_keys"));
+  m.def("scatter_delta", &scatter_delta, py::arg("keys"), py::arg("offsets"),
+        py::arg("delta"));
+  m.def("detect_corners", &detect_corners, py::arg("response"), py::arg("mask"),
+        py::arg("quality_level"), py::arg("min_distance"),
+        py::arg("max_corners"));
+  m.def("free_mask", &free_mask, py::arg("height"), py::arg("width"),
+        py::arg("centers"), py::arg("dy"), py::arg("dx"));
+  m.def("propagate_points", &propagate_points, py::arg("flow_fwd"),
+        py::arg("flow_bwd"), py::arg("prev_xy"), py::arg("scale"),
+        py::arg("height"), py::arg("width"), py::arg("fb_threshold"));
+  m.def("add_mei_factors_cpp", &add_mei_factors_cpp, py::arg("graph"),
+        py::arg("pose_keys"), py::arg("point_keys"), py::arg("pixels"),
+        py::arg("noise"), py::arg("body_T_lens"), py::arg("intrinsics"));
   m.def("make_mei_factor_cpp", &make_mei_factor_cpp, py::arg("pose_key"),
         py::arg("point_key"), py::arg("pixel"), py::arg("noise"),
-        py::arg("body_T_lens"), py::arg("intrinsics"), py::arg("obs_bearing"));
+        py::arg("body_T_lens"), py::arg("intrinsics"));
   m.def("make_mei_seated_base_tag_factor_cpp",
         &make_mei_seated_base_tag_factor_cpp, py::arg("base_tag_key"),
         py::arg("seat_key"), py::arg("pixel"), py::arg("noise"),

@@ -22,11 +22,13 @@ _MIN_DEPTH = 1e-3
 __all__ = ["cull_and_reproject", "cull_outlier_landmarks"]
 
 _Judged = tuple[
-  list[tuple[int, int, Float64Array]],
+  npt.NDArray[np.int64],
+  npt.NDArray[np.int64],
+  Float64Array,
   Float64Array,
   Float64Array,
   npt.NDArray[np.bool_],
-  list[Float64Array],
+  Float64Array,
 ]
 
 
@@ -36,55 +38,58 @@ def _judged_observations(
   body_poses: list[gtsam.Pose3],
   lens: LensSetup,
 ) -> _Judged:
-  """In-range observations with residual and verdict, plus keyframe lens centers."""
+  """Every in-range observation's landmark id, keyframe, pixel, projection,
+  residual and survival verdict, plus each keyframe's lens center."""
   lens_poses = [body_pose.compose(lens.body_T_lens) for body_pose in body_poses]
-  lens_centers = [np.asarray(p.translation(), dtype=np.float64) for p in lens_poses]
-  observed: list[tuple[int, int, Float64Array]] = []
-  in_lens: list[Float64Array] = []
+  lens_centers = np.asarray([p.translation() for p in lens_poses], dtype=np.float64)
+  n = len(body_poses)
+  tids: list[int] = []
+  kfs: list[int] = []
+  pixels: list[Float64Array] = []
+  xyz: list[Float64Array] = []
   for tid, p in points.items():
-    point = np.asarray(p, dtype=np.float64)
     for kf, pixel in tracks.get(tid, {}).items():
-      if not (0 <= kf < len(body_poses)):
-        continue
-      observed.append((tid, kf, np.asarray(pixel, dtype=np.float64)))
-      in_lens.append(np.asarray(lens_poses[kf].transformTo(point), dtype=np.float64))
-  if not observed:
-    empty = np.empty(0, dtype=np.float64)
-    return [], empty.reshape(0, 2), empty, np.empty(0, dtype=np.bool_), lens_centers
-
-  lens_points = np.asarray(in_lens)
+      if 0 <= kf < n:
+        tids.append(tid)
+        kfs.append(kf)
+        pixels.append(pixel)
+        xyz.append(p)
+  tid_arr = np.asarray(tids, dtype=np.int64)
+  kf_arr = np.asarray(kfs, dtype=np.int64)
+  pixel_arr = np.asarray(pixels, dtype=np.float64).reshape(-1, 2)
+  rotations = np.asarray([p.rotation().matrix() for p in lens_poses])
+  lens_points = np.einsum(
+    "nji,nj->ni",
+    rotations[kf_arr],
+    np.asarray(xyz, dtype=np.float64).reshape(-1, 3) - lens_centers[kf_arr],
+  )
   in_front = lens_points[:, 2] > _MIN_DEPTH
-  projected = np.full((len(observed), 2), np.nan, dtype=np.float64)
+  projected = np.full((len(tids), 2), np.nan, dtype=np.float64)
   if in_front.any():
     projected[in_front] = mei_project(lens_points[in_front], lens.params)
-  residual = np.linalg.norm(
-    projected - np.asarray([pix for _, _, pix in observed]), axis=1
-  )
+  residual = np.linalg.norm(projected - pixel_arr, axis=1)
   survives = in_front & np.isfinite(residual) & (residual <= _MAX_RESIDUAL)
-  return observed, projected, residual, survives, lens_centers
+  return tid_arr, kf_arr, pixel_arr, projected, residual, survives, lens_centers
 
 
 def _kept_tracks(
   points: dict[int, Float64Array],
-  observed: list[tuple[int, int, Float64Array]],
+  tids: npt.NDArray[np.int64],
+  kfs: npt.NDArray[np.int64],
+  pixels: Float64Array,
   survives: npt.NDArray[np.bool_],
-  lens_centers: list[Float64Array],
+  lens_centers: Float64Array,
 ) -> dict[int, dict[int, Float64Array]]:
   """Surviving observations per surviving landmark, in the caller's landmark order."""
   by_track: dict[int, dict[int, Float64Array]] = {}
-  centers_by_track: dict[int, list[Float64Array]] = {}
-  for keep, (tid, kf, pixel) in zip(survives, observed, strict=True):
-    if not keep:
-      continue
-    by_track.setdefault(tid, {})[kf] = pixel
-    centers_by_track.setdefault(tid, []).append(lens_centers[kf])
-
+  for i in np.flatnonzero(survives):
+    by_track.setdefault(int(tids[i]), {})[int(kfs[i])] = pixels[i]
   kept: dict[int, dict[int, Float64Array]] = {}
   for tid in points:
     survivors = by_track.get(tid)
     if survivors is None or len(survivors) < _MIN_OBSERVATIONS:
       continue
-    if max_parallax(centers_by_track[tid], points[tid]) < _MIN_PARALLAX:
+    if max_parallax(lens_centers[list(survivors)], points[tid]) < _MIN_PARALLAX:
       continue
     kept[tid] = survivors
   return kept
@@ -97,10 +102,10 @@ def cull_outlier_landmarks(
   lens: LensSetup,
 ) -> dict[int, dict[int, Float64Array]]:
   """Tracks ``{tid: {kf: pixel}}`` cut to surviving observations of kept landmarks."""
-  observed, _, _, survives, lens_centers = _judged_observations(
+  tids, kfs, pixels, _, _, survives, lens_centers = _judged_observations(
     points, tracks, body_poses, lens
   )
-  return _kept_tracks(points, observed, survives, lens_centers)
+  return _kept_tracks(points, tids, kfs, pixels, survives, lens_centers)
 
 
 def cull_and_reproject(
@@ -110,25 +115,21 @@ def cull_and_reproject(
   lens: LensSetup,
 ) -> tuple[dict[int, Float64Array], list[Float64Array], list[float]]:
   """Kept landmark points, per-keyframe survivor reprojections and RMSE (px)."""
-  observed, projected, residual, survives, lens_centers = _judged_observations(
+  tids, kfs, pixels, projected, residual, survives, lens_centers = _judged_observations(
     points, tracks, body_poses, lens
   )
-  observations = _kept_tracks(points, observed, survives, lens_centers)
+  observations = _kept_tracks(points, tids, kfs, pixels, survives, lens_centers)
   kept = {tid: points[tid] for tid in observations}
   n = len(body_poses)
-  pixels: list[list[Float64Array]] = [[] for _ in range(n)]
-  residuals: list[list[float]] = [[] for _ in range(n)]
-  for keep, (tid, kf, _pixel), row, err in zip(
-    survives, observed, projected, residual, strict=True
-  ):
-    if keep and tid in observations:
-      pixels[kf].append(row)
-      residuals[kf].append(float(err))
+  shown = survives & np.isin(tids, np.fromiter(observations, dtype=np.int64))
+  order = np.argsort(kfs[shown], kind="stable")
+  rows = np.flatnonzero(shown)[order]
+  bounds = np.searchsorted(kfs[rows], np.arange(n + 1))
   return (
     kept,
-    [np.stack(b) if b else np.empty((0, 2)) for b in pixels],
+    [projected[rows[a:b]] for a, b in zip(bounds[:-1], bounds[1:], strict=True)],
     [
-      float(np.sqrt(np.mean(np.square(errs)))) if errs else float("nan")
-      for errs in residuals
+      float(np.sqrt(np.mean(np.square(residual[rows[a:b]])))) if b > a else float("nan")
+      for a, b in zip(bounds[:-1], bounds[1:], strict=True)
     ],
   )

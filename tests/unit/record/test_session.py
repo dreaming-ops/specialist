@@ -8,7 +8,7 @@ import gtsam
 import numpy as np
 import pytest
 from rerun.experimental import RrdReader
-from specialist_dataset import schema
+from specialist_dataset import frames, schema
 from specialist_dataset.frames import LensFrames
 
 from specialist.record.base import (
@@ -236,3 +236,23 @@ def test_capture_telemetry_reaches_the_base(base_rrd: Path) -> None:
   assert rows[f"/{schema.exposure('cam00')}"] == 3
   assert rows[f"/{schema.autoexposure('cam00')}"] == 2
   assert "iso_value" in columns[f"/{schema.autoexposure('cam00')}"]
+
+
+def test_lenses_stage_where_the_session_says(base_rrd: Path, tmp_path: Path) -> None:
+  frames.release_videos()
+  stage = tmp_path / "stage"
+  stage.mkdir()
+  session = SessionRecording(base_rrd, stage)
+  video = session.lens_video("cam00", "front")
+  assert video.path.parent == stage
+  session.close()
+  assert stage.exists() and list(stage.iterdir()) == []
+
+
+def test_a_session_removes_the_stage_it_made(base_rrd: Path) -> None:
+  frames.release_videos()
+  session = SessionRecording(base_rrd)
+  own = session.stage
+  session.lens_video("cam00", "front")
+  session.close()
+  assert not own.exists()

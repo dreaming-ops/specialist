@@ -97,9 +97,7 @@ def rotate_about_z(points: Float64Array, angles: Float64Array) -> Float64Array:
   return out
 
 
-def max_parallax(
-  centers: Float64Array | list[Float64Array], point: Float64Array
-) -> float:
+def max_parallax(centers: Float64Array, point: Float64Array) -> float:
   """Widest pairwise angle (radians) the camera centers subtend at ``point``."""
   offsets = np.asarray(point, dtype=np.float64) - np.asarray(centers, dtype=np.float64)
   norms = np.linalg.norm(offsets, axis=1)

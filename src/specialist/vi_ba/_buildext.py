@@ -185,7 +185,8 @@ def build(force: bool = False) -> Path:
     boost_root = repo / ".build" / f"boost-{BOOST_TAG}"
     _ensure_boost(boost_root)
   cxx = os.environ.get("CXX", "c++")
-  cmd = [cxx, "-O3", "-shared", "-std=c++17", "-fPIC"]
+  # No fused multiply-add: the arithmetic stays numpy's.
+  cmd = [cxx, "-O3", "-ffp-contract=off", "-shared", "-std=c++17", "-fPIC"]
   if sys.platform == "darwin":
     cmd += ["-stdlib=libc++", "-undefined", "dynamic_lookup"]
   else:

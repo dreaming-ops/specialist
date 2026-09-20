@@ -1,4 +1,5 @@
-"""The VI-BA factor graph: keyframe poses, landmark points, MEI and IMU factors."""
+"""The VI-BA factor graph: a pose per keyframe, a point per landmark, a MEI factor
+per observation and IMU factors between keyframes."""
 
 from __future__ import annotations
 
@@ -14,7 +15,7 @@ from specialist_dataset import schema
 from specialist.vi_ba.tag_detection import TagDetection
 
 try:
-  from specialist.vi_ba._mei_factor_cpp import make_mei_factor_cpp
+  from specialist.vi_ba._mei_factor_cpp import add_mei_factors_cpp
 except ImportError as _exc:  # pragma: no cover - extension is built by uv sync
   raise ImportError(
     "The native MEI factor extension (specialist.vi_ba._mei_factor_cpp) is not "
@@ -29,7 +30,6 @@ _BIAS_PRIOR_SIGMA_ACCEL = 1.0e-2
 _BIAS_PRIOR_SIGMA_GYRO = 1.0e-3
 
 __all__ = [
-  "add_mei_factor",
   "LensChannel",
   "LensSetup",
   "add_mei_tag_factor",
@@ -81,26 +81,23 @@ def huber_pixel_noise(sigma: float) -> gtsam.noiseModel.Base:
   )
 
 
-def add_mei_factor(
+def add_mei_factors(
   graph: gtsam.NonlinearFactorGraph,
-  pose_key: int,
-  point_key: int,
-  pixel: Float64Array,
+  pose_keys: Sequence[int],
+  point_keys: Sequence[int],
+  pixels: Sequence[Float64Array],
   noise: gtsam.noiseModel.Base,
   lens: LensSetup,
-  obs_bearing: Float64Array | None = None,
 ) -> None:
-  """Push one MEI reprojection factor; ``obs_bearing`` arms the cheirality guard."""
-  graph.push_back(
-    make_mei_factor_cpp(
-      pose_key,
-      point_key,
-      _as_pixel(pixel),
-      noise,
-      lens.body_T_lens,
-      np.array(astuple(lens.params)),
-      np.zeros(3) if obs_bearing is None else _as_vec3(obs_bearing),
-    )
+  """One MEI factor per row: ``point_keys`` seen from ``pose_keys`` through ``lens``."""
+  add_mei_factors_cpp(
+    graph,
+    np.asarray(pose_keys, dtype=np.int64),
+    np.asarray(point_keys, dtype=np.int64),
+    np.asarray(pixels, dtype=np.float64).reshape(-1, 2),
+    noise,
+    lens.body_T_lens,
+    np.array(astuple(lens.params)),
   )
 
 
@@ -149,10 +146,10 @@ def build_vi_graph(
   graph: gtsam.NonlinearFactorGraph,
   values: gtsam.Values,
 ) -> tuple[gtsam.NonlinearFactorGraph, gtsam.Values]:
-  """MEI and IMU factors plus ``V(0)``/``B(0)`` priors; the caller grounds the poses."""
+  """The front lens's MEI factors plus the IMU factors between consecutive
+  keyframes, with priors on ``V(0)`` and ``B(0)``."""
   n = len(body_poses)
 
-  pixel_noise = huber_pixel_noise(sigma)
   vel_noise = gtsam.noiseModel.Isotropic.Sigma(3, velocity_prior_sigma)
   bias_noise = gtsam.noiseModel.Diagonal.Sigmas(
     np.asarray(
@@ -183,9 +180,17 @@ def build_vi_graph(
       )
     )
 
+  pose_keys: list[int] = []
+  point_keys: list[int] = []
+  pixels: list[Float64Array] = []
   for tid, xyz in front.points.items():
     lm_key = front_landmark_key_fn(tid)
     values.insert(lm_key, _as_point3(xyz))
     for kf, pt in front.tracks[tid].items():
-      add_mei_factor(graph, pose_key_fn(kf), lm_key, pt, pixel_noise, front.setup)
+      pose_keys.append(pose_key_fn(kf))
+      point_keys.append(lm_key)
+      pixels.append(pt)
+  add_mei_factors(
+    graph, pose_keys, point_keys, pixels, huber_pixel_noise(sigma), front.setup
+  )
   return graph, values

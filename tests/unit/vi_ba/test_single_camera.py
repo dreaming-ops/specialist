@@ -2,23 +2,27 @@
 
 from __future__ import annotations
 
+import sys
 from concurrent.futures import ThreadPoolExecutor
 
 import gtsam
 import numpy as np
+import pytest
 from specialist_camera import mei_project
-from specialist_dataset import schema
 
 from specialist.vi_ba.build import LensSetup
 from specialist.vi_ba.configs import FrontendCfg
+from specialist.vi_ba.features import detect_orb
 from specialist.vi_ba.single_camera import (
-  _anchor_metric_scale,
-  _anchor_pose_seed,
+  _FrameJobs,
+  _seed_body_poses,
+  bound_malloc_arenas,
   finger_stride,
   keyframe_grid,
+  renumber_landmarks,
 )
 from specialist.vi_ba.tracks import add_revisit_landmarks, run_lens_frontend
-from tests.frame_fixtures import translating_frames
+from tests.frame_fixtures import match_pair, translating_frames
 from tests.mei_fixtures import WIDE_CALIBRATED_RADIUS, narrow_mei_params
 
 
@@ -78,63 +82,15 @@ def test_anchor_pose_seed_reconstructs_metric_body_poses() -> None:
   ]
   # lens_T_tag = (world_T_lens)^-1 with world = tag and world_T_lens = body o ext.
   anchor_obs = {k: body[k].compose(ext).inverse() for k in range(n)}
-  seed = _anchor_pose_seed(anchor_obs, ext, n)
-  assert seed is not None and len(seed) == n
+  seed = _seed_body_poses("t", anchor_obs, ext, n)
+  assert len(seed) == n
   for k in range(n):
     assert np.allclose(seed[k].matrix(), body[k].matrix(), atol=1e-9)
 
 
-def test_anchor_pose_seed_none_when_too_few_anchor_keyframes() -> None:
-  anchor_obs = {0: gtsam.Pose3(), 1: gtsam.Pose3()}
-  assert _anchor_pose_seed(anchor_obs, gtsam.Pose3(), 100) is None
-
-
-def test_anchor_metric_scale_recovers_scale() -> None:
-  """With VO = metric positions times ``c``, the estimator returns ``1/c``."""
-  ext = gtsam.Pose3(gtsam.Rot3.Rodrigues(0.1, 0.0, 0.0), gtsam.Point3(0.05, 0.0, 0.0))
-  n = 10
-  metric_body = [
-    gtsam.Pose3(
-      gtsam.Rot3.Rodrigues(0.0, 0.02 * k, 0.0),
-      gtsam.Point3(0.1 * k, 0.03 * k, 0.5),
-    )
-    for k in range(n)
-  ]
-  anchor_obs = {k: metric_body[k].compose(ext).inverse() for k in range(n)}
-  c = 0.5
-  vo_body = [
-    gtsam.Pose3(
-      metric_body[k].rotation(),
-      gtsam.Point3(*(c * np.asarray(metric_body[k].translation()))),
-    )
-    for k in range(n)
-  ]
-  lens = LensSetup(
-    body_T_lens=ext,
-    params=narrow_mei_params(),
-    calibrated_radius=WIDE_CALIBRATED_RADIUS,
-  )
-  scale = _anchor_metric_scale(vo_body, anchor_obs, lens)
-  assert scale is not None
-  assert abs(scale - 1.0 / c) < 1e-9
-
-
-def test_anchor_metric_scale_none_when_degenerate() -> None:
-  """Fewer than 3 anchored keyframes or a zero-spread trajectory yields ``None``."""
-  lens = LensSetup(
-    body_T_lens=gtsam.Pose3(),
-    params=narrow_mei_params(),
-    calibrated_radius=WIDE_CALIBRATED_RADIUS,
-  )
-  two = {k: gtsam.Pose3() for k in range(2)}
-  assert _anchor_metric_scale([gtsam.Pose3()] * 2, two, lens) is None
-  # Three anchored views but the VO is stationary → zero spread → None.
-  stationary = [gtsam.Pose3()] * 3
-  obs = {
-    k: gtsam.Pose3(gtsam.Rot3(), gtsam.Point3(0.1 * k, 0.0, 0.5)).inverse()
-    for k in range(3)
-  }
-  assert _anchor_metric_scale(stationary, obs, lens) is None
+def test_seed_refuses_too_few_anchor_keyframes() -> None:
+  with pytest.raises(RuntimeError):
+    _seed_body_poses("t", {0: gtsam.Pose3(), 1: gtsam.Pose3()}, gtsam.Pose3(), 100)
 
 
 def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:
@@ -173,6 +129,7 @@ def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:
     slot="t",
     anchor_kfs={1, 4},
   )
+  # Every view anchored triangulates from the drifted tail too.
   fp_all: dict[int, np.ndarray] = {}
   fk_all: dict[int, dict[int, np.ndarray]] = {}
   add_revisit_landmarks(
@@ -183,6 +140,7 @@ def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:
     lens,
     FrontendCfg(min_track_length=2, max_landmark_depth=5.0),
     slot="t",
+    anchor_kfs=set(obs),
   )
 
   assert 99 in fp_rel and 99 in fp_all
@@ -197,16 +155,70 @@ def test_add_revisit_landmarks_reliable_views_resist_drift() -> None:
 
 def test_the_dense_finger_walk_keeps_the_keyframe_grid() -> None:
   """The rear walk lands on the front grid at every phase a covered span starts on."""
-  for fps, keyframe_every in ((30.0, 3), (60.0, 6)):
+  for fps, keyframe_stride in ((30.0, 3), (60.0, 6)):
     times = np.arange(0, 200) / fps
-    stride = finger_stride(keyframe_every, fps)
+    stride = finger_stride(keyframe_stride, fps)
     for start in range(7):
       covered = np.arange(start, 150)
-      front_samples, phase = keyframe_grid(times, covered, fps, keyframe_every)
+      front_samples, phase = keyframe_grid(times, covered, fps)
       # The grid snaps to the session-clock lattice, not to the covered span.
-      session_stride = schema.keyframe_stride(fps)
-      lattice = np.round(times[front_samples] * fps).astype(np.int64) % session_stride
+      lattice = np.round(times[front_samples] * fps).astype(np.int64) % keyframe_stride
       assert not lattice.any()
-      rear_samples = covered[phase::stride][:: keyframe_every // stride]
+      rear_samples = covered[phase::stride][:: keyframe_stride // stride]
       n = min(len(front_samples), len(rear_samples))
       np.testing.assert_array_equal(rear_samples[:n], front_samples[:n])
+
+
+def test_frame_jobs_collect_tags_and_orb_per_frame() -> None:
+  """Without an ORB budget no ORB frame is kept, and results come in frame order."""
+  frames = translating_frames(5, 2, seed=4)
+  with _FrameJobs(len(frames), 100) as jobs:
+    for k, frame in enumerate(frames):
+      jobs.submit(k, frame)
+  assert len(jobs.tags) == 5 and all(tags == [] for tags in jobs.tags)
+  assert len(jobs.orb) == 5 and all(len(f.keypoints) > 0 for f in jobs.orb)
+
+  with _FrameJobs(len(frames), 0) as jobs:
+    for k, frame in enumerate(frames):
+      jobs.submit(k, frame)
+  assert jobs.orb == []
+
+
+def test_max_track_span_bounds_the_revisit_gap(
+  monkeypatch: pytest.MonkeyPatch,
+) -> None:
+  from specialist.vi_ba import tracks
+
+  monkeypatch.setattr(
+    tracks,
+    "match_pairs",
+    lambda orb, pairs, ratio: [match_pair(orb[i], orb[j], ratio) for i, j in pairs],
+  )
+
+  frames = translating_frames(2, 0, seed=5, height=200, width=200)
+  orb = [detect_orb(frames[0], 300, 20)] * 60
+  poses = [gtsam.Pose3() for _ in range(60)]
+  lens = LensSetup(
+    body_T_lens=gtsam.Pose3(),
+    params=narrow_mei_params(),
+    calibrated_radius=WIDE_CALIBRATED_RADIUS,
+  )
+  unbounded = tracks.revisit_tracks(orb, poses, lens, 0)
+  bounded = tracks.revisit_tracks(orb, poses, lens, 0, window=20)
+  assert unbounded
+  assert all(max(obs) - min(obs) <= 20 for obs in bounded.values())
+  assert any(max(obs) - min(obs) > 20 for obs in unbounded.values())
+
+
+def test_renumber_landmarks_packs_ids_and_keeps_pairing() -> None:
+  """Ids pack to 0..n-1 in id order, and a track with no point drops."""
+  points = {1_000_783: np.array([1.0, 0, 0]), 7: np.array([2.0, 0, 0])}
+  tracks = {1_000_783: {3: np.zeros(2)}, 7: {5: np.ones(2)}, 9: {1: np.ones(2)}}
+  new_points, new_tracks = renumber_landmarks(points, tracks)
+  assert sorted(new_points) == [0, 1] and sorted(new_tracks) == [0, 1]
+  assert new_points[0][0] == 2.0 and list(new_tracks[0]) == [5]
+  assert new_points[1][0] == 1.0 and list(new_tracks[1]) == [3]
+
+
+def test_bounding_arenas_reports_whether_the_allocator_took_it() -> None:
+  assert bound_malloc_arenas(8) is (sys.platform == "linux")

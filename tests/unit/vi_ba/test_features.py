@@ -6,34 +6,37 @@ import os
 from collections.abc import Sequence
 from pathlib import Path
 
+import cv2
 import numpy as np
 import numpy.typing as npt
 import pytest
 
 from specialist.vi_ba import features
 from specialist.vi_ba.features import (
-  Frame,
   chain_tracks,
   detect_orb,
-  essential_ransac_inliers,
-  match_pair,
+  essential_inliers,
+  prepare_essential_rows,
 )
 
 Float64Array = npt.NDArray[np.float64]
 
 
+def essential_ransac_inliers(
+  bearings_a: Float64Array,
+  bearings_b: Float64Array,
+  threshold_px: float,
+  fx: float,
+  max_half_angle: float = np.pi / 2.0 - 1e-6,
+) -> npt.NDArray[np.bool_]:
+  in_fov, normalized_a, normalized_b = prepare_essential_rows(
+    bearings_a, bearings_b, max_half_angle
+  )
+  return essential_inliers(in_fov, normalized_a, normalized_b, float(threshold_px / fx))
+
+
 def _textured_image(rng: np.random.Generator, h: int = 200, w: int = 300) -> np.ndarray:
   return rng.integers(0, 255, size=(h, w), dtype=np.uint8)
-
-
-def test_detect_orb_on_textured_image_returns_keypoints() -> None:
-  rng = np.random.default_rng(0)
-  frame = detect_orb(_textured_image(rng), n_features=500, fast_threshold=12)
-  assert isinstance(frame, Frame)
-  assert frame.keypoints.ndim == 2 and frame.keypoints.shape[1] == 2
-  assert frame.keypoints.shape[0] > 10
-  assert frame.descriptors.shape == (frame.keypoints.shape[0], 32)
-  assert frame.descriptors.dtype == np.uint8
 
 
 def test_detect_orb_on_solid_image_returns_empty_frame() -> None:
@@ -42,24 +45,6 @@ def test_detect_orb_on_solid_image_returns_empty_frame() -> None:
   )
   assert frame.keypoints.shape == (0, 2)
   assert frame.descriptors.shape == (0, 32)
-
-
-def test_match_pair_identical_frames_returns_well_formed_matches() -> None:
-  rng = np.random.default_rng(1)
-  img = _textured_image(rng)
-  a = detect_orb(img, n_features=200, fast_threshold=12)
-  # The ratio test can reject identical descriptors whose second-best is equally close.
-  matches = match_pair(a, a, ratio=0.99)
-  assert matches.ndim == 2 and matches.shape[1] == 2
-  assert matches.shape[0] > 0
-
-
-def test_match_pair_empty_descriptors_returns_empty() -> None:
-  empty = Frame(
-    keypoints=np.empty((0, 2), dtype=np.float64),
-    descriptors=np.empty((0, 32), dtype=np.uint8),
-  )
-  assert match_pair(empty, empty, ratio=0.7).shape == (0, 2)
 
 
 def test_essential_ransac_with_few_points_returns_all_false() -> None:
@@ -143,26 +128,6 @@ def test_chain_tracks_unrelated_pairs_produce_separate_tracks() -> None:
   assert lengths == [2, 2]
 
 
-def test_flow_chunk_budget_tracks_available_memory(
-  monkeypatch: pytest.MonkeyPatch,
-) -> None:
-  """The flow chunk follows the memory that is available, not total RAM."""
-  frames = [np.zeros((2880, 2880), dtype=np.uint8) for _ in range(400)]
-  per_pair = 2880 * 2880 * 2 * 4 * 2
-
-  sizes = {}
-  for available in (8 * per_pair, 64 * per_pair):
-    monkeypatch.setattr(features, "available_ram", lambda a=available: a)
-    sizes[available] = features._flow_chunk_size(frames)
-    assert sizes[available] >= 1, "a budget always fits at least one pair"
-    assert sizes[available] * per_pair <= available, "the chunk over-commits"
-
-  assert sizes[8 * per_pair] < sizes[64 * per_pair], (
-    "the chunk ignores how much memory is available"
-  )
-  assert features.available_ram() > 0
-
-
 _MEMINFO_CASES = (
   # A warm page cache leaves little memory free but plenty available.
   (
@@ -196,12 +161,6 @@ def test_available_ram_follows_the_available_figure(
     assert features.available_ram() == expected
 
 
-def test_flow_chunk_is_capped_regardless_of_memory() -> None:
-  """The cap is ``_FLOW_CHUNK_MAX_PAIRS`` however much memory the host has."""
-  frames = [np.zeros((2880, 2880), dtype=np.uint8) for _ in range(4000)]
-  assert features._flow_chunk_size(frames) <= features._FLOW_CHUNK_MAX_PAIRS
-
-
 def test_cpu_budget_follows_the_cores_the_process_may_run_on(
   monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -210,35 +169,6 @@ def test_cpu_budget_follows_the_cores_the_process_may_run_on(
   assert features.cpu_budget() == 4, "the budget ignores the cores it was given"
   monkeypatch.delattr(os, "sched_getaffinity", raising=False)
   assert 0 < features.cpu_budget() <= (os.cpu_count() or 4)
-
-
-def test_flow_falls_back_to_cv2_when_the_gpu_stream_fails_mid_lens(
-  capsys: pytest.CaptureFixture[str],
-) -> None:
-  """Losing the GPU part-way through a lens costs accuracy, not the run."""
-  rng = np.random.default_rng(0)
-  base = _textured_image(rng, 120, 160)
-  frames = [np.roll(base, shift, axis=1) for shift in range(6)]
-
-  def dies_on_the_third_pair(
-    frames_in: object, ks: range
-  ) -> object:  # matches _FlowIter
-    for k in ks:
-      if k >= 3:
-        raise RuntimeError("CUDA out of memory")
-      yield from features._iter_dis_flows(frames_in, range(k, k + 1))
-
-  expected, _ = features.dis_flow_track(frames, max_corners=40)
-  original = features._select_flow_iter
-  features._select_flow_iter = lambda _frames, _gpu, _label: dies_on_the_third_pair
-  try:
-    recovered, _ = features.dis_flow_track(frames, max_corners=40, gpu_flow=True)
-  finally:
-    features._select_flow_iter = original
-
-  assert "GPU DIS lost" in capsys.readouterr().out
-  assert len(recovered) == len(expected)
-  assert sum(pts.shape[0] for pts in recovered) > 0
 
 
 class _CountingFrames(Sequence[np.ndarray]):
@@ -264,3 +194,146 @@ def test_flow_reads_each_frame_a_bounded_number_of_times() -> None:
   )
   features.dis_flow_track(frames, max_corners=30)
   assert max(frames.counts) <= 3, frames.counts
+
+
+def test_seed_corners_keep_clear_of_taken_points() -> None:
+  """Seeds lie in the frame and beyond the minimum distance of every tracked point."""
+  rng = np.random.default_rng(3)
+  img = _textured_image(rng, 240, 320)
+  taken = features._seed_corners(img, np.empty((0, 2)), 50)
+  assert taken.shape[0] > 0
+  assert np.all(taken[:, 0] >= 0) and np.all(taken[:, 0] < 320)
+  assert np.all(taken[:, 1] >= 0) and np.all(taken[:, 1] < 240)
+  more = features._seed_corners(img, taken, 50)
+  assert more.shape[0] > 0
+  gaps = np.linalg.norm(more[:, None, :] - taken[None, :, :], axis=2)
+  assert gaps.min() >= features._CORNER_MIN_DISTANCE - 1.0
+
+
+def test_flow_walk_hands_every_frame_to_the_hook_in_order() -> None:
+  rng = np.random.default_rng(0)
+  base = _textured_image(rng, 120, 160)
+  frames = [np.roll(base, shift, axis=1) for shift in range(5)]
+  seen: list[int] = []
+
+  def hook(k: int, frame: np.ndarray) -> None:
+    assert frame is frames[k]
+    seen.append(k)
+
+  features.dis_flow_track(frames, max_corners=40, on_frame=hook)
+  assert seen == [0, 1, 2, 3, 4]
+
+
+def test_subpix_in_chunks_equals_one_call() -> None:
+  rng = np.random.default_rng(9)
+  img = _textured_image(rng, 400, 400)
+  xy = features._seed_corners(img, np.empty((0, 2)), 3000)
+  assert xy.shape[0] > features._SUBPIX_CHUNK
+  pts = xy.astype(np.float32).reshape(-1, 1, 2)
+  cv2.cornerSubPix(
+    img, pts, features._SUBPIX_WINDOW, (-1, -1), features._SUBPIX_CRITERIA
+  )
+  assert np.array_equal(
+    features._subpix(img, xy), pts.reshape(-1, 2).astype(np.float64)
+  )
+
+
+def test_detect_corners_is_good_features_to_track() -> None:
+  """With or without a mask, it returns cv2's corners in cv2's order."""
+  rng = np.random.default_rng(21)
+  img = _textured_image(rng, 700, 900)
+  mask = np.full(img.shape, 255, dtype=np.uint8)
+  mask[200:260, :] = 0
+  mask[:, 500:520] = 0
+  for m in (None, mask):
+    expected = cv2.goodFeaturesToTrack(img, 3000, 0.01, 8.0, mask=m)
+    got = features.detect_corners(img, m, 3000, 0.01, 8.0)
+    assert np.array_equal(got, expected.reshape(-1, 2).astype(np.float64))
+    assert got.shape[0] > 500
+
+
+def test_corner_response_is_the_whole_frame_response() -> None:
+  rng = np.random.default_rng(22)
+  img = _textured_image(rng, 1000, 300)
+  assert np.array_equal(
+    features._corner_response(img), cv2.cornerMinEigenVal(img, blockSize=3, ksize=3)
+  )
+
+
+def _reference_propagate(
+  flow_fwd: np.ndarray,
+  flow_bwd: np.ndarray,
+  prev_xy: np.ndarray,
+  scale: float,
+  h: int,
+  w: int,
+  threshold: float,
+) -> tuple[np.ndarray, np.ndarray]:
+  """The float64 numpy propagation step with its forward-backward and border gates."""
+
+  def sample(flow: np.ndarray, xy: np.ndarray) -> np.ndarray:
+    fh, fw = flow.shape[:2]
+    x = np.clip((xy[:, 0] + 0.5) * scale - 0.5, 0.0, float(fw) - 1.001)
+    y = np.clip((xy[:, 1] + 0.5) * scale - 0.5, 0.0, float(fh) - 1.001)
+    x0, y0 = x.astype(np.int64), y.astype(np.int64)
+    fx, fy = (x - x0)[:, None], (y - y0)[:, None]
+    f00 = flow[y0, x0].astype(np.float64)
+    f01 = flow[y0, x0 + 1].astype(np.float64)
+    f10 = flow[y0 + 1, x0].astype(np.float64)
+    f11 = flow[y0 + 1, x0 + 1].astype(np.float64)
+    sampled = (
+      (1.0 - fx) * (1.0 - fy) * f00
+      + fx * (1.0 - fy) * f01
+      + (1.0 - fx) * fy * f10
+      + fx * fy * f11
+    )
+    return sampled if scale == 1.0 else sampled / scale
+
+  nxt = prev_xy + sample(flow_fwd, prev_xy)
+  back = nxt + sample(flow_bwd, nxt)
+  fb = np.linalg.norm(back - prev_xy, axis=1)
+  ok = np.isfinite(fb) & (fb < threshold)
+  ok &= (
+    (nxt[:, 0] >= 1.0) & (nxt[:, 0] < w - 1) & (nxt[:, 1] >= 1.0) & (nxt[:, 1] < h - 1)
+  )
+  return nxt, ok
+
+
+@pytest.mark.parametrize("scale", [1.0, 0.25])
+def test_propagate_points_is_the_float64_reference(scale: float) -> None:
+  """It matches bit for bit, gate included, over points past every frame edge."""
+  rng = np.random.default_rng(31)
+  h, w = 96, 128
+  fh, fw = round(h * scale), round(w * scale)
+  flow_fwd = rng.normal(0.0, 3.0, (fh, fw, 2)).astype(np.float32)
+  flow_bwd = rng.normal(0.0, 3.0, (fh, fw, 2)).astype(np.float32)
+  prev = rng.uniform(-4.0, 4.0, (5000, 2)) + rng.uniform(0.0, 1.0, (5000, 1)) * (w, h)
+  nxt, ok = features.propagate_points(flow_fwd, flow_bwd, prev, scale, h, w, 1.0)
+  want_nxt, want_ok = _reference_propagate(flow_fwd, flow_bwd, prev, scale, h, w, 1.0)
+  assert np.array_equal(nxt, want_nxt)
+  assert np.array_equal(ok, want_ok)
+  assert 0 < ok.sum() < ok.size
+
+
+def test_free_mask_is_the_union_of_circle_fills() -> None:
+  """The union holds for centers past the frame edge too."""
+  rng = np.random.default_rng(32)
+  shape = (120, 150)
+  centers = rng.integers(-12, 160, (300, 2))
+  for radius in (4, 8):
+    want = np.full(shape, 255, dtype=np.uint8)
+    for x, y in centers:
+      cv2.circle(want, (int(x), int(y)), radius, 0, thickness=-1)
+    assert np.array_equal(features._free_mask(shape, centers, radius), want)
+
+
+def test_detect_orb_is_cv2_orb() -> None:
+  rng = np.random.default_rng(21)
+  img = _textured_image(rng, 240, 320)
+  frame = features.detect_orb(img, 300, 20)
+  orb = cv2.ORB_create(nfeatures=300, fastThreshold=20)  # type: ignore[attr-defined]
+  kps, desc = orb.detectAndCompute(img, None)
+  assert np.array_equal(
+    frame.keypoints, np.asarray([k.pt for k in kps], dtype=np.float64)
+  )
+  assert np.array_equal(frame.descriptors, desc)

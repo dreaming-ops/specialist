@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -21,7 +23,7 @@ from specialist.vi_ba.imu import ImuSamples
 Float64Array = npt.NDArray[np.float64]
 Int64Array = npt.NDArray[np.int64]
 
-# Radius, as a fraction of decoded lens width, past which anchor-corner noise grows.
+# Radius, as a fraction of the decoded width, past which an anchor corner's noise grows.
 _CALIBRATED_RADIUS_FRAC = 1000.0 / 2880.0
 
 __all__ = [
@@ -67,7 +69,7 @@ def covered_samples(
 class SessionRecording:
   """One session's base recording: the solve's only input."""
 
-  def __init__(self, base_rrd: Path) -> None:
+  def __init__(self, base_rrd: Path, stage: Path | None = None) -> None:
     self.path = base_rrd
     recordings = RrdReader(str(base_rrd)).recordings()
     if not recordings:
@@ -75,6 +77,22 @@ class SessionRecording:
     self.session_id: str = recordings[0].recording_id
     self._rows: dict[str, dict[str, Any]] = {}
     self._recording = Recording(base_rrd)
+    self._stage = stage
+    self._owns_stage = stage is None
+
+  @property
+  def stage(self) -> Path:
+    """The directory the lenses' encoded samples stage in."""
+    if self._stage is None:
+      self._stage = Path(tempfile.mkdtemp(prefix="specialist-lenses-"))
+    return self._stage
+
+  def close(self) -> None:
+    """Release every loaded lens and its samples, and a stage this recording made."""
+    frames.release_videos()
+    if self._owns_stage and self._stage is not None:
+      shutil.rmtree(self._stage, ignore_errors=True)
+      self._stage = None
 
   @property
   def slots(self) -> list[str]:
@@ -108,7 +126,7 @@ class SessionRecording:
 
   def lens_video(self, slot: str, lens: str) -> frames.LensVideo:
     """One lens's encoded samples, ready for banded decoding."""
-    return frames.LensVideo(self._recording, slot, lens)
+    return frames.lens_video(self._recording, slot, lens, self.stage)
 
   def decoded_shape(self, slot: str, lens: LensName = "front") -> tuple[int, int]:
     """``(height, width)`` of one lens's decoded frames, from a one-frame decode."""

@@ -32,13 +32,38 @@ def test_a_lens_reads_its_sample_times(tmp_path: Path) -> None:
 
 def test_a_lens_starts_a_decode_at_its_sync_sample(tmp_path: Path) -> None:
   recording = Recording(_base_with_video(tmp_path, sync=True))
-  video = frames.LensVideo(recording, "cam00", "front")
+  video = frames.LensVideo(recording, "cam00", "front", tmp_path)
   assert list(video.sync_samples) == [0]
   assert video.decode_start(2) == 0
-  assert video.packet(1) == b"\x02\x03"
+  assert [video.packet(sample) for sample in range(3)] == [
+    b"\x00\x01",
+    b"\x02\x03",
+    b"\x04\x05",
+  ]
+
+
+def test_a_lens_stages_its_packets_on_disk_until_closed(tmp_path: Path) -> None:
+  recording = Recording(_base_with_video(tmp_path, sync=True))
+  stage = tmp_path / "stage"
+  stage.mkdir()
+  video = frames.LensVideo(recording, "cam00", "front", stage)
+  staged = list(stage.iterdir())
+  assert len(staged) == 1 and staged[0].stat().st_size == 6
+  video.close()
+  assert list(stage.iterdir()) == []
 
 
 def test_lens_video_refuses_markerless_streams(tmp_path: Path) -> None:
   rrd = _base_with_video(tmp_path, sync=False)
   with pytest.raises(RuntimeError, match="no sync-sample markers"):
-    frames.LensVideo(Recording(rrd), "cam00", "front")
+    frames.LensVideo(Recording(rrd), "cam00", "front", tmp_path)
+
+
+def test_a_lens_loads_once_until_released(tmp_path: Path) -> None:
+  recording = Recording(_base_with_video(tmp_path, sync=True))
+  first = frames.lens_video(recording, "cam00", "front", tmp_path)
+  assert frames.lens_video(recording, "cam00", "front", tmp_path) is first
+  assert frames.lens_times(recording, schema.video("cam00", "front")) is first.times
+  frames.release_videos()
+  assert not list(tmp_path.glob("*.packets"))
+  assert frames.lens_video(recording, "cam00", "front", tmp_path) is not first

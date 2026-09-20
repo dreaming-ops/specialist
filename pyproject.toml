@@ -130,6 +130,7 @@ module = [
   "allantools", "allantools.*",
   "imageio_ffmpeg", "imageio_ffmpeg.*",
   "torch", "torch.*", "triton", "triton.*",
+  "nvidia", "nvidia.*",
   "specialist_description", "specialist_description.*",
 ]
 ignore_missing_imports = true

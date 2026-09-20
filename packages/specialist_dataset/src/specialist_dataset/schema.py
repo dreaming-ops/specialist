@@ -59,13 +59,12 @@ def camera_slots(serials: Sequence[str]) -> list[str]:
 
 
 def keyframe_stride(fps: float) -> int:
-  """The auto keyframe interval: ``round(fps / 10)`` frames, about 0.10 s."""
+  """Frames per keyframe, about 0.1 s."""
   return max(1, round(fps / 10.0))
 
 
 def keyframe_index(session_frames: Int64Array, stride: int) -> Int64Array:
-  """The ``keyframe`` timeline value ``ceil(row / stride)`` per session frame row, equal
-  to the solver's ``kf`` only at the auto stride and phase zero."""
+  """Each session-clock frame's ``keyframe``: the solver's ``kf`` at phase 0."""
   return (session_frames + stride - 1) // stride
 
 

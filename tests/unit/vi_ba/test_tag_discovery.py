@@ -257,3 +257,14 @@ def test_a_minority_of_flipped_frames_does_not_lose_the_finger() -> None:
       )
     picks.append([d for d in dets if d is not None])
   assert _discover(picks) == GripperTags(2000, (2001, 2002))
+
+
+def test_discovery_samples_are_sync_samples_spread_over_the_lens() -> None:
+  """Discovery takes at most ``PICK_COUNT`` sync samples spanning the lens."""
+  from specialist.vi_ba.tag_discovery import discovery_samples
+
+  sync = np.arange(0, 3000, 16, dtype=np.int64)
+  picked = discovery_samples(sync)
+  assert len(picked) <= PICK_COUNT
+  assert set(picked.tolist()) <= set(sync.tolist())
+  assert picked[0] < 200 and picked[-1] > 2700

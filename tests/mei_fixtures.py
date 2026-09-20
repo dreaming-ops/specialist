@@ -8,7 +8,7 @@ from gtsam.symbol_shorthand import B, L, V, X
 from specialist_camera import MeiParams, mei_project
 from specialist_dataset.fiducials import tag_corners_in_frame
 
-from specialist.vi_ba.build import LensSetup, add_mei_factor
+from specialist.vi_ba.build import LensSetup, add_mei_factors
 from specialist.vi_ba.tag_detection import TagDetection
 
 
@@ -103,9 +103,15 @@ def pinned_visual_graph(
   for i in range(1, n - 1):
     graph.push_back(gtsam.PriorFactorPose3(int(X(i)), body_poses[i], weak))
 
+  pose_keys: list[int] = []
+  point_keys: list[int] = []
+  pixels: list[np.ndarray] = []
   for tid, xyz in front_points.items():
     lm_key = front_landmark_key(tid)
     values.insert(lm_key, gtsam.Point3(*np.asarray(xyz, dtype=np.float64)))
     for kf, pt in front_tracks[tid].items():
-      add_mei_factor(graph, int(X(kf)), lm_key, pt, pixel_noise, front)
+      pose_keys.append(int(X(kf)))
+      point_keys.append(lm_key)
+      pixels.append(pt)
+  add_mei_factors(graph, pose_keys, point_keys, pixels, pixel_noise, front)
   return graph, values

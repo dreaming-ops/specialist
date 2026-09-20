@@ -1,12 +1,13 @@
-"""GPU (PyTorch) DIS flow: the same stream ``features._iter_dis_flows`` yields."""
+"""GPU DIS flow: the ``features._iter_dis_flows`` stream, each lens on its own GPU."""
 
 from __future__ import annotations
 
+import gc
 import os
 import queue
 import threading
 from collections.abc import Iterator, Sequence
-from contextlib import suppress
+from contextlib import contextmanager, suppress
 from typing import Any
 
 import numpy as np
@@ -14,9 +15,9 @@ import numpy.typing as npt
 
 _FlowPair = tuple[npt.NDArray[np.float32], npt.NDArray[np.float32]]
 
-__all__ = ["unavailable_reason", "prime", "shutdown"]
+__all__ = ["device_use", "prime", "shutdown"]
 
-# Batch from card memory and frame area, budgets in bytes; skip a GPU under _MIN_FREE.
+# Batch cap (pairs); budgets in bytes; a GPU with under _MIN_FREE free takes no stream.
 _MAX_BATCH = 24
 _MIN_FREE = 8 * 2**30
 _RESERVE = 3 * 2**30
@@ -26,16 +27,64 @@ _REFERENCE_PIXELS = 2880 * 2880
 # Distinct GPUs one process claims; past the cap, extra streams share the most-free GPU.
 _MAX_GPUS = 8
 
-# Page-locked host staging with non-blocking copies.
-_PINNED = True
-
 _claim_lock = threading.Lock()
+# Two threads autotuning one Inductor kernel on its first launch race.
+_warm_lock = threading.Lock()
 _backend: tuple[Any, Any] | None = None
 _claimed: dict[int, int] = {}  # device_index -> streams assigned in this process
 _bad: set[int] = set()  # GPUs that failed to warm (shared-box context errors)
 _engines: list[_Engine] = []
 # The stream a prep thread has already warmed, reused across its capture's lenses.
 _stream = threading.local()
+
+
+class _DeviceGate:
+  """Device work runs inside ``use``; a graph ``capture`` has the device alone."""
+
+  def __init__(self) -> None:
+    self._cv = threading.Condition()
+    self._busy = 0
+    self._capturing = False
+
+  def enter(self) -> None:
+    with self._cv:
+      while self._capturing:
+        self._cv.wait()
+      self._busy += 1
+
+  def leave(self) -> None:
+    with self._cv:
+      self._busy -= 1
+      self._cv.notify_all()
+
+  @contextmanager
+  def use(self) -> Iterator[None]:
+    self.enter()
+    try:
+      yield
+    finally:
+      self.leave()
+
+  @contextmanager
+  def capture(self) -> Iterator[None]:
+    with self._cv:
+      while self._capturing or self._busy:
+        self._cv.wait()
+      self._capturing = True
+    try:
+      yield
+    finally:
+      with self._cv:
+        self._capturing = False
+        self._cv.notify_all()
+
+
+_gate = _DeviceGate()
+
+
+def device_use() -> Any:
+  """The section other device work runs in, apart from graph captures."""
+  return _gate.use()
 
 
 def _import_backend() -> tuple[Any, Any]:
@@ -48,7 +97,7 @@ def _import_backend() -> tuple[Any, Any]:
   import torch
   import torch._dynamo
 
-  # Dynamo caches one compiled variant per GPU; the default recompile limit is too low.
+  # Dynamo caches one compiled variant per GPU; the recompile limit must cover them.
   for attr in ("recompile_limit", "cache_size_limit", "accumulated_recompile_limit"):
     if hasattr(torch._dynamo.config, attr):
       setattr(torch._dynamo.config, attr, 256)
@@ -63,26 +112,6 @@ def _device_batch(total: float, pair_memory: float) -> int:
   """Per-stream batch for a ``total``-byte card at ``pair_memory`` per pair, capped."""
   batch = int((total - _RESERVE) / pair_memory)
   return max(0, min(_MAX_BATCH, batch))
-
-
-def unavailable_reason() -> str | None:
-  """``None`` when torch imports and a GPU has room to run, else why it cannot."""
-  try:
-    torch = _import_backend()[0]
-  except ImportError as exc:
-    return f"{exc} (install the 'gpu' extra)"
-  except Exception as exc:  # a broken CUDA install must not break the cv2 path
-    return f"torch failed to import: {exc!r}"
-  try:
-    if not torch.cuda.is_available():
-      return "torch reports no CUDA device"
-    for i in range(torch.cuda.device_count()):
-      free, total = torch.cuda.mem_get_info(i)
-      if free >= _MIN_FREE and _device_batch(total, _PAIR_MEMORY) >= 1:
-        return None
-    return "no GPU has enough free memory"
-  except Exception as exc:
-    return f"CUDA probe failed: {exc!r}"
 
 
 def _claim_device(pair_memory: float) -> tuple[int, int]:
@@ -131,12 +160,18 @@ class _Worker(threading.Thread):
     self._jobs: queue.Queue[Any] = queue.Queue()
     self._fwd_dis: Any = None
     self._bwd_dis: Any = None
-    self._pinned = _PINNED
+    self._pinned = True
     self._pin_prev: Any = None
     self._pin_cur: Any = None
     self._dev_prev: Any = None
     self._dev_cur: Any = None
     self._pin_down: Any = None
+    # One CUDA graph per (pass, batch size); a failed capture means eager launches.
+    self._graphs: dict[tuple[str, int], tuple[Any, Any]] = {}
+    self._graph_pool: Any = None
+    self._eager = False
+    # (pass, batch) shapes already launched once; a first launch autotunes.
+    self._launched: set[tuple[str, int]] = set()
     self.start()
 
   def submit(self, job: Any) -> None:
@@ -152,7 +187,8 @@ class _Worker(threading.Thread):
         return
       frames, tile, result, error, done = job
       try:
-        result.update(self._compute_tile(frames, tile))
+        with _gate.use():
+          result.update(self._compute_tile(frames, tile))
       except Exception as exc:  # surfaced to the dispatcher's caller
         error.append(exc)
       finally:
@@ -186,12 +222,14 @@ class _Worker(threading.Thread):
       try:
         fwd = batched_cls(vr_iter=self._fwd_vr, device=dev)
         bwd = batched_cls(vr_iter=self._bwd_vr, device=dev)
-        # Warm the kernels and prove the full batch fits; an OOM here halves the batch.
+        # Warm the kernels and prove the batch fits; an OOM here halves the batch.
         blank = torch.zeros(self.batch, 1, h, w, device=dev)
-        fwd.calc(blank, blank)
-        bwd.calc(blank, blank)
-        torch.cuda.synchronize(self.device_index)
+        with _warm_lock:
+          fwd.calc(blank, blank)
+          bwd.calc(blank, blank)
+          torch.cuda.synchronize(self.device_index)
         self._fwd_dis, self._bwd_dis = fwd, bwd
+        self._launched |= {("fwd", self.batch), ("bwd", self.batch)}
         if self._pinned:
           self._alloc_buffers(h, w)
         return
@@ -213,8 +251,8 @@ class _Worker(threading.Thread):
       dev = f"cuda:{self.device_index}"
       prev = torch.from_numpy(np.stack([frames[k - 1] for k in tile])[:, None]).to(dev)
       cur = torch.from_numpy(np.stack([frames[k] for k in tile])[:, None]).to(dev)
-      fwd = self._fwd_dis.calc(prev, cur).to("cpu", torch.float32).numpy()
-      bwd = self._bwd_dis.calc(cur, prev).to("cpu", torch.float32).numpy()
+      fwd = self._calc("fwd", prev, cur).to("cpu", torch.float32).numpy()
+      bwd = self._calc("bwd", cur, prev).to("cpu", torch.float32).numpy()
       return {k: (fwd[j].copy(), bwd[j].copy()) for j, k in enumerate(tile)}
 
     prev_np = self._pin_prev.numpy()
@@ -226,17 +264,67 @@ class _Worker(threading.Thread):
     self._dev_prev[:n].copy_(self._pin_prev[:n], non_blocking=True)
     self._dev_cur[:n].copy_(self._pin_cur[:n], non_blocking=True)
     down = self._pin_down.numpy()  # view over the reused download buffer
-    fwd_out = self._fwd_dis.calc(self._dev_prev[:n], self._dev_cur[:n])
+    fwd_out = self._pass("fwd", n)
     self._pin_down[:n].copy_(fwd_out, non_blocking=True)
     torch.cuda.synchronize(self.device_index)
     fwd_fields = [down[j].copy() for j in range(n)]
-    bwd_out = self._bwd_dis.calc(self._dev_cur[:n], self._dev_prev[:n])
+    bwd_out = self._pass("bwd", n)
     self._pin_down[:n].copy_(bwd_out, non_blocking=True)
     torch.cuda.synchronize(self.device_index)
     return {k: (fwd_fields[j], down[j].copy()) for j, k in enumerate(tile)}
 
+  def _calc(self, which: str, a: Any, b: Any) -> Any:
+    """One eager pass, its first launch at each batch size under ``_warm_lock``."""
+    dis = self._fwd_dis if which == "fwd" else self._bwd_dis
+    key = (which, int(a.shape[0]))
+    if key in self._launched:
+      return dis.calc(a, b)
+    with _warm_lock:
+      out = dis.calc(a, b)
+    self._launched.add(key)
+    return out
+
+  def _pass(self, which: str, n: int) -> Any:
+    """Forward or backward flow of the first ``n`` staged pairs, from a CUDA graph."""
+    torch = _import_backend()[0]
+    dis = self._fwd_dis if which == "fwd" else self._bwd_dis
+    if which == "fwd":
+      a, b = self._dev_prev[:n], self._dev_cur[:n]
+    else:
+      a, b = self._dev_cur[:n], self._dev_prev[:n]
+    if self._eager:
+      return self._calc(which, a, b)
+    key = (which, n)
+    if key not in self._graphs:
+      _gate.leave()
+      try:
+        with _gate.capture():
+          stream = torch.cuda.Stream(self.device_index)
+          stream.wait_stream(torch.cuda.current_stream(self.device_index))
+          with torch.cuda.stream(stream):
+            dis.calc(a, b)
+          torch.cuda.current_stream(self.device_index).wait_stream(stream)
+          graph = torch.cuda.CUDAGraph()
+          with torch.cuda.graph(graph, pool=self._graph_pool, stream=stream):
+            out = dis.calc(a, b)
+          self._graph_pool = graph.pool()
+          self._graphs[key] = (graph, out)
+      except Exception as exc:  # noqa: BLE001 - eager launches are the answer
+        print(f"  [flow] cuda:{self.device_index} launches eagerly ({exc!r})")
+        self._eager = True
+        self._graphs.clear()
+        torch.cuda.empty_cache()
+        _gate.enter()
+        return self._calc(which, a, b)
+      _gate.enter()
+    graph, out = self._graphs[key]
+    graph.replay()
+    return out
+
   def _release(self) -> None:
     torch = _import_backend()[0]
+    self._graphs.clear()
+    self._graph_pool = None
     self._fwd_dis = self._bwd_dis = None
     self._pin_prev = self._pin_cur = self._pin_down = None
     self._dev_prev = self._dev_cur = None
@@ -336,3 +424,8 @@ def shutdown() -> None:
     _bad = set()
   for engine in engines:
     engine.shutdown()
+  if engines:
+    del engines
+    # Cycles keep buffers alive past the reference drop; the cache holds them after.
+    gc.collect()
+    _import_backend()[0].cuda.empty_cache()

@@ -85,23 +85,25 @@ def mei_project(points_cam: Float64Array, params: MeiParams) -> Float64Array:
 def mei_unproject(pixels: Float64Array, params: MeiParams) -> Float64Array:
   """``(N, 3)`` unit bearings of ``(N, 2)`` pixels, NaN outside the model."""
   require_2d(pixels, 2, "pixels")
-
   x_d = (pixels[:, 0] - params.cx) / params.fx
   y_d = (pixels[:, 1] - params.cy) / params.fy
 
-  x, y = x_d, y_d
+  x, y = x_d.copy(), y_d.copy()
+  rows = np.arange(len(pixels))
   for _ in range(20):
-    r2 = x * x + y * y
-    radial = 1.0 + params.k1 * r2 + params.k2 * r2 * r2 + params.k3 * r2**3
-    dx_t = 2.0 * params.p1 * x * y + params.p2 * (r2 + 2.0 * x * x)
-    dy_t = params.p1 * (r2 + 2.0 * y * y) + 2.0 * params.p2 * x * y
-    safe_radial = np.where(radial == 0.0, 1.0, radial)
-    x_new = (x_d - dx_t) / safe_radial
-    y_new = (y_d - dy_t) / safe_radial
-    step = max(np.max(np.abs(x_new - x)), np.max(np.abs(y_new - y)))
-    x, y = x_new, y_new
-    if step < 1e-12:
+    if rows.size == 0:
       break
+    xs, ys = x[rows], y[rows]
+    r2 = xs * xs + ys * ys
+    radial = 1.0 + params.k1 * r2 + params.k2 * r2 * r2 + params.k3 * r2**3
+    dx_t = 2.0 * params.p1 * xs * ys + params.p2 * (r2 + 2.0 * xs * xs)
+    dy_t = params.p1 * (r2 + 2.0 * ys * ys) + 2.0 * params.p2 * xs * ys
+    safe_radial = np.where(radial == 0.0, 1.0, radial)
+    x_new = (x_d[rows] - dx_t) / safe_radial
+    y_new = (y_d[rows] - dy_t) / safe_radial
+    x[rows] = x_new
+    y[rows] = y_new
+    rows = rows[np.maximum(np.abs(x_new - xs), np.abs(y_new - ys)) >= 1e-12]
 
   r2 = x * x + y * y
   # factor is the larger root of factor**2 (r2 + 1) - 2 factor xi + xi**2 - 1 = 0.

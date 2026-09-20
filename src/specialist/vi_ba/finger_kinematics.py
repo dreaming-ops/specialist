@@ -1,4 +1,5 @@
-"""Finger-tag kinematics: each tag rides a +z revolute joint off the base tag."""
+"""Finger-tag kinematics: each tag rides a revolute joint off the base tag,
+``body_T_tag(theta) = body_T_base_tag · base_T_joint · Rz(theta) · joint_T_tag0``."""
 
 from __future__ import annotations
 
@@ -15,7 +16,7 @@ from specialist.vi_ba.geometry import average_pose, consensus_pose, rotate_about
 from specialist.vi_ba.tag_detection import (
   TagDetection,
   lens_T_tag_per_kf,
-  tag_center_bearing,
+  tag_center_bearings,
 )
 from specialist.vi_ba.tag_discovery import GripperTags
 from specialist.vi_ba.urdf_joints import FINGER_JOINTS, RevoluteJoint
@@ -51,15 +52,14 @@ class FingerReproj:
   observations: dict[int, FingerKfObs]
 
 
-def _seed_theta(
-  pixels: Float64Array,
+def _theta_scan(
   joint_t_corners: Float64Array,
   body_T_joint: gtsam.Pose3,
   lens: LensSetup,
   lower: float,
   upper: float,
-) -> float:
-  """Joint angle that best reprojects the corners, by a 1-D scan of the joint range."""
+) -> tuple[Float64Array, Float64Array]:
+  """The scanned angles over ``[lower, upper]`` and the corners' pixels at each."""
   lens_T_body = lens.body_T_lens.inverse()
   lens_R_body = lens_T_body.rotation().matrix()
   lens_t_body = np.asarray(lens_T_body.translation(), dtype=np.float64)
@@ -71,9 +71,25 @@ def _seed_theta(
   projected = mei_project(p_lens.reshape(-1, 3), lens.params).reshape(
     p_lens.shape[:2] + (2,)
   )
-  errors = np.sum((projected - pixels) ** 2, axis=(1, 2))
+  return thetas, projected
+
+
+def _seed_thetas(
+  pixels: Float64Array,
+  joint_t_corners: Float64Array,
+  body_T_joint: gtsam.Pose3,
+  lens: LensSetup,
+  lower: float,
+  upper: float,
+) -> Float64Array:
+  """Per ``(m, 4, 2)`` sighting, the scanned angle that best reprojects it."""
+  thetas, projected = _theta_scan(joint_t_corners, body_T_joint, lens, lower, upper)
+  errors = np.sum((projected[None] - pixels[:, None]) ** 2, axis=(2, 3))
   # A corner past the fold projects to NaN; an all-NaN scan picks the lower bound.
-  return float(thetas[int(np.argmin(np.where(np.isnan(errors), np.inf, errors)))])
+  best: Float64Array = thetas[
+    np.argmin(np.where(np.isnan(errors), np.inf, errors), axis=1)
+  ]
+  return best
 
 
 def build_finger_reproj(
@@ -89,19 +105,22 @@ def build_finger_reproj(
   base_T_joint = joint.base_T_joint
   body_T_joint_seed = body_T_base_tag.compose(base_T_joint)
   joint_t_corners = tag_corners_in_frame(joint.joint_T_tag0.matrix(), tag_size)
-  observations: dict[int, FingerKfObs] = {}
+  seen: list[tuple[int, TagDetection]] = []
   for i, dets in enumerate(tags_per_frame):
     det = next((d for d in dets if d.tag_id == finger_tag_id), None)
-    if det is None:
-      continue
-    pixels = np.asarray(det.corners, dtype=np.float64)
-    bearing = tag_center_bearing(det, lens.params)
-    theta = _seed_theta(
-      pixels, joint_t_corners, body_T_joint_seed, lens, joint.lower, joint.upper
-    )
-    observations[i] = FingerKfObs(theta_seed=theta, pixels=pixels, obs_bearing=bearing)
-  if not observations:
+    if det is not None:
+      seen.append((i, det))
+  if not seen:
     return None
+  pixels = np.stack([np.asarray(det.corners, dtype=np.float64) for _, det in seen])
+  thetas = _seed_thetas(
+    pixels, joint_t_corners, body_T_joint_seed, lens, joint.lower, joint.upper
+  )
+  bearings = tag_center_bearings([det for _, det in seen], lens.params)
+  observations = {
+    kf: FingerKfObs(theta_seed=float(theta), pixels=px, obs_bearing=bearing)
+    for (kf, _), theta, px, bearing in zip(seen, thetas, pixels, bearings, strict=True)
+  }
   return FingerReproj(
     base_T_joint=base_T_joint,
     joint_t_corners=joint_t_corners,
@@ -115,7 +134,7 @@ def pin_angles_to_keyframes(
   keyframe_times: Float64Array,
   keyframe_angles: Float64Array,
 ) -> Float64Array:
-  """Frame angles bent linearly onto keyframe angles; NaN-ended intervals stay raw."""
+  """Frame angles bent linearly per interval through the solved keyframe angles."""
   pinned = np.asarray(frame_angles, dtype=np.float64).copy()
   raw_at_kf = np.interp(keyframe_times, frame_times, frame_angles)
   offsets = keyframe_angles - raw_at_kf

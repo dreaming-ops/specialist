@@ -29,7 +29,17 @@ from specialist.vi_ba.build import (
 )
 from specialist.vi_ba.configs import Args
 from specialist.vi_ba.single_camera import PreparedCamera
-from specialist.vi_ba.symbols import LANDMARK_CHAR
+from specialist.vi_ba.symbols import (
+  ANCHOR_CHAR,
+  BASE_TAG_CHAR,
+  BIAS_CHAR,
+  JOINT_ANGLE_CHAR,
+  LANDMARK_CHAR,
+  MAX_KEYFRAMES_PER_CAMERA,
+  POSE_CHAR,
+  SEAT_CHAR,
+  VELOCITY_CHAR,
+)
 from specialist.vi_ba.tag_detection import (
   TagDetection,
   estimate_lens_T_tag,
@@ -57,14 +67,6 @@ __all__ = [
   "seat_evidence",
 ]
 
-BASE_TAG_CHAR = "G"
-_POSE_CHAR = "p"
-_VEL_CHAR = "v"
-_BIAS_CHAR = "b"
-_JOINT_ANGLE_CHAR = "a"
-SEAT_CHAR = "E"
-ANCHOR_CHAR = "A"
-
 # Finger corner σ (px) and the symmetry prior σ (rad) on θ_left + θ_right.
 _FINGER_REPROJ_SIGMA = 1.5
 _FINGER_SYMMETRY_SIGMA = 0.05
@@ -83,8 +85,16 @@ _TILT_FREE_SIGMA = 1e3
 # Loose rear-seat rotation prior σ (rad): factory seats err by several degrees.
 _SEAT_PRIOR_SIGMA_ROT = 0.2
 
-_MAX_KEYFRAMES_PER_CAMERA = 100_000
 _MAX_LANDMARKS_PER_CAMERA = 1_000_000
+
+
+def _check_fits(index: int, width: int, slice_name: str, slot: str) -> None:
+  """Raise when ``index`` overflows its ``width``-wide slice into another's keys."""
+  if not 0 <= index < width:
+    raise ValueError(
+      f"index {index} does not fit the {width}-wide {slice_name} slice for "
+      f"{slot!r}; its key would collide with another slice"
+    )
 
 
 class CameraKeys:
@@ -96,25 +106,22 @@ class CameraKeys:
     self._index = {slot: i for i, slot in enumerate(slots)}
 
   def _kf_key(self, char: str, slot: str, kf: int) -> int:
-    """Collision-free key for a per-keyframe variable in one camera's slice."""
-    return int(gtsam.symbol(char, self._index[slot] * _MAX_KEYFRAMES_PER_CAMERA + kf))
+    """Key for a per-keyframe variable in one camera's slice; raise on overflow."""
+    _check_fits(kf, MAX_KEYFRAMES_PER_CAMERA, "keyframe", slot)
+    return int(gtsam.symbol(char, self._index[slot] * MAX_KEYFRAMES_PER_CAMERA + kf))
 
   def pose_key(self, slot: str, kf: int) -> int:
-    return self._kf_key(_POSE_CHAR, slot, kf)
+    return self._kf_key(POSE_CHAR, slot, kf)
 
   def velocity_key(self, slot: str, kf: int) -> int:
-    return self._kf_key(_VEL_CHAR, slot, kf)
+    return self._kf_key(VELOCITY_CHAR, slot, kf)
 
   def bias_key(self, slot: str, kf: int) -> int:
-    return self._kf_key(_BIAS_CHAR, slot, kf)
+    return self._kf_key(BIAS_CHAR, slot, kf)
 
   def front_landmark_key(self, slot: str, track_id: int) -> int:
     """Key for a landmark in the camera's slice; raise when ``track_id`` overflows."""
-    if not 0 <= track_id < _MAX_LANDMARKS_PER_CAMERA:
-      raise ValueError(
-        f"track id {track_id} does not fit the {_MAX_LANDMARKS_PER_CAMERA}-wide "
-        f"landmark slot for {slot!r}; its key would collide with another slot"
-      )
+    _check_fits(track_id, _MAX_LANDMARKS_PER_CAMERA, "landmark", slot)
     return int(
       gtsam.symbol(
         LANDMARK_CHAR, self._index[slot] * _MAX_LANDMARKS_PER_CAMERA + track_id
@@ -123,8 +130,10 @@ class CameraKeys:
 
   def theta_key(self, slot: str, finger_idx: int, kf: int) -> int:
     """Key for a finger joint angle at ``kf``; ``finger_idx`` 0 is left, 1 is right."""
-    index = (self._index[slot] * 2 + finger_idx) * _MAX_KEYFRAMES_PER_CAMERA + kf
-    return int(gtsam.symbol(_JOINT_ANGLE_CHAR, index))
+    _check_fits(finger_idx, 2, "finger", slot)
+    _check_fits(kf, MAX_KEYFRAMES_PER_CAMERA, "joint-angle", slot)
+    index = (self._index[slot] * 2 + finger_idx) * MAX_KEYFRAMES_PER_CAMERA + kf
+    return int(gtsam.symbol(JOINT_ANGLE_CHAR, index))
 
   def anchor_key(self, tag_id: int) -> int:
     """Key for a wall tag's world pose, shared by every camera that sights it."""
