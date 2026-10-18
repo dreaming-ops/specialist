@@ -42,6 +42,8 @@ dev = [
   "pre-commit>=3.8",
   # 3.0 matches the gtsam wheel's pybind11 ABI; `uv run build-mei-factor` rebuilds.
   "pybind11==3.0.4",
+  # A member the root does not import; the group puts its tests in the suite.
+  "specialist-button",
 ]
 
 [build-system]
@@ -61,6 +63,7 @@ default-groups = ["dev", "gpu"]
 specialist-description = { git = "ssh://git@github.com/specialist-ai/specialist_description.git", branch = "main" }
 specialist-camera = { workspace = true }
 specialist-dataset = { workspace = true }
+specialist-button = { workspace = true }
 # CUDA 12.9 builds: Blackwell (sm_120) kernels on the CUDA 12 toolkit cuDSS pins.
 torch = [{ index = "pytorch-cu129", marker = "sys_platform == 'linux'" }]
 triton = [{ index = "pytorch-cu129", marker = "sys_platform == 'linux'" }]
@@ -102,6 +105,7 @@ strict = true
 files = [
   "packages/specialist_camera/src/specialist_camera",
   "packages/specialist_dataset/src/specialist_dataset",
+  "packages/specialist_button/src/specialist_button",
   "src/specialist",
   "scripts",
 ]
@@ -110,6 +114,7 @@ mypy_path = [
   "src",
   "packages/specialist_camera/src",
   "packages/specialist_dataset/src",
+  "packages/specialist_button/src",
 ]
 explicit_package_bases = true
 # The vendored DIS kernels are untyped research code.
@@ -129,6 +134,7 @@ module = [
   "torch", "torch.*", "triton", "triton.*",
   "nvidia", "nvidia.*",
   "specialist_description", "specialist_description.*",
+  "sounddevice", "sounddevice.*",
 ]
 ignore_missing_imports = true
 
