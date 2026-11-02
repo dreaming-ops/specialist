@@ -1,10 +1,13 @@
-"""Registration selects exactly one state configuration."""
+"""Registration selects exactly one state configuration and one model per slot."""
 
 from pathlib import Path
 
 import pytest
 import rerun as rr
 from scripts.catalog import state_files
+from specialist_dataset import schema
+
+from specialist.record.asset import register_assets
 
 
 def _write_rrd(path: Path, rec_id: str) -> Path:
@@ -26,3 +29,12 @@ def test_state_files_selects_the_one_configuration_named(tmp_path: Path) -> None
     state_files((tmp_path / "state_s4_r100").mkdir() or tmp_path / "state_s4_r100")
   with pytest.raises(SystemExit, match="not a state layer"):
     state_files(tmp_path / "estimate")
+
+
+def test_two_models_are_refused(tmp_path: Path) -> None:
+  """Every asset covers every segment, so a dataset takes one model."""
+  for digest in ("aaaaaaaaaaaa", "bbbbbbbbbbbb"):
+    path = schema.asset_rrd(tmp_path, f"gripper-{digest}")
+    _write_rrd(path.parent.mkdir(exist_ok=True) or path, path.stem)
+  with pytest.raises(SystemExit, match="several models"):
+    register_assets(None, tmp_path)

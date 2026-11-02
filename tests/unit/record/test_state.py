@@ -82,7 +82,12 @@ def dataset(tmp_path_factory: pytest.TempPathFactory) -> Path:
 
 def _state(dataset: Path, out_dir: Path, **kwargs: object) -> Path:
   base = schema.layer_rrd(dataset, schema.BASE, "sess")
-  args = {"scale": _SCALE, "f_row": _F_ROW, **kwargs}
+  args = {
+    "scale": _SCALE,
+    "f_row": _F_ROW,
+    "urdf_path": dataset / "robot.urdf",
+    **kwargs,
+  }
   main(Args(base=base, output_dir=out_dir, **args))  # type: ignore[arg-type]
   return schema.layer_rrd(out_dir, schema.state_layer(_SCALE, _F_ROW), "sess")
 
@@ -213,6 +218,27 @@ def test_the_state_is_the_base_tag_frame_on_a_dense_row_lattice(
       np.testing.assert_allclose(q[:, 0], 0.1)
 
 
+def test_each_hand_places_the_gripper_model(dataset: Path, tmp_path: Path) -> None:
+  """The pose places the model's root and the opening turns each finger joint."""
+  out = _state(dataset, tmp_path, margin=0.0)
+  with Recording(out) as recording:
+    for hand, slot in (("left", "cam00"), ("right", "cam01")):
+      pose = recording.series(f"/{schema.state_pose(hand)}")
+      child = pose.column(
+        schema.selector(schema.state_pose(hand), "Transform3D:child_frame")
+      )
+      assert {f[0] for f in child.to_pylist()} == {f"{slot}_base"}
+      # An opening of 0.1 rad turns the left finger +0.1 about z, the right -0.1.
+      for joint, turn in (("left_finger", 0.05), ("right_finger", -0.05)):
+        entity = schema.state_finger(hand, joint)
+        edges = recording.series(f"/{entity}").column(
+          schema.selector(entity, "Transform3D:child_frame")
+        )
+        assert {f[0] for f in edges.to_pylist()} == {f"{slot}_{joint}"}
+        _, quaternion = recording.values(entity, schema.POSE_QUATERNION, 4)
+        np.testing.assert_allclose(quaternion[:, 2], np.sin(turn), atol=1e-6)
+
+
 def test_a_frame_whose_capture_row_leaves_the_state_rows_goes_for_both_hands(
   dataset: Path, tmp_path: Path
 ) -> None:
@@ -255,3 +281,12 @@ def test_each_frame_is_a_chunk_of_its_own(dataset: Path, tmp_path: Path) -> None
     assert {"EncodedImage:blob", schema.CAPTURE_ROW} <= set(
       chunk.to_record_batch().schema.names
     )
+
+
+def test_the_writer_refuses_an_estimate_solved_with_another_urdf(
+  dataset: Path, tmp_path: Path
+) -> None:
+  other = tmp_path / "other.urdf"
+  other.write_text((dataset / "robot.urdf").read_text() + "<!-- edited -->\n")
+  with pytest.raises(SystemExit, match="solved cam00 with URDF sha256"):
+    _state(dataset, tmp_path, urdf_path=other, margin=0.0)

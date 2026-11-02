@@ -62,7 +62,8 @@ So you can fetch or regenerate any layer again without touching the rest:
 ```
 base/<session-id>.rrd          # remuxed per-lens video, IMU, calibration, clock shifts
 estimate/<session-id>.rrd      # the run's answers: poses, joint angles
-viz/<session-id>.rrd           # what is only drawn: ribbon, overlays, meshes
+viz/<session-id>.rrd           # what is only drawn: ribbon, overlays
+assets/gripper-<sha>-<slot>.rrd # one slot's gripper model, shared by every session
 state_s8_r100/<session-id>.rrd  # what the policy sees: 360x360 images, 100 Hz state
 mocap/<session-id>.rrd         # ground-truth layer (eval branch)
 ```
@@ -94,18 +95,17 @@ uv run python scripts/estimate.py --base logs/base/<session-id>.rrd \
 
 A single camera uses the same command, with no cross-camera factors.
 
-The run writes two layers sharing the base recording's id:
-`logs/estimate/<session-id>.rrd` carries what a consumer reads — body poses,
-keyframe poses, finger joint angles, the solved anchor poses, the landmarks,
-the diagnostic series and the run summary — and `logs/viz/<session-id>.rrd`
-carries what is only drawn: the trajectory ribbon, the image overlays, the
-factor rays, the axis triads and the robot meshes. Re-running a session
-refuses to overwrite either unless `--overwrite` is passed, so point
-experimental runs at their own `--output-dir`.
-To look at a session, load the layers beside their base — the
-shared id merges them — with
-`uv run rerun logs/blueprints/specialist.rbl logs/base/<id>.rrd
-logs/estimate/<id>.rrd logs/viz/<id>.rrd`.
+The run writes the estimate and viz layers under the base recording's id. A
+re-run refuses to overwrite either layer unless you pass `--overwrite`, so point
+experimental runs at their own `--output-dir`. Every solve also writes
+`logs/blueprints/specialist.rbl`. To look at a session, load its layers and the
+gripper asset. The shared id merges them:
+
+```
+uv run rerun logs/blueprints/specialist.rbl logs/base/<id>.rrd \
+  logs/estimate/<id>.rrd logs/viz/<id>.rrd \
+  --asset logs/assets/gripper-<sha>.rrd
+```
 
 **3. State.** A trainer builds the policy's observation from the images and
 past rows, and its action from future rows.
@@ -167,17 +167,12 @@ packages/
                          (state-stream helpers)
 
 src/specialist/
-├── vi_ba/       the solve: single_camera (per-camera prep), tracks +
-│                features + gpu_flow (frontend), init (triangulation + VI
-│                alignment), build / compose (graph) + the native cpp/ MEI
-│                factor, gpu_lm (LM), reference_solve (the
-│                multi-tracker world gauge), finger_kinematics + urdf_joints
-│                (gripper joint recovery), imu,
-│                tag_detection, landmark_cull, highrate,
-│                geometry, configs, summary, viz + viz_build
+├── vi_ba/       the VI-BA solve: frontend, initialization, factor graph, the
+│                native cpp/ MEI factor, LM, the joint multi-camera solve
 ├── record/      the rrd writers and the solve's reader: base + video +
 │                offset_v3 (base recording), layer (estimate and viz
-│                layers), session (a base recording as the solve reads it)
+│                layers), asset (gripper model), session (a base recording
+│                as the solve reads it)
 └── loader/      parse_insv, capture, audio_sync
 
 scripts/

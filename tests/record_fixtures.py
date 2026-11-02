@@ -244,8 +244,13 @@ def urdf_file(tmp_path: Path) -> Path:
   joint = (
     '<joint name="{n}" type="revolute"><parent link="base"/><child link="{n}"/>'
     '<axis xyz="0 0 1"/><limit lower="-1" upper="1" effort="1" velocity="1"/>'
-    "</joint>"
+    "{mimic}</joint>"
   )
+  # The left finger mirrors the right, as on the real gripper.
+  mimic = {
+    "left_finger": '<mimic joint="right_finger" multiplier="-1"/>',
+    "right_finger": "",
+  }
   # Every tag rides a fixed joint, so the frame a tag names is one the model places.
   tag = (
     '<link name="{n}_tag"/>'
@@ -256,7 +261,7 @@ def urdf_file(tmp_path: Path) -> Path:
   path.write_text(
     '<?xml version="1.0"?><robot name="gripper">'
     + "".join(link.format(n=n) for n in ("base", *fingers))
-    + "".join(joint.format(n=n) for n in fingers)
+    + "".join(joint.format(n=n, mimic=mimic[n]) for n in fingers)
     + "".join(tag.format(n=n) for n in ("base", *fingers))
     + "</robot>"
   )

@@ -8,10 +8,9 @@ from pathlib import Path
 
 import gtsam
 import rerun as rr
+from specialist_dataset.layer import FINGER_JOINTS
 
 __all__ = ["FINGER_JOINTS", "RevoluteJoint", "read_revolute_joints"]
-
-FINGER_JOINTS = ("left_finger", "right_finger")
 
 
 @dataclass(frozen=True)

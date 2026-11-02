@@ -23,11 +23,18 @@ import numpy.typing as npt
 import rerun as rr
 import tyro
 from rerun.chunk import Chunk
+from rerun.urdf import UrdfTree
 from scipy.spatial.transform import Rotation, Slerp
 from specialist_camera import MASK_RADIUS, to_image
 from specialist_dataset import schema
 from specialist_dataset.frames import LensVideo, decode_samples
-from specialist_dataset.layer import State, encode, hand_chunks, write_layer
+from specialist_dataset.layer import (
+  FINGER_JOINTS,
+  State,
+  encode,
+  hand_chunks,
+  write_layer,
+)
 from specialist_dataset.read import Recording, read_anchors, read_keyframe_poses
 from specialist_dataset.state import (
   finger,
@@ -40,12 +47,12 @@ from specialist_dataset.state import (
   tap,
 )
 
+from specialist.record.asset import resolve_urdf_path, urdf_sha
 from specialist.record.layer import git_sha
 from specialist.record.session import SessionRecording, fps_from_times
 from specialist.vi_ba.features import cpu_budget
 from specialist.vi_ba.geometry import canonical
 from specialist.vi_ba.single_camera import stage_timer
-from specialist.vi_ba.urdf_joints import FINGER_JOINTS
 
 Float64Array = npt.NDArray[np.float64]
 Int64Array = npt.NDArray[np.int64]
@@ -73,6 +80,9 @@ class Args:
 
   # Seconds kept clear of the bracket gestures at each end of the window.
   margin: float = 1.0
+
+  # The gripper URDF; defaults to the packaged description.
+  urdf_path: Path | None = None
 
   # Replace an existing layer.
   overwrite: bool = False
@@ -265,10 +275,23 @@ def _one(value: Any) -> str:
   return str(np.asarray(value).reshape(-1)[0])
 
 
+def same_urdf(estimate: Recording, slots: list[str], urdf: Path) -> str:
+  """The digest of ``urdf``; refuse an estimate whose slots were solved with another."""
+  digest = urdf_sha(urdf)
+  for slot in slots:
+    solved = _one(estimate.row(schema.gripper(slot)).get("urdf_sha", ["unknown"]))
+    if solved != digest:
+      raise SystemExit(
+        f"{estimate.path} solved {slot} with URDF sha256 {solved}, but {urdf} "
+        f"has sha256 {digest}; pass the solve's --urdf-path"
+      )
+  return digest
+
+
 def layer_account(
   args: Args,
   estimate: Recording,
-  slot: str,
+  urdf_sha: str,
   session: SessionRecording,
   layer: str,
   window: tuple[float, float],
@@ -288,7 +311,7 @@ def layer_account(
     "git_sha": git_sha(),
     "rerun_version": rr.__version__,
     "estimate_git_sha": _one(run["git_sha"]),
-    "urdf_sha": _one(estimate.row(schema.gripper(slot)).get("urdf_sha", ["unknown"])),
+    "urdf_sha": urdf_sha,
     "converted_at": session.converted_at,
     "estimated_at": _one(run["estimated_at"]),
     "written_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -328,7 +351,9 @@ def main(args: Args) -> None:
   if out_path.exists() and not args.overwrite:
     raise SystemExit(f"{out_path} exists; pass --overwrite to replace it")
 
+  urdf = resolve_urdf_path(args.urdf_path)
   estimate = Recording(estimate_path)
+  digest = same_urdf(estimate, slots, urdf)
   anchors = np.stack(
     [pose[:3, 3] for pose in read_anchors(estimate_path).poses.values()]
   )
@@ -371,7 +396,7 @@ def main(args: Args) -> None:
   covered = min(float(t[-1]) for t in times.values()) - max(
     float(t[0]) for t in times.values()
   )
-  account = layer_account(args, estimate, right, session, layer, window, covered)
+  account = layer_account(args, estimate, digest, session, layer, window, covered)
 
   states: dict[str, tuple[Int64Array, State]] = {}
   for slot in slots:
@@ -407,6 +432,7 @@ def main(args: Args) -> None:
     chunks += hand_chunks(
       hand,
       slot,
+      UrdfTree.from_file_path(str(urdf), frame_prefix=f"{slot}_"),
       (frame_times, *frame_rows(frame_times, fps, args.f_row)),
       blobs,
       all_rows[held],

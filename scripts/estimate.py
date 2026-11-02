@@ -14,6 +14,7 @@ import tyro
 from specialist_dataset import schema
 from specialist_dataset.frames import release_videos
 
+from specialist.record.asset import resolve_urdf_path, write_gripper_asset
 from specialist.record.layer import write_estimate_layers
 from specialist.record.session import SessionRecording
 from specialist.vi_ba import gpu_flow
@@ -39,20 +40,6 @@ from specialist.vi_ba.viz_build import build_run_estimate
 
 # Arenas the C allocator may spread the walks' threads over.
 _MALLOC_ARENAS = 8
-
-
-def _resolve_urdf_path(explicit: Path | None) -> Path:
-  """The gripper URDF: an explicit path, else the installed description asset."""
-  if explicit is not None:
-    return explicit
-  try:
-    from specialist_description import get_urdf_path
-
-    return Path(get_urdf_path("specialist_handheld"))
-  except ImportError as exc:
-    raise SystemExit(
-      f"the gripper URDF is unavailable ({exc}); pass --urdf-path"
-    ) from exc
 
 
 def _print_capture_diagnostics(
@@ -92,7 +79,8 @@ def main(args: Args) -> None:
   bound_malloc_arenas(_MALLOC_ARENAS)
   print(f"session {session.session_id}: cameras {list(slots)}")
 
-  urdf_path = _resolve_urdf_path(args.urdf_path)
+  urdf_path = resolve_urdf_path(args.urdf_path)
+  write_gripper_asset(urdf_path, list(slots), args.output_dir)
 
   concurrent = cameras_that_fit(session, slots)
   set_precompute_concurrency(concurrent)

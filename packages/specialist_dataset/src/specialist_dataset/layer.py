@@ -9,6 +9,7 @@ import numpy as np
 import numpy.typing as npt
 import rerun as rr
 from rerun.chunk import Chunk, LazyChunkStream, OptimizationProfile
+from rerun.urdf import UrdfTree
 
 from specialist_dataset import schema
 
@@ -16,6 +17,7 @@ Float64Array = npt.NDArray[np.float64]
 Int64Array = npt.NDArray[np.int64]
 # (times, position, xyzw quaternion, lin_vel, ang_vel), in the world frame.
 State = tuple[Float64Array, Float64Array, Float64Array, Float64Array, Float64Array]
+FINGER_JOINTS = ("left_finger", "right_finger")
 
 
 def encode(image: npt.NDArray[np.uint8]) -> bytes:
@@ -35,9 +37,22 @@ def clock(times: Float64Array, rows: Int64Array) -> list[rr.TimeColumn]:
   ]
 
 
+def world_chunk() -> Chunk:
+  """The world frame, Z up, that every layer's poses hang from."""
+  return Chunk.from_columns(
+    schema.WORLD,
+    indexes=[],
+    columns=[
+      *rr.ViewCoordinates.columns(xyz=[rr.components.ViewCoordinates.RIGHT_HAND_Z_UP]),
+      *rr.Transform3D.columns(child_frame=[schema.WORLD_FRAME]),
+    ],
+  )
+
+
 def hand_chunks(
   hand: str,
   slot: str,
+  tree: UrdfTree,
   frames: tuple[Float64Array, Int64Array, Int64Array],
   blobs: list[bytes],
   rows: Int64Array,
@@ -51,7 +66,16 @@ def hand_chunks(
   # One image plane holds both hands, left then right.
   column = float(schema.HANDS.index(hand) * width)
   index = clock(t, rows)
+  joints = {joint.name: joint for joint in tree.joints()}
   return [
+    *[
+      Chunk.from_columns(
+        schema.state_finger(hand, name),
+        indexes=index,
+        columns=joints[name].compute_transform_columns(angle.tolist(), clamp=False),
+      )
+      for name, angle in zip(FINGER_JOINTS, (opening_rows, -opening_rows), strict=True)
+    ],
     Chunk.from_columns(
       schema.state_hand(hand), indexes=[], columns=rr.AnyValues.columns(slot=[slot])
     ),
@@ -76,7 +100,12 @@ def hand_chunks(
     Chunk.from_columns(
       schema.state_pose(hand),
       indexes=index,
-      columns=rr.Transform3D.columns(translation=position, quaternion=quaternion),
+      columns=rr.Transform3D.columns(
+        translation=position,
+        quaternion=quaternion,
+        parent_frame=[schema.WORLD_FRAME] * len(t),
+        child_frame=[schema.link_frame(slot, tree.root_link().name)] * len(t),
+      ),
     ),
     *[
       Chunk.from_columns(
@@ -104,7 +133,7 @@ def write_layer(
   images = {schema.state_image(hand) for hand in schema.HANDS}
   frames = [c for c in chunks if c.entity_path.strip("/") in images and not c.is_static]
   rest = [c for c in chunks if c.entity_path.strip("/") not in images or c.is_static]
-  store = LazyChunkStream.from_iter(rest).collect(
+  store = LazyChunkStream.from_iter([world_chunk(), *rest]).collect(
     optimize=OptimizationProfile.OBJECT_STORE
   )
   try:
