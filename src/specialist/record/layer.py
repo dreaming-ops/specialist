@@ -9,12 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import rerun as rr
-from rerun.experimental import (
-  Chunk,
-  LazyChunkStream,
-  OptimizationProfile,
-  send_chunks,
-)
+from rerun.chunk import Chunk, LazyChunkStream, OptimizationProfile
 from specialist_dataset import schema
 
 from specialist.vi_ba.summary import CameraSummary, Summary
@@ -101,7 +96,7 @@ def write_estimate_layers(
       estimate_chunks(
         Layers(
           estimate=kept.append,
-          viz=lambda chunk: send_chunks([chunk], recording=viz_stream),
+          viz=lambda chunk: rr.send_chunks([chunk], recording=viz_stream),
         ),
         estimate.cameras,
         estimate.world_T_anchor,
@@ -117,7 +112,7 @@ def write_estimate_layers(
     )
     with _stream(session_id) as estimate_stream:
       estimate_stream.set_sinks(rr.FileSink(partials[estimate_path]))
-      send_chunks(store, recording=estimate_stream)
+      rr.send_chunks(store, recording=estimate_stream)
       _send_run_properties(summary, estimate.per_camera, estimate_stream, estimated_at)
     for path, partial in partials.items():
       partial.replace(path)

@@ -9,7 +9,7 @@ from typing import Any
 import gtsam
 import numpy as np
 import pytest
-from rerun.experimental import Chunk, ChunkStore, RrdReader
+from rerun.chunk import Chunk, ChunkStore, RrdReader
 from specialist_dataset import schema
 
 from specialist.vi_ba.blueprint import (

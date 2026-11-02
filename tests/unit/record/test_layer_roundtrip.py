@@ -5,7 +5,7 @@ from pathlib import Path
 import gtsam
 import numpy as np
 import pytest
-from rerun.experimental import RrdReader
+from rerun.chunk import RrdReader
 from specialist_dataset import schema
 from specialist_dataset.read import read_keyframe_poses
 

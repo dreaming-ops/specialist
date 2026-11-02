@@ -11,8 +11,6 @@ from pathlib import Path
 _ROOT = Path(__file__).resolve().parent.parent
 _SOURCE = _ROOT / "src" / "specialist_dataset"
 _OWN = "specialist_dataset"
-# rerun-sdk ships its module inside a ``rerun_sdk`` directory.
-_ALIASES = {"rerun": "rerun_sdk"}
 
 
 def _declared() -> set[str]:
@@ -41,8 +39,7 @@ def test_every_imported_module_is_a_declared_dependency() -> None:
     if root in sys.stdlib_module_names or root == _OWN:
       continue
     distributions = {
-      name.replace("-", "_").lower()
-      for name in provided.get(root, [_ALIASES.get(root, root)])
+      name.replace("-", "_").lower() for name in provided.get(root, [root])
     }
     assert distributions & declared, (
       f"{root} is imported but no distribution providing it is declared"

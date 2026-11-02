@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 import rerun as rr
-from rerun.experimental import Chunk, send_chunks
+from rerun.chunk import Chunk
 from specialist_dataset import frames, schema
 from specialist_dataset.read import Recording
 
@@ -20,7 +20,7 @@ def _base_with_video(tmp_path: Path, *, sync: bool) -> Path:
   )
   with rr.RecordingStream("test", recording_id="s") as stream:
     stream.save(str(rrd))
-    send_chunks([chunk], recording=stream)
+    rr.send_chunks([chunk], recording=stream)
   return rrd
 
 

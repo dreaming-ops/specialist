@@ -8,7 +8,7 @@ from typing import Any
 import gtsam
 import numpy as np
 import pytest
-from rerun.experimental import Chunk
+from rerun.chunk import Chunk
 
 from specialist.vi_ba.viz import (
   CameraEstimate,

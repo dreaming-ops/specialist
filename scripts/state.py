@@ -22,7 +22,7 @@ import numpy as np
 import numpy.typing as npt
 import rerun as rr
 import tyro
-from rerun.experimental import Chunk
+from rerun.chunk import Chunk
 from scipy.spatial.transform import Rotation, Slerp
 from specialist_camera import MASK_RADIUS, to_image
 from specialist_dataset import schema

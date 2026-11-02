@@ -8,7 +8,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import pytest
-from rerun.experimental import RrdReader
+from rerun.chunk import RrdReader
 from scipy.spatial.transform import Rotation
 from scripts.state import Args, main
 from specialist_camera import to_image

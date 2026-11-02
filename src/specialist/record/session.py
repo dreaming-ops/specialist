@@ -10,7 +10,7 @@ from typing import Any
 import gtsam
 import numpy as np
 import numpy.typing as npt
-from rerun.experimental import RrdReader
+from rerun.chunk import RrdReader
 from specialist_camera import LensName
 from specialist_dataset import frames, schema
 from specialist_dataset.poses import quats_to_matrices

@@ -14,7 +14,7 @@ import numpy.typing as npt
 import pyarrow as pa
 import pyarrow.compute as pc
 import rerun as rr
-from rerun.experimental import Chunk
+from rerun.chunk import Chunk
 from specialist_dataset import schema
 from specialist_dataset.poses import quats_to_matrices
 

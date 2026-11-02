@@ -8,7 +8,7 @@ from typing import Any, cast
 import numpy as np
 import numpy.typing as npt
 import rerun as rr
-from rerun.experimental import Chunk, LazyChunkStream, OptimizationProfile, send_chunks
+from rerun.chunk import Chunk, LazyChunkStream, OptimizationProfile
 
 from specialist_dataset import schema
 
@@ -113,8 +113,8 @@ def write_layer(
     ) as stream:
       stream.set_sinks(rr.FileSink(partial))
       stream.send_property(schema.STATE, rr.AnyValues(**account))
-      send_chunks(store, recording=stream)
-      send_chunks(frames, recording=stream)
+      rr.send_chunks(store, recording=stream)
+      rr.send_chunks(frames, recording=stream)
     partial.replace(path)
   finally:
     partial.unlink(missing_ok=True)

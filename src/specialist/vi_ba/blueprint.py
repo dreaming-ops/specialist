@@ -51,11 +51,11 @@ TAG_AXIS = 0.02
 
 def _triad_overrides(
   slots: list[str], anchor_tag_ids: Iterable[int], tag_size: float
-) -> dict[rr.datatypes.EntityPath | str, Any]:
+) -> dict[rr.encodings.EntityPath | str, Any]:
   """A triad per exported frame; an override lists all visualizers its entity keeps."""
   corners = tag_corners_local(tag_size)
   square = np.vstack([corners, corners[:1]])
-  axes: dict[rr.datatypes.EntityPath | str, Any] = {
+  axes: dict[rr.encodings.EntityPath | str, Any] = {
     f"/{schema.anchor(int(tag_id))}": [
       rr.TransformAxes3D(tag_size / 2.0),
       rr.LineStrips3D(strips=[square], colors=[_TAG_COLOR], radii=[0.003]),
@@ -84,7 +84,7 @@ _HIDDEN = (
 
 def _hidden_overlay_overrides(
   slot: str, lens: str
-) -> dict[rr.datatypes.EntityPath | str, rrb.EntityBehavior]:
+) -> dict[rr.encodings.EntityPath | str, rrb.EntityBehavior]:
   """Hide the front lens's dense pixel layers at start; other lenses have none."""
   if lens != "front":
     return {}
@@ -108,11 +108,11 @@ def _scene(
   slots: list[str],
   anchor_tag_ids: Iterable[int] = (),
   anchor_tag_size: float = 0.1,
-  overrides: dict[rr.datatypes.EntityPath | str, Any] | None = None,
+  overrides: dict[rr.encodings.EntityPath | str, Any] | None = None,
   excluded: Iterable[str] = (),
 ) -> rrb.Spatial3DView:
   """The shared 3D view of triads, anchors and ribbons; ``overrides`` add to these."""
-  every: dict[rr.datatypes.EntityPath | str, Any] = {
+  every: dict[rr.encodings.EntityPath | str, Any] = {
     **{f"/{schema.trajectory(s)}": _trail_window() for s in slots},
     **_triad_overrides(slots, anchor_tag_ids, anchor_tag_size),
     **{
@@ -186,17 +186,20 @@ def state_blueprint() -> rrb.Blueprint:
   )
 
 
-def state_card_blueprint(frame_width: int) -> rrb.Blueprint:
-  """Segment-table card of a state catalog dataset: both hands' images side by side."""
+def state_card_blueprint(frame_width: int) -> rrb.TableBlueprint:
+  """Segment-table cards of a state catalog dataset, a session id over hand images."""
   w = float(frame_width)
-  return rrb.Blueprint(
-    rrb.Spatial2DView(
-      name="state",
-      origin=f"/{schema.STATE}",
-      contents=[f"+ /{schema.state_image(h)}" for h in schema.HANDS],
-      visual_bounds=rrb.VisualBounds2D(x_range=(0.0, 2.0 * w), y_range=(0.0, w)),
-    ),
-    *_panels(),
+  pair = rrb.Spatial2DView(
+    name="state",
+    origin=f"/{schema.STATE}",
+    contents=[f"+ /{schema.state_image(h)}" for h in schema.HANDS],
+    visual_bounds=rrb.VisualBounds2D(x_range=(0.0, 2.0 * w), y_range=(0.0, w)),
+  )
+  preview = rrb.table.Column("recording link", column_type=rrb.table.PreviewCell(pair))
+  return rrb.TableBlueprint(
+    card_layout=rrb.table.CardLayout(
+      title="rerun_segment_id", link="recording link", fields=[preview]
+    )
   )
 
 

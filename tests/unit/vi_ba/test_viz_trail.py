@@ -8,7 +8,7 @@ import gtsam
 import numpy as np
 import rerun as rr
 import rerun.blueprint as rrb
-from rerun.experimental import Chunk, RrdReader
+from rerun.chunk import Chunk, RrdReader
 
 from specialist.vi_ba.blueprint import (
   blueprint_for_slots,
@@ -68,11 +68,9 @@ def _ranged(blueprint: rrb.Blueprint, rrd: Path) -> set[str]:
   return {c.entity_path for c in columns if c.component == "VisibleTimeRanges:ranges"}
 
 
-def _views(blueprint: rrb.Blueprint, rrd: Path) -> dict[str, str]:
+def _views(blueprint: rrb.Blueprint | rrb.TableBlueprint, rrd: Path) -> dict[str, str]:
   """Each view's name and the entity path it takes as its origin."""
-  with rr.RecordingStream("app", recording_id="bp", send_properties=False) as stream:
-    stream.save(str(rrd))
-    stream.send_blueprint(blueprint, make_active=True, make_default=True)
+  blueprint.save("app", str(rrd))
   reader = RrdReader(str(rrd))
   views: dict[str, str] = {}
   for chunk in reader.store(store=reader.blueprints()[0]).stream().to_chunks():
@@ -120,8 +118,12 @@ def test_the_state_dashboard_shows_each_hand_by_name(tmp_path: Path) -> None:
 
 
 def test_the_state_card_is_one_pane_over_both_hands(tmp_path: Path) -> None:
+  """The viewer shows cards only from a table blueprint's card layout."""
   views = _views(state_card_blueprint(240), tmp_path / "c.rrd")
   assert views == {"state": "/state"}
+  reader = RrdReader(str(tmp_path / "c.rrd"))
+  paths = reader.store(store=reader.blueprints()[0]).schema().entity_paths()
+  assert "/table/layouts/cards" in {str(p) for p in paths}
 
 
 def test_the_state_dashboard_puts_a_triad_on_each_hand(tmp_path: Path) -> None:

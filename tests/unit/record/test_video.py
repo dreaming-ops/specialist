@@ -4,6 +4,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from rerun.chunk import Chunk
 from specialist_dataset import schema
 
 from specialist.record.video import normalize_h264, video_chunks
@@ -27,6 +28,11 @@ def clean_clip(tmp_path_factory: pytest.TempPathFactory, h264_clip: Path) -> Pat
   return normalize_h264(h264_clip, tmp_path_factory.mktemp("clean") / "clean.mp4")
 
 
+def _samples(chunk: Chunk) -> bool:
+  """Whether the chunk holds frames; sync-sample marks come in a chunk of their own."""
+  return "VideoStream:sample" in chunk.to_record_batch().schema.names
+
+
 def _collect(clip: Path, shift: float) -> tuple[list[object], list[int], list[bool]]:
   stream = video_chunks(clip, "image/cam/front", time_shift=shift, window=_WHOLE_CLIP)
   static, times, sync = [], [], []
@@ -36,10 +42,13 @@ def _collect(clip: Path, shift: float) -> tuple[list[object], list[int], list[bo
       static.append(chunk)
       continue
     batch = chunk.to_record_batch()
-    index = batch.schema.get_field_index("video_time")
-    times += [v.value for v in batch.column(index)]
-    key_index = batch.schema.get_field_index("VideoStream:is_keyframe")
-    sync += [bool(v.as_py()) for v in batch.column(key_index)]
+    names = batch.schema.names
+    if "VideoStream:sample" in names:
+      times += [v.value for v in batch.column(names.index("video_time"))]
+    if "VideoStream:is_keyframe" in names:
+      sync += [
+        bool(v.as_py()) for v in batch.column(names.index("VideoStream:is_keyframe"))
+      ]
   return static, times, sync
 
 
@@ -49,7 +58,7 @@ def _keyframe_frames(clip: Path, shift: float) -> list[tuple[int, int]]:
   for chunk in video_chunks(
     clip, "image/t/front", time_shift=shift, window=(0.0, 10.0)
   ).to_chunks():
-    if chunk.is_static:
+    if not _samples(chunk):
       continue
     batch = chunk.to_record_batch()
     names = batch.schema.names
@@ -81,7 +90,7 @@ def test_time_shift(clean_clip: Path) -> None:
 def test_window_keeps_and_drops_chunks(clean_clip: Path) -> None:
   def rows(window: tuple[float, float]) -> int:
     stream = video_chunks(clean_clip, "image/cam/front", time_shift=0.0, window=window)
-    return sum(c.num_rows for c in stream.to_chunks() if not c.is_static)
+    return sum(c.num_rows for c in stream.to_chunks() if _samples(c))
 
   # A chunk overlapping the window survives whole; one entirely outside drops.
   assert rows((0.0, 10.0)) == _FRAMES
@@ -106,7 +115,7 @@ def test_keyframe_timeline_buckets_on_the_session_clock(h264_clip: Path) -> None
 
 
 def test_dropped_sync_sample_markers_fail_ingest(tmp_path: Path) -> None:
-  """In a short-GOP B-frame clip, the reader's keyframe markers collapse."""
+  """Transcoding a short-GOP B-frame clip marks only its first sync sample."""
   clip = encode_clip(tmp_path / "bframes.mp4", _RATE, rate=_RATE, gop=5, bframes=True)
   clean = normalize_h264(clip, tmp_path / "clean.mp4")
   with pytest.raises(RuntimeError, match="randomly accessible"):
