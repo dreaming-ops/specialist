@@ -90,12 +90,8 @@ def _chunks(path: Path) -> list[Chunk]:
 
 def _names(path: Path) -> set[tuple[str, str]]:
   """Every ``(entity, component)`` one layer writes."""
-  return {
-    (chunk.entity_path, name)
-    for chunk in _chunks(path)
-    for name in chunk.to_record_batch().schema.names
-    if not name.startswith("rerun.controls.") and name not in chunk.timeline_names
-  }
+  columns = RrdReader(str(path)).store().schema().component_columns()
+  return {(c.entity_path, c.component) for c in columns}
 
 
 def _column(path: Path, entity: str, component: str) -> list[list[object]]:

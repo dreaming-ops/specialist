@@ -6,6 +6,7 @@ from typing import Any
 import numpy as np
 import pytest
 from rerun.chunk import Chunk, RrdReader
+from specialist_dataset.read import Recording
 
 from specialist.record.base import imu_chunks, write_base_recording
 from tests.record_fixtures import synthetic_insv
@@ -14,49 +15,29 @@ from tests.record_fixtures import synthetic_insv
 _WHOLE_SESSION = (-10.0, 10.0)
 
 
-def _write(tmp_path: Path, chunks: list[Chunk]) -> RrdReader:
+def _write(tmp_path: Path, chunks: list[Chunk]) -> Recording:
   out = tmp_path / "base.rrd"
   write_base_recording(out, "sess", [], chunks)
-  return RrdReader(str(out))
-
-
-def _column(reader: RrdReader, entity: str, component: str) -> tuple[Any, Any]:
-  """All (time, value) rows of one component, times None for static."""
-  times: list[Any] = []
-  values: list[Any] = []
-  for chunk in reader.store().stream().to_chunks():
-    if chunk.entity_path != entity:
-      continue
-    batch = chunk.to_record_batch()
-    names = batch.schema.names
-    if component not in names:
-      continue
-    col = batch.column(names.index(component))
-    if chunk.is_static:
-      values += col.to_pylist()
-      times += [None] * len(col)
-    else:
-      timeline = chunk.timeline_names[0]
-      times += [v.value for v in batch.column(names.index(timeline))]
-      values += col.to_pylist()
-  return times, values
+  return Recording(out)
 
 
 def test_imu_chunks_units_and_shift(tmp_path: Path) -> None:
-  reader = _write(tmp_path, imu_chunks("cam00", synthetic_insv(), 0.25, _WHOLE_SESSION))
-  times, gyro = _column(reader, "/camera/cam00/imu/gyro", "Scalars:scalars")
-  assert times[0] == round((-0.5 + 0.25) * 1e9)
+  recording = _write(
+    tmp_path, imu_chunks("cam00", synthetic_insv(), 0.25, _WHOLE_SESSION)
+  )
+  times, gyro = recording.scalars("camera/cam00/imu/gyro", 3)
+  assert times[0] == -0.5 + 0.25
   np.testing.assert_allclose(gyro[0], [np.pi / 2, 0.0, 0.0])
-  _, accel = _column(reader, "/camera/cam00/imu/accel", "Scalars:scalars")
+  _, accel = recording.scalars("camera/cam00/imu/accel", 3)
   np.testing.assert_allclose(accel[0], [0.0, 0.0, 9.81])
 
 
 def test_imu_window_trims_rows(tmp_path: Path) -> None:
-  reader = _write(
+  recording = _write(
     tmp_path, imu_chunks("cam00", synthetic_insv(), 0.0, window=(0.0, 10.0))
   )
-  times, _ = _column(reader, "/camera/cam00/imu/gyro", "Scalars:scalars")
-  assert times and min(times) >= 0
+  times, _ = recording.scalars("camera/cam00/imu/gyro", 3)
+  assert times.size and times.min() >= 0
 
 
 def test_write_base_recording_failure_leaves_no_final_file(

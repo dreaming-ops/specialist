@@ -63,22 +63,12 @@ def frame_width(rrd: Path) -> int:
 
 
 def check_one_configuration(entry: DatasetEntry, state: str) -> None:
-  """Refuse a catalog dataset holding another state configuration: their names clash."""
-  table = entry.segment_table().to_arrow_table()
-  column = f"property:{STATE}:config"
-  if column not in table.schema.names:
-    return
-  held = {
-    v
-    for row in table.column(column).to_pylist()
-    if row
-    for v in (row if isinstance(row, list) else [row])
-    if v
-  }
+  """Refuse a catalog dataset with any layer but ``state``: configurations clash."""
+  held = {layer.name for layer in entry.info().layers}
   if held - {state}:
     raise SystemExit(
-      f"{sorted(held)} is already on the catalog dataset; one catalog dataset "
-      "takes one state configuration"
+      f"{sorted(held)} is already on the catalog dataset; a catalog dataset "
+      "holds one state configuration and no other layer"
     )
 
 

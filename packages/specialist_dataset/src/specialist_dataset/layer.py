@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import chain
 from pathlib import Path
 from typing import Any, cast
 
@@ -129,21 +130,18 @@ def write_layer(
   """Write the layer under the session's id, renaming a partial file once complete."""
   path.parent.mkdir(parents=True, exist_ok=True)
   partial = path.parent / (path.name + ".partial")
+  properties = Chunk.from_property(schema.STATE, rr.AnyValues(**account))
   # One chunk per frame, so a random read loads one frame; only the rest is compacted.
   images = {schema.state_image(hand) for hand in schema.HANDS}
   frames = [c for c in chunks if c.entity_path.strip("/") in images and not c.is_static]
   rest = [c for c in chunks if c.entity_path.strip("/") not in images or c.is_static]
-  store = LazyChunkStream.from_iter([world_chunk(), *rest]).collect(
+  store = LazyChunkStream.from_iter([world_chunk(), properties, *rest]).collect(
     optimize=OptimizationProfile.OBJECT_STORE
   )
   try:
-    with rr.RecordingStream(
-      schema.APPLICATION_ID, recording_id=session_id, send_properties=False
-    ) as stream:
-      stream.set_sinks(rr.FileSink(partial))
-      stream.send_property(schema.STATE, rr.AnyValues(**account))
-      rr.send_chunks(store, recording=stream)
-      rr.send_chunks(frames, recording=stream)
+    LazyChunkStream.from_iter(chain(store.stream(), frames)).write_rrd(
+      partial, application_id=schema.APPLICATION_ID, recording_id=session_id
+    )
     partial.replace(path)
   finally:
     partial.unlink(missing_ok=True)

@@ -1,4 +1,4 @@
-"""Estimate and viz layers on the base's ``recording_id``, with no ``RecordingInfo``."""
+"""Estimate and viz layers: the base's recording id, never a ``RecordingInfo``."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ import subprocess
 from dataclasses import asdict
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any, cast
 
 import rerun as rr
 from rerun.chunk import Chunk, LazyChunkStream, OptimizationProfile
@@ -34,39 +35,26 @@ def git_sha() -> str:
     return "unknown"
 
 
-def _send_run_properties(
-  summary: Summary,
-  per_camera: list[CameraSummary],
-  stream: rr.RecordingStream,
-  estimated_at: str,
-) -> None:
+def _run_chunks(
+  summary: Summary, per_camera: list[CameraSummary], estimated_at: str
+) -> list[Chunk]:
   """The run's ``estimate`` property and each camera's numbers on its ``fit`` entity."""
+  chunks = []
   for camera in per_camera:
     fields = asdict(camera)
-    rr.log(
-      schema.fit(fields.pop("slot")),
-      rr.AnyValues(**fields),
-      static=True,
-      recording=stream,
-    )
+    entity = schema.fit(fields.pop("slot"))
+    columns = cast("Any", rr.AnyValues).columns(**{k: [v] for k, v in fields.items()})
+    chunks.append(Chunk.from_columns(entity, [], columns))
   # A camera the run never measured would poison max() with its NaN.
   measured = [c.front_rmse for c in per_camera if not math.isnan(c.front_rmse)]
-  stream.send_property(
-    schema.ESTIMATE,
-    rr.AnyValues(
-      **asdict(summary),
-      worst_rmse=max(measured) if measured else float("nan"),
-      git_sha=git_sha(),
-      estimated_at=estimated_at,
-      rerun_version=rr.__version__,
-    ),
+  account = rr.AnyValues(
+    **asdict(summary),
+    worst_rmse=max(measured) if measured else float("nan"),
+    git_sha=git_sha(),
+    estimated_at=estimated_at,
+    rerun_version=rr.__version__,
   )
-
-
-def _stream(session_id: str) -> rr.RecordingStream:
-  return rr.RecordingStream(
-    schema.APPLICATION_ID, recording_id=session_id, send_properties=False
-  )
+  return [*chunks, Chunk.from_property(schema.ESTIMATE, account)]
 
 
 def write_estimate_layers(
@@ -86,34 +74,25 @@ def write_estimate_layers(
   partials = {
     path: path.parent / (path.name + ".partial") for path in (estimate_path, viz_path)
   }
-  for partial in partials.values():
-    partial.unlink(missing_ok=True)
-
   kept: list[Chunk] = []
+  drawn: list[Chunk] = []
+  estimate_chunks(
+    Layers(estimate=kept.append, viz=drawn.append),
+    estimate.cameras,
+    estimate.world_T_anchor,
+    estimate.reference_tag_id,
+    anchor_tag_size,
+    urdf_path=urdf_path,
+    timeline_start=timeline_start,
+    frame_period=frame_period,
+  )
+  kept += _run_chunks(summary, estimate.per_camera, estimated_at)
+  ids = {"application_id": schema.APPLICATION_ID, "recording_id": session_id}
   try:
-    with _stream(session_id) as viz_stream:
-      viz_stream.set_sinks(rr.FileSink(partials[viz_path]))
-      estimate_chunks(
-        Layers(
-          estimate=kept.append,
-          viz=lambda chunk: rr.send_chunks([chunk], recording=viz_stream),
-        ),
-        estimate.cameras,
-        estimate.world_T_anchor,
-        estimate.reference_tag_id,
-        anchor_tag_size,
-        urdf_path=urdf_path,
-        timeline_start=timeline_start,
-        frame_period=frame_period,
-      )
-
-    store = LazyChunkStream.from_iter(kept).collect(
+    LazyChunkStream.from_iter(drawn).write_rrd(partials[viz_path], **ids)
+    LazyChunkStream.from_iter(kept).collect(
       optimize=OptimizationProfile.OBJECT_STORE
-    )
-    with _stream(session_id) as estimate_stream:
-      estimate_stream.set_sinks(rr.FileSink(partials[estimate_path]))
-      rr.send_chunks(store, recording=estimate_stream)
-      _send_run_properties(summary, estimate.per_camera, estimate_stream, estimated_at)
+    ).write_rrd(partials[estimate_path], **ids)
     for path, partial in partials.items():
       partial.replace(path)
   finally:

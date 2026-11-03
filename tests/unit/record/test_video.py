@@ -118,5 +118,6 @@ def test_dropped_sync_sample_markers_fail_ingest(tmp_path: Path) -> None:
   """Transcoding a short-GOP B-frame clip marks only its first sync sample."""
   clip = encode_clip(tmp_path / "bframes.mp4", _RATE, rate=_RATE, gop=5, bframes=True)
   clean = normalize_h264(clip, tmp_path / "clean.mp4")
+  stream = video_chunks(clean, "image/cam/front", time_shift=0.0, window=_WHOLE_CLIP)
   with pytest.raises(RuntimeError, match="randomly accessible"):
-    video_chunks(clean, "image/cam/front", time_shift=0.0, window=_WHOLE_CLIP)
+    stream.to_chunks()

@@ -29,7 +29,6 @@ __all__ = [
   "read_lens",
 ]
 
-# Past this, a keyframe pairs its overlays with the wrong video frame.
 _CATALOG_DATASET = "dataset"
 _ANCHOR = re.compile(rf"/{schema.WORLD}/anchor/(\d+):")
 
@@ -50,11 +49,13 @@ def _rows_with(table: pa.Table, column: str) -> pa.Table:
 
 
 class Recording:
-  """One dataset layer open for queries; freeing it closes its catalog dataset."""
+  """One dataset layer, served on 127.0.0.1 until its with-block ends or it is freed."""
 
   def __init__(self, rrd_path: Path) -> None:
     self.path = rrd_path
-    self._server = rr.server.Server(datasets={_CATALOG_DATASET: [str(rrd_path)]})
+    self._server = rr.server.Server(
+      host="127.0.0.1", datasets={_CATALOG_DATASET: [str(rrd_path)]}
+    )
     self._entry = rr.catalog.CatalogClient(self._server.url()).get_dataset(
       _CATALOG_DATASET
     )
@@ -63,7 +64,7 @@ class Recording:
     return self
 
   def __exit__(self, *exception: object) -> None:
-    return None
+    self._server.shutdown()
 
   def reader(self, contents: str | list[str]) -> Any:
     """A query over the named entities, indexed by the recording's clock."""

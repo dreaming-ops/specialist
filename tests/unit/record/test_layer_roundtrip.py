@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 from rerun.chunk import RrdReader
 from specialist_dataset import schema
-from specialist_dataset.read import read_keyframe_poses
+from specialist_dataset.read import Recording, read_keyframe_poses
 
 from specialist.vi_ba.summary import CameraSummary
 from tests.record_fixtures import camera_estimate, urdf_file, write_run
@@ -54,28 +54,21 @@ def test_estimate_roundtrip(estimate_rrd: Path) -> None:
 
 def test_the_run_account_is_a_property_not_an_entity(estimate_rrd: Path) -> None:
   """A catalog reads it without opening the segment, so no entity carries a copy."""
-  store = RrdReader(str(estimate_rrd)).store()
-  entities, fields = set(), set()
-  for chunk in store.stream().filter(is_static=True).to_chunks():
-    entities.add(chunk.entity_path)
-    if chunk.entity_path == "/__properties/estimate":
-      fields |= {
-        n for n in chunk.to_record_batch().schema.names if not n.startswith("rerun.")
-      }
-  assert f"/{schema.ESTIMATE}" not in entities
+  columns = RrdReader(str(estimate_rrd)).store().schema().component_columns()
+  fields = {
+    c.component
+    for c in columns
+    if c.entity_path == "/__properties/estimate" and c.is_static
+  }
+  assert f"/{schema.ESTIMATE}" not in {c.entity_path for c in columns}
   assert {"final_graph_error", "solver_iterations", "worst_rmse", "git_sha"} <= fields
 
 
 def _worst_rmse(estimate: Path) -> float:
   """The selector a catalog filters on, read back off the layer."""
-  for chunk in RrdReader(str(estimate)).store().stream().to_chunks():
-    if chunk.entity_path != "/__properties/estimate":
-      continue
-    batch = chunk.to_record_batch()
-    if "worst_rmse" in batch.schema.names:
-      column = batch.column(batch.schema.names.index("worst_rmse")).to_pylist()
-      return float(np.asarray(column[0]).reshape(-1)[0])
-  raise AssertionError("the estimate layer carries no worst_rmse")
+  with Recording(estimate) as recording:
+    value = recording.property(schema.ESTIMATE)["worst_rmse"]
+  return float(np.asarray(value).reshape(-1)[0])
 
 
 def test_worst_rmse_is_the_worst_camera_that_was_measured(tmp_path: Path) -> None:
@@ -142,7 +135,7 @@ def test_layer_identity_and_no_recording_info(estimate_rrd: Path) -> None:
   reader = RrdReader(str(estimate_rrd))
   assert [e.recording_id for e in reader.recordings()] == ["sess_x"]
   chunk_paths = {c.entity_path for c in reader.store().stream().to_chunks()}
-  # send_properties=False writes no RecordingInfo chunk to collide on catalog merge.
+  # No RecordingInfo chunk collides with the base segment on catalog merge.
   assert "/__properties" not in chunk_paths
   # Path parity with the schema builders.
   assert f"/{schema.state('cam00', 'pose')}" in chunk_paths
