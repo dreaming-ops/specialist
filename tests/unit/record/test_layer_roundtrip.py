@@ -9,39 +9,11 @@ from rerun.chunk import RrdReader
 from specialist_dataset import schema
 from specialist_dataset.read import Recording, read_keyframe_poses
 
-from specialist.vi_ba.summary import CameraSummary
 from tests.record_fixtures import camera_estimate, urdf_file, write_run
 
 
-@pytest.fixture(scope="module")
-def estimate_rrd(tmp_path_factory: pytest.TempPathFactory) -> Path:
-  """The estimate layer of a solved two-camera run."""
-  cameras = [camera_estimate("cam00"), camera_estimate("cam01", offset=1.0)]
-  estimate, _viz = write_run(
-    tmp_path_factory.mktemp("roundtrip"),
-    "sess_x",
-    cameras,
-    per_camera=[
-      CameraSummary(
-        slot=c.slot,
-        n_keyframes=4,
-        anchor_obs=3,
-        front_rmse=0.4,
-        base_tag_id=c.base_tag_id,
-        seat_rotation=(0.0, 0.0, 0.05),
-        seat_anchor_obs=12,
-        seat_cross_obs=7,
-      )
-      for c in cameras
-    ],
-    urdf_path=urdf_file(tmp_path_factory.mktemp("urdf")),
-    frame_period=1.0 / 30.0,
-  )
-  return estimate
-
-
-def test_estimate_roundtrip(estimate_rrd: Path) -> None:
-  run = read_keyframe_poses(estimate_rrd)
+def test_estimate_roundtrip(estimated_run: tuple[Path, Path]) -> None:
+  run = read_keyframe_poses(estimated_run[0])
   assert run.slots == ["cam00", "cam01"]
   for slot, offset in (("cam00", 0.0), ("cam01", 1.0)):
     times = run.kf_times_by_slot[slot]
@@ -52,9 +24,11 @@ def test_estimate_roundtrip(estimate_rrd: Path) -> None:
     np.testing.assert_allclose(run.kf_rotations_by_slot[slot], expected_r, atol=1e-6)
 
 
-def test_the_run_account_is_a_property_not_an_entity(estimate_rrd: Path) -> None:
+def test_the_run_account_is_a_property_not_an_entity(
+  estimated_run: tuple[Path, Path],
+) -> None:
   """A catalog reads it without opening the segment, so no entity carries a copy."""
-  columns = RrdReader(str(estimate_rrd)).store().schema().component_columns()
+  columns = RrdReader(str(estimated_run[0])).store().schema().component_columns()
   fields = {
     c.component
     for c in columns
@@ -64,76 +38,30 @@ def test_the_run_account_is_a_property_not_an_entity(estimate_rrd: Path) -> None
   assert {"final_graph_error", "solver_iterations", "worst_rmse", "git_sha"} <= fields
 
 
-def _worst_rmse(estimate: Path) -> float:
-  """The selector a catalog filters on, read back off the layer."""
-  with Recording(estimate) as recording:
-    value = recording.property(schema.ESTIMATE)["worst_rmse"]
-  return float(np.asarray(value).reshape(-1)[0])
-
-
-def test_worst_rmse_is_the_worst_camera_that_was_measured(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+  ("front_rmse", "worst"), [([float("nan"), 0.4], 0.4), ([float("nan")], float("nan"))]
+)
+def test_worst_rmse_is_the_worst_camera_that_was_measured(
+  tmp_path: Path, front_rmse: list[float], worst: float
+) -> None:
   """An unmeasured camera's NaN RMSE never wins and never poisons the comparison."""
   cameras = [camera_estimate("cam00"), camera_estimate("cam01", offset=1.0)]
   estimate, _viz = write_run(
     tmp_path,
-    "sess_rmse",
-    cameras,
-    per_camera=[
-      # The NaN camera comes first.
-      CameraSummary(
-        slot=cameras[0].slot,
-        n_keyframes=4,
-        anchor_obs=3,
-        front_rmse=float("nan"),
-        base_tag_id=2000,
-        seat_rotation=(0.0, 0.0, 0.05),
-        seat_anchor_obs=12,
-        seat_cross_obs=7,
-      ),
-      CameraSummary(
-        slot=cameras[1].slot,
-        n_keyframes=4,
-        anchor_obs=3,
-        front_rmse=0.4,
-        base_tag_id=2003,
-        seat_rotation=(0.0, 0.0, 0.05),
-        seat_anchor_obs=12,
-        seat_cross_obs=7,
-      ),
-    ],
+    "sess",
+    cameras[: len(front_rmse)],
+    front_rmse=front_rmse,
     urdf_path=urdf_file(tmp_path),
     frame_period=1.0 / 30.0,
   )
-  assert _worst_rmse(estimate) == pytest.approx(0.4)
+  with Recording(estimate) as recording:
+    value = recording.property(schema.ESTIMATE)["worst_rmse"]
+  np.testing.assert_allclose(np.asarray(value).reshape(-1)[0], worst)
 
 
-def test_worst_rmse_is_nan_when_no_camera_was_measured(tmp_path: Path) -> None:
-  cameras = [camera_estimate("cam00")]
-  estimate, _viz = write_run(
-    tmp_path,
-    "sess_unmeasured",
-    cameras,
-    per_camera=[
-      CameraSummary(
-        slot=cameras[0].slot,
-        n_keyframes=4,
-        anchor_obs=3,
-        front_rmse=float("nan"),
-        base_tag_id=2000,
-        seat_rotation=(0.0, 0.0, 0.05),
-        seat_anchor_obs=12,
-        seat_cross_obs=7,
-      )
-    ],
-    urdf_path=urdf_file(tmp_path),
-    frame_period=1.0 / 30.0,
-  )
-  assert np.isnan(_worst_rmse(estimate))
-
-
-def test_layer_identity_and_no_recording_info(estimate_rrd: Path) -> None:
-  reader = RrdReader(str(estimate_rrd))
-  assert [e.recording_id for e in reader.recordings()] == ["sess_x"]
+def test_layer_identity_and_no_recording_info(estimated_run: tuple[Path, Path]) -> None:
+  reader = RrdReader(str(estimated_run[0]))
+  assert [e.recording_id for e in reader.recordings()] == ["sess_route"]
   chunk_paths = {c.entity_path for c in reader.store().stream().to_chunks()}
   # No RecordingInfo chunk collides with the base segment on catalog merge.
   assert "/__properties" not in chunk_paths
@@ -142,10 +70,12 @@ def test_layer_identity_and_no_recording_info(estimate_rrd: Path) -> None:
   assert f"/{schema.base_tag('cam00')}" in chunk_paths
 
 
-def test_linear_velocity_lands_on_its_own_entity(estimate_rrd: Path) -> None:
+def test_linear_velocity_lands_on_its_own_entity(
+  estimated_run: tuple[Path, Path],
+) -> None:
   """The keyframe velocities sit on their own entity, one value per keyframe."""
   rows = 0
-  for chunk in RrdReader(str(estimate_rrd)).store().stream().to_chunks():
+  for chunk in RrdReader(str(estimated_run[0])).store().stream().to_chunks():
     if chunk.entity_path != f"/{schema.state('cam00', 'lin_vel')}":
       continue
     batch = chunk.to_record_batch()

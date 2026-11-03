@@ -14,7 +14,7 @@ from rerun.chunk import Chunk, LazyChunkStream, OptimizationProfile
 from specialist_dataset import schema
 
 from specialist.vi_ba.summary import CameraSummary, Summary
-from specialist.vi_ba.viz import Layers, estimate_chunks
+from specialist.vi_ba.viz import estimate_chunks
 from specialist.vi_ba.viz_build import RunEstimate
 
 __all__ = ["git_sha", "write_estimate_layers"]
@@ -74,10 +74,7 @@ def write_estimate_layers(
   partials = {
     path: path.parent / (path.name + ".partial") for path in (estimate_path, viz_path)
   }
-  kept: list[Chunk] = []
-  drawn: list[Chunk] = []
-  estimate_chunks(
-    Layers(estimate=kept.append, viz=drawn.append),
+  layers = estimate_chunks(
     estimate.cameras,
     estimate.world_T_anchor,
     estimate.reference_tag_id,
@@ -86,10 +83,10 @@ def write_estimate_layers(
     timeline_start=timeline_start,
     frame_period=frame_period,
   )
-  kept += _run_chunks(summary, estimate.per_camera, estimated_at)
+  kept = layers.estimate + _run_chunks(summary, estimate.per_camera, estimated_at)
   ids = {"application_id": schema.APPLICATION_ID, "recording_id": session_id}
   try:
-    LazyChunkStream.from_iter(drawn).write_rrd(partials[viz_path], **ids)
+    LazyChunkStream.from_iter(layers.viz).write_rrd(partials[viz_path], **ids)
     LazyChunkStream.from_iter(kept).collect(
       optimize=OptimizationProfile.OBJECT_STORE
     ).write_rrd(partials[estimate_path], **ids)

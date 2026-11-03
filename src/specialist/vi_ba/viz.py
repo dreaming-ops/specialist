@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -49,30 +48,27 @@ __all__ = [
 ]
 
 
-Sink = Callable[[Chunk], None]
-
-
 @dataclass(frozen=True)
 class Layers:
   """Chunks by layer: values to compute with in ``estimate``, drawings in ``viz``."""
 
-  estimate: Sink
-  viz: Sink
+  estimate: list[Chunk]
+  viz: list[Chunk]
 
 
-def _send(emit: Sink, entity_path: str, indexes: Any, columns: Any) -> None:
-  """One temporal chunk, shaped exactly as the columnar log call was."""
-  emit(Chunk.from_columns(entity_path, indexes=indexes, columns=columns))
+def _send(chunks: list[Chunk], entity_path: str, indexes: Any, columns: Any) -> None:
+  """One temporal chunk at one entity."""
+  chunks.append(Chunk.from_columns(entity_path, indexes=indexes, columns=columns))
 
 
-def _in_world(emit: Sink, entity_path: str) -> None:
+def _in_world(chunks: list[Chunk], entity_path: str) -> None:
   """Declare the entity's data in the world frame; never call it on a parent."""
-  _static(emit, entity_path, rr.CoordinateFrame.columns(frame=[schema.WORLD_FRAME]))
+  _static(chunks, entity_path, rr.CoordinateFrame.columns(frame=[schema.WORLD_FRAME]))
 
 
-def _static(emit: Sink, entity_path: str, *columns: Any) -> None:
+def _static(chunks: list[Chunk], entity_path: str, *columns: Any) -> None:
   """One static chunk carrying every archetype logged at that entity."""
-  emit(
+  chunks.append(
     Chunk.from_columns(
       entity_path, indexes=[], columns=[c for group in columns for c in group]
     )
@@ -281,7 +277,7 @@ def _send_tag_axes_columns(
 
 
 def _send_factor_line_columns(
-  emit: Sink,
+  chunks: list[Chunk],
   entity_path: str,
   lines_per_kf: list[Float64Array],
   indexes: list[rr.TimeColumn],
@@ -292,10 +288,10 @@ def _send_factor_line_columns(
   total = sum(partition)
   if total == 0:
     return
-  _in_world(emit, entity_path)
+  _in_world(chunks, entity_path)
   strips = [line.astype(np.float32) for arr in lines_per_kf for line in arr]
   _send(
-    emit,
+    chunks,
     entity_path,
     indexes,
     rr.LineStrips3D.columns(
@@ -356,7 +352,7 @@ class CameraEstimate:
 
 
 def _send_joint_transform(
-  emit: Sink,
+  chunks: list[Chunk],
   entity_path: str,
   joint: Any,
   times: Float64Array,
@@ -368,7 +364,7 @@ def _send_joint_transform(
     times = np.concatenate(([indexes.timeline_start], times))
     angles = np.concatenate((angles[:1], angles))
   _send(
-    emit,
+    chunks,
     entity_path,
     indexes.dense(times),
     joint.compute_transform_columns([float(a) for a in angles]),
@@ -717,7 +713,6 @@ def _send_camera(
 
 
 def estimate_chunks(
-  layers: Layers,
   cameras: list[CameraEstimate],
   world_T_anchor: dict[int, gtsam.Pose3],
   reference_tag_id: int,
@@ -725,9 +720,9 @@ def estimate_chunks(
   urdf_path: Path,
   timeline_start: float,
   frame_period: float,
-) -> None:
+) -> Layers:
   """Every entity of a solved run as chunks, sorted into the estimate and viz layers."""
-  layers.estimate(world_chunk())
+  layers = Layers([world_chunk()], [])
   for tag_id, pose in world_T_anchor.items():
     _send_tag(
       layers,
@@ -748,3 +743,4 @@ def estimate_chunks(
       timeline_start=timeline_start,
       frame_period=frame_period,
     )
+  return layers

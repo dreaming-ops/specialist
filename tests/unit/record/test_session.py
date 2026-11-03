@@ -10,6 +10,7 @@ import pytest
 from rerun.chunk import RrdReader
 from specialist_dataset import frames, schema
 from specialist_dataset.frames import LensFrames
+from specialist_dataset.read import Recording
 
 from specialist.record.base import (
   BODY_R_IMU,
@@ -206,13 +207,9 @@ def test_imu_calibration_roundtrips(base_rrd: Path) -> None:
     np.asarray(bias.gyroscope()), np.asarray(expected.gyroscope()), atol=1e-12
   )
   np.testing.assert_allclose(session.body_R_imu("cam00"), BODY_R_IMU, atol=1e-12)
-  assert session.rolling_shutter_readout("cam00") == pytest.approx(0.0157)
-
-
-def _value(rrd: Path, entity: str, component: str) -> float:
-  """One static scalar off an entity."""
-  row = SessionRecording(rrd)._entity_row(entity.lstrip("/"))
-  return float(np.asarray(row[component]).reshape(-1)[0])
+  with Recording(base_rrd) as recording:
+    readout = recording.row(schema.imu("cam00"))["rolling_shutter_readout"]
+  assert np.asarray(readout).reshape(-1)[0] == pytest.approx(0.0157)
 
 
 def test_capture_telemetry_reaches_the_base(base_rrd: Path) -> None:
@@ -229,9 +226,10 @@ def test_capture_telemetry_reaches_the_base(base_rrd: Path) -> None:
   cap = f"/{schema.camera('cam00')}"
   assert {"serial_number", "camera_type", "fw_version", "photo_rot"} <= columns[cap]
   assert {"source", "clock_shift", "clock_confidence"} <= columns[cap]
+  with Recording(base_rrd) as recording:
+    row = recording.row(schema.camera("cam00"))
   # The shift is the one the streams carry.
-  assert _value(base_rrd, cap, "clock_shift") == pytest.approx(-0.25)
-  row = SessionRecording(base_rrd)._entity_row(cap.lstrip("/"))
+  assert np.asarray(row["clock_shift"]).reshape(-1)[0] == pytest.approx(-0.25)
   assert str(np.asarray(row["source"]).reshape(-1)[0]) == "a_00_.insv"
   assert rows[f"/{schema.exposure('cam00')}"] == 3
   assert rows[f"/{schema.autoexposure('cam00')}"] == 2

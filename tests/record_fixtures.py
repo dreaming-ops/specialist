@@ -25,25 +25,12 @@ def synthetic_insv() -> InsvData:
   """Both lenses share one ``offset_v3`` block, and the IMU rolls at 90 deg/s."""
   block = [
     1.9,  # xi
-    5000.0,
-    5001.0,
-    2970.0,
-    2971.0,  # fx fy cx cy
-    0.5,
-    -0.3,
-    90.0,  # yaw pitch roll deg
-    0.01,
-    0.02,
-    0.03,  # t
-    0.1,
-    -0.05,
-    0.01,
-    0.001,
-    -0.002,  # k1..k3 p1 p2
-    11904.0,
-    5952.0,
-    0.0,  # frame w h unknown
-  ]
+    5000.0, 5001.0, 2970.0, 2971.0,  # fx fy cx cy
+    0.5, -0.3, 90.0,  # yaw pitch roll deg
+    0.01, 0.02, 0.03,  # t
+    0.1, -0.05, 0.01, 0.001, -0.002,  # k1..k3 p1 p2
+    11904.0, 5952.0, 0.0,  # frame w h unknown
+  ]  # fmt: skip
   return InsvData(
     imu_timestamps=np.array([-0.5, 0.0, 0.001, 0.002]),
     gyro=np.radians([[90.0, 0.0, 0.0]] * 4),
@@ -177,42 +164,29 @@ def camera_estimate(
   return data
 
 
-def make_summary(cross_camera_obs: int = 7) -> Summary:
-  return Summary(
-    cross_camera_obs=cross_camera_obs,
-    initial_graph_error=10.0,
-    final_graph_error=1.0,
-    solver_iterations=5,
-    anchor_move_translation=float("nan"),
-    anchor_move_rotation=float("nan"),
-  )
-
-
 def write_run(
   root: Path,
   session_id: str,
   cameras: list[CameraEstimate],
   *,
-  per_camera: list[CameraSummary] | None = None,
-  summary: Summary | None = None,
+  front_rmse: list[float] | None = None,
   urdf_path: Path,
   frame_period: float,
 ) -> tuple[Path, Path]:
   """Write both layers under ``root`` and return the estimate and viz paths."""
-  if per_camera is None:
-    per_camera = [
-      CameraSummary(
-        c.slot,
-        len(c.keyframe_times),
-        sum(1 for lines in c.anchor_obs_lines if len(lines)),
-        front_rmse=0.4,
-        base_tag_id=c.base_tag_id,
-        seat_rotation=(0.0, 0.0, 0.05),
-        seat_anchor_obs=12,
-        seat_cross_obs=7,
-      )
-      for c in cameras
-    ]
+  per_camera = [
+    CameraSummary(
+      c.slot,
+      len(c.keyframe_times),
+      sum(1 for lines in c.anchor_obs_lines if len(lines)),
+      front_rmse=rmse,
+      base_tag_id=c.base_tag_id,
+      seat_rotation=(0.0, 0.0, 0.05),
+      seat_anchor_obs=12,
+      seat_cross_obs=7,
+    )
+    for c, rmse in zip(cameras, front_rmse or [0.4] * len(cameras), strict=True)
+  ]
   estimate_path = root / "estimate" / f"{session_id}.rrd"
   viz_path = root / "viz" / f"{session_id}.rrd"
   write_estimate_layers(
@@ -224,7 +198,14 @@ def write_run(
       world_T_anchor={0: gtsam.Pose3()},
       reference_tag_id=0,
     ),
-    summary=summary or make_summary(),
+    summary=Summary(
+      cross_camera_obs=7,
+      initial_graph_error=10.0,
+      final_graph_error=1.0,
+      solver_iterations=5,
+      anchor_move_translation=float("nan"),
+      anchor_move_rotation=float("nan"),
+    ),
     anchor_tag_size=0.1,
     session_id=session_id,
     urdf_path=urdf_path,

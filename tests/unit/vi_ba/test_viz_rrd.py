@@ -18,8 +18,7 @@ from specialist.vi_ba.blueprint import (
   _without_pixels,
 )
 from specialist.vi_ba.summary import CameraSummary, Summary
-from specialist.vi_ba.viz import CameraEstimate
-from tests.record_fixtures import camera_estimate, urdf_file, write_run
+from tests.record_fixtures import camera_estimate, urdf_file
 
 # Every entity a solve writes, and the layer that must carry it.
 _ESTIMATE = (
@@ -59,24 +58,6 @@ _ASSET = (
 )
 
 
-def _two_cameras() -> list[CameraEstimate]:
-  return [camera_estimate("cam00"), camera_estimate("cam01", offset=1.0)]
-
-
-@pytest.fixture(scope="module")
-def estimated_run(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path]:
-  """One two-camera run with a URDF model."""
-  tmp = tmp_path_factory.mktemp("solved")
-  # A frame clock, so the review timeline exists.
-  return write_run(
-    tmp,
-    "sess_route",
-    _two_cameras(),
-    urdf_path=urdf_file(tmp),
-    frame_period=1.0 / 30.0,
-  )
-
-
 @pytest.fixture(scope="module")
 def assets(tmp_path_factory: pytest.TempPathFactory) -> list[Path]:
   dataset = tmp_path_factory.mktemp("dataset")
@@ -89,21 +70,20 @@ def _chunks(path: Path) -> list[Chunk]:
 
 
 def _names(path: Path) -> set[tuple[str, str]]:
-  """Every ``(entity, component)`` one layer writes."""
+  """Every ``(entity, component)`` one file writes."""
   columns = RrdReader(str(path)).store().schema().component_columns()
   return {(c.entity_path, c.component) for c in columns}
 
 
-def _column(path: Path, entity: str, component: str) -> list[list[object]]:
-  """Every row one component holds at one entity, empty rows included."""
-  rows = []
-  for chunk in _chunks(path):
-    if chunk.entity_path != entity:
-      continue
-    batch = chunk.to_record_batch()
-    if component in batch.schema.names:
-      rows.extend(batch.to_pydict()[component])
-  return rows
+def _cells(component: str, *paths: Path) -> list[tuple[str, bool, Any]]:
+  """Every row of one component across files, empty rows included."""
+  return [
+    (chunk.entity_path, chunk.is_static, row)
+    for path in paths
+    for chunk in _chunks(path)
+    if component in (batch := chunk.to_record_batch()).schema.names
+    for row in batch.column(component).to_pylist()
+  ]
 
 
 def test_the_fixture_carries_one_of_everything_a_camera_holds() -> None:
@@ -203,14 +183,9 @@ _DRAWABLE = ("Points3D", "LineStrips3D", "Boxes3D", "Asset3D", "TransformAxes3D"
 def test_an_anchor_records_the_width_it_was_solved_against(
   estimated_run: tuple[Path, Path],
 ) -> None:
-  estimate, _ = estimated_run
-  sizes = set()
-  for chunk in _chunks(estimate):
-    if not str(chunk.entity_path).startswith(f"/{schema.WORLD}/anchor/"):
-      continue
-    batch = chunk.to_record_batch()
-    if "tag_size" in batch.schema.names:
-      sizes |= {v for row in batch.column("tag_size").to_pylist() if row for v in row}
+  cells = _cells("tag_size", estimated_run[0])
+  anchor = f"/{schema.WORLD}/anchor/"
+  sizes = {v for e, _, row in cells if e.startswith(anchor) and row for v in row}
   assert sizes == {0.1}
 
 
@@ -225,21 +200,11 @@ def test_what_the_camera_pose_carries_is_only_what_is_mounted_on_it(
   estimated_run: tuple[Path, Path], assets: list[Path]
 ) -> None:
   """Anything not mounted on the camera names its own frame or both ends of its edge."""
-  declared: set[str] = set()
-  detached: set[str] = set()
-  drawable: set[str] = set()
-  path_framed: set[str] = set()
-  for path in (*estimated_run, *assets):
-    for chunk in _chunks(path):
-      entity, names = chunk.entity_path, chunk.to_record_batch().schema.names
-      if "CoordinateFrame:frame" in names:
-        declared.add(entity)
-      if "Transform3D:parent_frame" in names:
-        detached.add(entity)
-      elif any(n.startswith("Transform3D:") for n in names):
-        path_framed.add(entity)
-      if any(n.split(":")[0] in _DRAWABLE for n in names):
-        drawable.add(entity)
+  names = set().union(*map(_names, (*estimated_run, *assets)))
+  declared = {e for e, c in names if c == "CoordinateFrame:frame"}
+  detached = {e for e, c in names if c == "Transform3D:parent_frame"}
+  path_framed = {e for e, c in names if c.startswith("Transform3D:")}
+  drawable = {e for e, c in names if c.split(":")[0] in _DRAWABLE}
 
   def mounted(entity: str) -> bool:
     if not entity.startswith("/camera/cam0"):
@@ -262,52 +227,24 @@ def test_every_tag_the_solve_used_is_named_in_the_layer(
   estimated_run: tuple[Path, Path], assets: list[Path]
 ) -> None:
   """Each anchor, base tag and finger tag is an entity with its own pose and id."""
-  named: dict[str, int] = {}
-  for chunk in _chunks(estimated_run[0]):
-    batch = chunk.to_record_batch()
-    if "tag_id" in batch.schema.names:
-      # Clearing rows carry an empty id; tag entities and drawn rows carry a real one.
-      ids = [v for row in batch.to_pydict()["tag_id"] or [] for v in (row or [])]
-      if ids:
-        named[chunk.entity_path] = int(ids[0])
+  # The rows that clear an overlay carry an empty id.
+  named = {e: int(row[0]) for e, _, row in _cells("tag_id", estimated_run[0]) if row}
   assert named.get(f"/{schema.base_tag('cam00')}") == 2000
   for joint, tag in (("left_finger", 2001), ("right_finger", 2002)):
     entity = f"/{schema.joint_tag('cam00', joint)}"
     assert named.get(entity) == tag, (entity, named.get(entity), named)
 
   # Naming a frame nothing defines places the tag nowhere.
-  defined, named_frames = set(), {}
-  for path in (*estimated_run, *assets):
-    for chunk in _chunks(path):
-      batch = chunk.to_record_batch()
-      row = batch.to_pydict()
-      for column, sink in (
-        ("Transform3D:child_frame", defined),
-        ("CoordinateFrame:frame", None),
-      ):
-        if column not in batch.schema.names:
-          continue
-        for value in row[column]:
-          frame = value[0] if isinstance(value, list) else value
-          if not frame:
-            continue
-          if sink is None:
-            named_frames[chunk.entity_path] = str(frame)
-          else:
-            sink.add(str(frame))
-  dangling = {e: f for e, f in named_frames.items() if f not in defined}
+  defined = _child_frames(*estimated_run, *assets)
+  cells = _cells("CoordinateFrame:frame", *estimated_run, *assets)
+  dangling = {e: row[0] for e, _, row in cells if row and row[0] not in defined}
   assert not dangling, f"entities naming a frame nothing defines: {dangling}"
 
 
-def _child_frames(path: Path) -> set[str]:
-  """Every frame one file defines an edge onto."""
-  frames: set[str] = set()
-  for chunk in _chunks(path):
-    batch = chunk.to_record_batch()
-    if "Transform3D:child_frame" in batch.schema.names:
-      column = batch.column("Transform3D:child_frame").to_pylist()
-      frames |= {str(f) for row in column if row for f in row}
-  return frames
+def _child_frames(*paths: Path) -> set[str]:
+  """Every frame the files define an edge onto."""
+  cells = _cells("Transform3D:child_frame", *paths)
+  return {f for _, _, row in cells if row for f in row}
 
 
 def test_the_model_the_angles_came_from_is_named(
@@ -315,15 +252,10 @@ def test_the_model_the_angles_came_from_is_named(
 ) -> None:
   """The layer names the robot and the URDF's digest."""
   gripper = f"/{schema.gripper('cam00')}"
-  values = {
-    name: column[0]
-    for chunk in _chunks(estimated_run[0])
-    if chunk.entity_path == gripper
-    for name, column in chunk.to_record_batch().to_pydict().items()
-  }
-  assert values["robot"] == ["gripper"]
   digest = hashlib.sha256(urdf_file(tmp_path).read_bytes()).hexdigest()
-  assert values["urdf_sha"] == [digest]
+  for name, value in (("robot", "gripper"), ("urdf_sha", digest)):
+    rows = [row for e, _, row in _cells(name, estimated_run[0]) if e == gripper]
+    assert rows == [[value]], name
 
 
 def test_the_asset_is_the_model_and_only_its_fixed_edges(
@@ -349,15 +281,11 @@ def test_no_frame_is_defined_twice(
 ) -> None:
   """Rerun resolves two definitions of one frame by log order, and a static one hides a temporal one."""
   by_frame: dict[str, set[str]] = {}
-  for path in (*estimated_run, *assets):
-    for chunk in _chunks(path):
-      batch = chunk.to_record_batch()
-      if "Transform3D:child_frame" not in batch.schema.names:
-        continue
-      for value in batch.to_pydict()["Transform3D:child_frame"]:
-        name = value[0] if isinstance(value, list) else value
-        if name:
-          by_frame.setdefault(str(name), set()).add(chunk.entity_path)
+  for entity, _static, row in _cells(
+    "Transform3D:child_frame", *estimated_run, *assets
+  ):
+    if row:
+      by_frame.setdefault(row[0], set()).add(entity)
   twice = {name: sorted(e) for name, e in by_frame.items() if len(e) > 1}
   assert not twice, f"frames defined by more than one entity: {twice}"
 
@@ -378,7 +306,7 @@ def test_what_the_lens_measured_is_an_answer_not_a_picture(
     assert (entity, component) in estimate, f"{entity}:{component} is not an answer"
     assert (entity, component) not in viz, f"{entity}:{component} is drawn twice"
 
-  ids = _column(estimated_run[0], f"{lens}/tags", "tag_id")
+  ids = [row for e, _, row in _cells("tag_id", estimated_run[0]) if e == f"{lens}/tags"]
   assert sorted({int(v) for row in ids for v in row}) == [0, 2000]
   assert (f"{lens}/tags/center", "Points2D:labels") in viz
 
@@ -455,18 +383,13 @@ def test_training_fields_carry_the_keyframe_index(
   assert {"video_time", "keyframe"} <= timelines[pose], timelines.get(pose)
 
 
-def test_every_overlay_answers_on_the_keyframe_clock_alone(tmp_path: Path) -> None:
+def test_every_overlay_answers_on_the_keyframe_clock_alone(
+  estimated_run: tuple[Path, Path],
+) -> None:
   """An overlay is one keyframe's answer about one frame."""
-  estimate, viz = write_run(
-    tmp_path,
-    "sess_kf",
-    _two_cameras(),
-    urdf_path=urdf_file(tmp_path),
-    frame_period=1.0 / 30.0,
-  )
   geometry = ("strips", "positions")
   answered = 0
-  for path in (estimate, viz):
+  for path in estimated_run:
     by_entity: dict[str, list[Chunk]] = {}
     for chunk in _chunks(path):
       if not chunk.is_static and (
@@ -540,10 +463,7 @@ def test_the_3d_view_drops_everything_measured_in_pixels(
   """The viewer refuses a 2D archetype without a pinhole above it."""
   flat = ("Points2D", "LineStrips2D", "Boxes2D")
   pixel_entities = {
-    chunk.entity_path
-    for path in estimated_run
-    for chunk in _chunks(path)
-    if any(n.split(":")[0] in flat for n in chunk.to_record_batch().schema.names)
+    e for path in estimated_run for e, c in _names(path) if c.split(":")[0] in flat
   }
   assert pixel_entities, "no 2D entity was written, so nothing is being checked"
   dropped = {
