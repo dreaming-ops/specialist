@@ -48,4 +48,11 @@
 #endif
 #endif
 
+// Keep implementation-detail symbols private to the library.
+#if !defined(_WIN32) && (defined(__GNUC__) || defined(__clang__))
+#  define GTSAM_LOCAL __attribute__((visibility("hidden")))
+#else
+#  define GTSAM_LOCAL
+#endif
+
 #undef GTSAM_SHARED_LIB

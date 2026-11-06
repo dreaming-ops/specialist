@@ -367,16 +367,16 @@ wheels = [
 
 [[package]]
 name = "gtsam"
-version = "4.3a0"
+version = "4.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "numpy" },
+    { name = "pytest" },
 ]
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/d1/6d892bf58e584340cf5733ff09bf8bef5dacc66564a56074ca5f58bea800/gtsam-4.3a0-cp312-cp312-macosx_10_15_x86_64.whl", hash = "sha256:80827c2722ce6728275c665aa3a22d0b0296472028b2e48e29600ccba8033de7", size = 26430979, upload-time = "2025-05-19T18:19:27.511Z" },
-    { url = "https://files.pythonhosted.org/packages/cd/7c/f6f17d87adca6c5de14641a347108fe0e09ba4787c71e78b88c3b99558a2/gtsam-4.3a0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:16a47b1ae366b5dde35b08bfbd637c22f04be99a948f77a32aeefd4df0982b4d", size = 24044894, upload-time = "2025-05-19T18:19:37.269Z" },
-    { url = "https://files.pythonhosted.org/packages/9c/e8/f92d75bf476cda11185ad8982ddd48aecdf2706cd63e155f8914224ad1df/gtsam-4.3a0-cp312-cp312-manylinux_2_17_aarch64.manylinux2014_aarch64.whl", hash = "sha256:447bcf606afbf18eaa147acfe51edb93a878dec177447fd05033ca5ff6e004dc", size = 25886290, upload-time = "2025-05-19T18:19:54.845Z" },
-    { url = "https://files.pythonhosted.org/packages/02/54/9824b634583d01a875b56129a2813bc08714726ba68e4bb74d19e762b207/gtsam-4.3a0-cp312-cp312-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:efdf8d970004dc43aeabd6b6c8947071d513e4846a19b231450987911e0144be", size = 27100546, upload-time = "2025-05-19T18:20:13.289Z" },
+    { url = "https://files.pythonhosted.org/packages/35/c8/139a044606e650d289e52c09464c0f601e0a200de83051668dfb830b43d3/gtsam-4.3.0-cp312-cp312-macosx_10_15_universal2.whl", hash = "sha256:771a992142368fb5ff58c8684202c2f1d22abfa861b1c158572acbd5b51a8e05", size = 46961345, upload-time = "2026-09-19T01:05:21.776Z" },
+    { url = "https://files.pythonhosted.org/packages/ed/72/1a36023b71f784ed673318783f10db5c568adb78eb4e74350c0b6ff6aff8/gtsam-4.3.0-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a23c4e604c4e1437c64bf5cc07cd8e8b9cd21d072914a514ba184730d1cae501", size = 33312798, upload-time = "2026-09-19T01:05:24.763Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/2e/2fee779af337321716cadd20dc81c878f6b7431a698faac4bc8984e92a3e/gtsam-4.3.0-cp312-cp312-manylinux_2_27_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:b8f227ae3ec96641d511e64fd2d26e2804f4ba94e67d0272fbdaad2b0dca5455", size = 34583489, upload-time = "2026-09-19T01:05:27.546Z" },
 ]
 
 [[package]]
@@ -990,11 +990,11 @@ wheels = [
 
 [[package]]
 name = "pybind11"
-version = "2.13.6"
+version = "3.0.4"
 source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/d2/c1/72b9622fcb32ff98b054f724e213c7f70d6898baa714f4516288456ceaba/pybind11-2.13.6.tar.gz", hash = "sha256:ba6af10348c12b24e92fa086b39cfba0eff619b61ac77c406167d813b096d39a", size = 218403, upload-time = "2024-09-14T00:35:22.606Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/cc/f0/35145a3c3baffeef55d4b8324caa33abaa8fa56ab345ecd4b2211d09163e/pybind11-3.0.4.tar.gz", hash = "sha256:3286b59c8a774b9ee650169302dd5a4eedc30a8617905a0560dd8ee44775130c", size = 589533, upload-time = "2026-04-19T03:08:15.925Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/13/2f/0f24b288e2ce56f51c920137620b4434a38fd80583dbbe24fc2a1656c388/pybind11-2.13.6-py3-none-any.whl", hash = "sha256:237c41e29157b962835d356b370ededd57594a26d5894a795960f0047cb5caf5", size = 243282, upload-time = "2024-09-14T00:35:20.361Z" },
+    { url = "https://files.pythonhosted.org/packages/b3/06/c3a23c9a0263b136c519f033a58d4641e73065fefc7754e9667ec206d992/pybind11-3.0.4-py3-none-any.whl", hash = "sha256:961720ee652da51d531b7b2451a6bd2bc042b0106e6d9baa48ecb7d58034ce63", size = 314166, upload-time = "2026-04-19T03:08:14.091Z" },
 ]
 
 [[package]]
@@ -1238,7 +1238,7 @@ gpu = [
 requires-dist = [
     { name = "allantools", specifier = ">=2024.6" },
     { name = "av", specifier = ">=13" },
-    { name = "gtsam", specifier = "==4.3a0" },
+    { name = "gtsam", specifier = "==4.3.0" },
     { name = "imageio-ffmpeg", specifier = ">=0.5" },
     { name = "numpy", specifier = ">=1.26" },
     { name = "opencv-python", specifier = ">=4.10" },
@@ -1257,7 +1257,7 @@ requires-dist = [
 dev = [
     { name = "mypy", specifier = ">=1.13" },
     { name = "pre-commit", specifier = ">=3.8" },
-    { name = "pybind11", specifier = "==2.13.6" },
+    { name = "pybind11", specifier = "==3.0.4" },
     { name = "pytest", specifier = ">=8.0" },
     { name = "ruff", specifier = "==0.15.0" },
 ]

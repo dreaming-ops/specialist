@@ -15,9 +15,10 @@
  * @author  Richard Roberts
  */
 
-// Vendored copy of gtsam's cmake-generated config.h for gtsam 4.3a0, matching
+// Vendored copy of gtsam's cmake-generated config.h for gtsam 4.3.0, matching
 // the options of the official PyPI wheel (quaternions off, EXPMAP on, STL
-// allocator, tangent preintegration, boost features on, no TBB). Committed so
+// allocator, tangent preintegration, slow-but-correct BetweenFactor, no V43
+// deprecations, boost features on, no TBB). Committed so
 // _mei_factor_cpp compiles against the wheel's ABI without running gtsam's full
 // cmake configure (which needs Boost component libraries absent on minimal
 // Linux installs). See specialist/vi_ba/_buildext.py.
@@ -34,7 +35,7 @@
 #define GTSAM_VERSION_MINOR 3
 #define GTSAM_VERSION_PATCH 0
 #define GTSAM_VERSION_NUMERIC 40300
-#define GTSAM_VERSION_STRING "4.3a0"
+#define GTSAM_VERSION_STRING "4.3.0"
 
 // Paths to example datasets distributed with GTSAM (unused by this extension;
 // neutralized so the vendored header carries no build-machine path).
@@ -46,6 +47,10 @@
 
 // Whether GTSAM is compiled to use Pose3::EXPMAP as the default coordinates mode for Pose3's retract and localCoordinates (otherwise, Pose3::FIRST_ORDER will be used)
 #define GTSAM_POSE3_EXPMAP
+
+// Whether GTSAM is compiled to use the full SE_2(3) Expmap/Logmap as the
+// optimization chart for NavState (otherwise, the component-wise chart is used)
+/* #undef GTSAM_NAVSTATE_EXPMAP */
 
 // Whether GTSAM is compiled to use Rot3::EXPMAP as the default coordinates mode for Rot3's retract and localCoordinates (otherwise, Pose3::CAYLEY will be used)
 #ifndef GTSAM_USE_QUATERNIONS
@@ -63,6 +68,12 @@
 
 // Whether we are using a TBB version higher than 2020
 /* #undef TBB_GREATER_EQUAL_2020 */
+
+// Whether to use bounded memory growth for TBB parallel tree traversal
+/* #undef GTSAM_TBB_BOUNDED_MEMORY_GROWTH_FLAG */
+
+// Whether MOSEK SDP solver support is enabled
+/* #undef GTSAM_USE_MOSEK */
 
 // Whether we are using system-Eigen or our own patched version
 /* #undef GTSAM_USE_SYSTEM_EIGEN */
@@ -89,21 +100,25 @@
 #define GTSAM_THROW_CHEIRALITY_EXCEPTION
 
 // Make sure dependent projects that want it can see deprecated functions
-#define GTSAM_ALLOW_DEPRECATED_SINCE_V43
+/* #undef GTSAM_ALLOW_DEPRECATED_SINCE_V43 */
 
 // Support Metis-based nested dissection
 #define GTSAM_SUPPORT_NESTED_DISSECTION
 
-// Support Metis-based nested dissection
+// Whether to use NavState SE_2(3) Lie-group IMU preintegration by default.
+// This selection takes precedence over tangent-space preintegration.
+/* #undef GTSAM_LIEGROUP_PREINTEGRATION */
+
+// Whether to use IMU pre-integration on tangent space
 #define GTSAM_TANGENT_PREINTEGRATION
 
 // Whether to use the system installed Metis instead of the provided one
 /* #undef GTSAM_USE_SYSTEM_METIS */
 
 // Toggle switch for BetweenFactor jacobian computation
-/* #undef GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR */
+#define GTSAM_SLOW_BUT_CORRECT_BETWEENFACTOR
 
-/* #undef GTSAM_SLOW_BUT_CORRECT_EXPMAP */
+#define GTSAM_SLOW_BUT_CORRECT_EXPMAP
 
 // Boost flags
 #define GTSAM_ENABLE_BOOST_SERIALIZATION 1

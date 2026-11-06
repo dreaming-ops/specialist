@@ -14,7 +14,6 @@ Float64Array = npt.NDArray[np.float64]
 GRAVITY = 9.81
 GRAVITY_WORLD = (0.0, 0.0, -GRAVITY)
 
-_INITIAL_BIAS_SIGMA = 1e-3
 # Samples per stationarity window: 50 ms of the ~1 kHz IMU.
 _STATIONARY_WINDOW = 50
 
@@ -99,7 +98,6 @@ def make_preintegration_params(
   params.setIntegrationCovariance(np.eye(3) * 1e-10)
   params.setBiasAccCovariance(np.eye(3) * accel_bias_rw_sigma**2)
   params.setBiasOmegaCovariance(np.eye(3) * gyro_bias_rw_sigma**2)
-  params.setBiasAccOmegaInit(np.eye(6) * _INITIAL_BIAS_SIGMA**2)
   return params
 
 

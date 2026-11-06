@@ -115,7 +115,7 @@ def _expected_state(offset: float, rate: float) -> dict[int, dict[str, np.ndarra
   turn = Rotation.from_rotvec(np.outer(SPIN * t, [0.0, 0.0, 1.0])) * (
     Rotation.from_rotvec([TILT, 0.0, 0.0])
   )
-  arm = turn.apply(np.asarray(BASE_TAG.translation()))
+  arm = turn.apply(np.array(BASE_TAG.translation()))
   tag = Rotation.from_quat(np.asarray(BASE_TAG.rotation().toQuaternion().coeffs()))
   quats = (turn * tag).as_quat()
   quats[quats[:, 3] < 0.0] *= -1.0
