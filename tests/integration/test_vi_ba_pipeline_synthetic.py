@@ -1,7 +1,5 @@
 """The VI-BA pipeline recovers synthetic ground truth from an anchor-seeded start."""
 
-from __future__ import annotations
-
 import gtsam
 import numpy as np
 from gtsam.symbol_shorthand import X

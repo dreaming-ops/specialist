@@ -5,8 +5,6 @@ Usage:
         --catalog-url rerun+http://host:port
 """
 
-from __future__ import annotations
-
 import sys
 import tempfile
 from dataclasses import dataclass

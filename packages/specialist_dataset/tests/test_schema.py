@@ -1,7 +1,5 @@
 """The naming authority: how a camera earns its slot, and what a slot is not."""
 
-from __future__ import annotations
-
 import numpy as np
 import pytest
 from specialist_dataset import schema

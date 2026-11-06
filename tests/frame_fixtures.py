@@ -1,7 +1,5 @@
 """Synthetic frame sequences shared by the vi_ba frontend unit tests."""
 
-from __future__ import annotations
-
 import cv2
 import numpy as np
 import numpy.typing as npt

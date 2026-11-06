@@ -1,7 +1,5 @@
 """The rows a state stream keeps, and the hand each camera rode."""
 
-from __future__ import annotations
-
 import numpy as np
 import numpy.typing as npt
 import pytest

@@ -1,8 +1,6 @@
 """Finger-tag kinematics: each tag rides a revolute joint off the base tag,
 ``body_T_tag(theta) = body_T_base_tag · base_T_joint · Rz(theta) · joint_T_tag0``."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import gtsam

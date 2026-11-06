@@ -1,7 +1,5 @@
 """What the two-pass solve reports about itself."""
 
-from __future__ import annotations
-
 import gtsam
 import pytest
 

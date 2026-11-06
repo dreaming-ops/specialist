@@ -1,8 +1,6 @@
 """Schur-complement Levenberg-Marquardt, the state system solved by conjugate
 gradients preconditioned with a cuDSS factorization of its banded truncation."""
 
-from __future__ import annotations
-
 import time
 from dataclasses import dataclass
 from pathlib import Path

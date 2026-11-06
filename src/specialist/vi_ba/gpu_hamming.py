@@ -1,7 +1,5 @@
 """Triton two-nearest Hamming search; ties go to the lower train index, as in cv2."""
 
-from __future__ import annotations
-
 from typing import Any
 
 import triton

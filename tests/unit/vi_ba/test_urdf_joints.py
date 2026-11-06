@@ -1,7 +1,5 @@
 """The URDF reader recovers the finger joints and their AprilTag frames."""
 
-from __future__ import annotations
-
 import math
 from pathlib import Path
 

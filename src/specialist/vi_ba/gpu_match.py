@@ -1,7 +1,5 @@
 """Lowe-ratio ORB matches for many keyframe pairs at once on the GPU."""
 
-from __future__ import annotations
-
 from typing import Any
 
 import numpy as np

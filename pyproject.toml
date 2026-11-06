@@ -2,7 +2,7 @@
 name = "specialist"
 version = "0.1.0"
 description = "Multi-camera AprilTag SLAM for human data collection"
-requires-python = ">=3.12,<3.13"
+requires-python = ">=3.14,<3.15"
 license = {text = "MIT"}
 dependencies = [
   # Pinned exactly: the native MEI factor links this wheel's libgtsam.
@@ -13,7 +13,7 @@ dependencies = [
   "rerun-sdk[catalog]>=0.42.0,<0.43",
   "av>=13",
   "tyro>=0.9",
-  "telemetry-parser>=0.3",
+  "telemetry-parser>=0.4",
   "opencv-python>=4.10",
   "pupil-apriltags>=1.0.4",
   "allantools>=2024.6",

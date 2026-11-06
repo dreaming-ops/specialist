@@ -1,7 +1,5 @@
 """The lens as the policy sees it: the block mean and the disc."""
 
-from __future__ import annotations
-
 import numpy as np
 import pytest
 from specialist_camera import block_mean, disc_mask, to_image

@@ -1,7 +1,5 @@
 """Offset between two captures from a cross correlation of their audio envelopes."""
 
-from __future__ import annotations
-
 import functools
 import subprocess
 from dataclasses import dataclass

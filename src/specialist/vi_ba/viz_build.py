@@ -1,7 +1,5 @@
 """Each camera's estimate and summary from one solved joint graph."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, replace
 
 import gtsam

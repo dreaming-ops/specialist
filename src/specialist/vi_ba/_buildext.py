@@ -1,7 +1,5 @@
 """Compile ``cpp/mei_factor.cpp`` against the gtsam wheel into ``_mei_factor_cpp``."""
 
-from __future__ import annotations
-
 import importlib.metadata
 import os
 import subprocess

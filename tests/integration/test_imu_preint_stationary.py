@@ -1,7 +1,5 @@
 """Preintegrating a real stationary IMU clip stays inside a 0.3° rotation budget."""
 
-from __future__ import annotations
-
 import math
 from pathlib import Path
 

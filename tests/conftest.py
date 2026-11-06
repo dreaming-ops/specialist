@@ -1,7 +1,5 @@
 """Tests solve on the host, with scipy standing in for the cuDSS factorization."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import pytest

@@ -1,7 +1,5 @@
 """``SessionRecording`` reads back from a base rrd everything the solve needs."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import gtsam

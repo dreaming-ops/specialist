@@ -1,7 +1,5 @@
 """``vi_ba.gpu_lm`` against gtsam's elimination and LM, and its native graph passes."""
 
-from __future__ import annotations
-
 from dataclasses import astuple
 
 import gtsam

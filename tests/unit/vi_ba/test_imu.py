@@ -1,7 +1,5 @@
 """IMU preintegration between keyframes and the stationary-window finder."""
 
-from __future__ import annotations
-
 import gtsam
 import numpy as np
 

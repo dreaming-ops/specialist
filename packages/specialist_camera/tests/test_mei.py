@@ -1,7 +1,5 @@
 """The MEI projection round-trips."""
 
-from __future__ import annotations
-
 from dataclasses import replace
 
 import numpy as np

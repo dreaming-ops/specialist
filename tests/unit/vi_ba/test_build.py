@@ -1,7 +1,5 @@
 """The VI graph builder and the LM wrapper over small synthetic scenes."""
 
-from __future__ import annotations
-
 import gtsam
 import numpy as np
 import pytest

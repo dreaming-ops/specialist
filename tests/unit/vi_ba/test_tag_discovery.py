@@ -1,7 +1,5 @@
 """Discovery separates the gripper's own tags from every other tag in the rear lens."""
 
-from __future__ import annotations
-
 from dataclasses import replace
 
 import gtsam

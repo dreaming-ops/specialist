@@ -1,7 +1,5 @@
 """IMU characterization probe; bias instability needs a still capture of 30 minutes."""
 
-from __future__ import annotations
-
 import math
 import sys
 from dataclasses import dataclass, field

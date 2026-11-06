@@ -1,8 +1,6 @@
 """Config dataclasses: ``Args`` is the tyro CLI of ``estimate.py``; ``CameraArgs``
 feeds ``prepare_camera``."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING

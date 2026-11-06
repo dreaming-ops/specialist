@@ -1,7 +1,5 @@
 """Insta360 H.264 ingest, losslessly remuxed to fix an SPS rerun's parser rejects."""
 
-from __future__ import annotations
-
 import subprocess
 from collections.abc import Iterable
 from pathlib import Path

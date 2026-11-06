@@ -1,7 +1,5 @@
 """``mei_factor.cpp`` and ``mei_project`` agree across the dataset's ``xi`` range."""
 
-from __future__ import annotations
-
 from dataclasses import astuple
 
 import gtsam

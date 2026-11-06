@@ -1,7 +1,5 @@
 """``vi_ba.gpu_flow``'s stream bookkeeping, which imports and runs without CUDA."""
 
-from __future__ import annotations
-
 from collections.abc import Iterator
 from typing import Any
 

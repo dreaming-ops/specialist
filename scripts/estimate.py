@@ -1,7 +1,5 @@
 """VI-BA driver: per-camera prep, one joint bundle in the reference anchor's world."""
 
-from __future__ import annotations
-
 import sys
 import tempfile
 from collections import Counter

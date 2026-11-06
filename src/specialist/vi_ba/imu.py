@@ -1,7 +1,5 @@
 """IMU samples, stationarity detection and GTSAM combined preintegration."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 
 import gtsam

@@ -1,7 +1,5 @@
 """MEI lens regimes, their projection, and a visual-only graph for the vi_ba tests."""
 
-from __future__ import annotations
-
 import gtsam
 import numpy as np
 from gtsam.symbol_shorthand import B, L, V, X

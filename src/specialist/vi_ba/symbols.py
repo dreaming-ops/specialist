@@ -1,7 +1,5 @@
 """GTSAM key namespace shared by the graph builders and the solvers."""
 
-from __future__ import annotations
-
 __all__ = [
   "ANCHOR_CHAR",
   "BASE_TAG_CHAR",

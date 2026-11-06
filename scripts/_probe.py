@@ -1,7 +1,5 @@
 """The ``.rrd`` + JSON summary tail the probe scripts share."""
 
-from __future__ import annotations
-
 import json
 import time
 from collections.abc import Callable, Sequence

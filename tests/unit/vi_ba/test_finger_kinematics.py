@@ -1,7 +1,5 @@
 """Synthetic finger angles round-trip through the 1-D scan and the C++ finger factor."""
 
-from __future__ import annotations
-
 from dataclasses import astuple
 
 import gtsam

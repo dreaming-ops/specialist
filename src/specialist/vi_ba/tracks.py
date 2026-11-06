@@ -1,7 +1,5 @@
 """A lens's tracks: frontend chaining, revisit matching, triangulation and caps."""
 
-from __future__ import annotations
-
 from collections.abc import Callable, Iterator, Sequence
 
 import cv2

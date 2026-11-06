@@ -1,7 +1,5 @@
 """The standard dashboards: a solve's per-slot view and the state layer's."""
 
-from __future__ import annotations
-
 from collections.abc import Iterable
 from typing import Any
 

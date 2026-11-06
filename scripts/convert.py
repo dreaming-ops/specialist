@@ -4,8 +4,6 @@ Usage:
     uv run python scripts/convert.py --input-insvs camA_00.insv camB_00.insv
 """
 
-from __future__ import annotations
-
 import re
 import sys
 import tempfile

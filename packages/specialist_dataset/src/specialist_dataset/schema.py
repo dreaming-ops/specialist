@@ -1,7 +1,5 @@
 """The single source of dataset entity paths, timeline names and timeline decoding."""
 
-from __future__ import annotations
-
 from collections.abc import Iterable, Sequence
 from pathlib import Path
 

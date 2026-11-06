@@ -1,7 +1,5 @@
 """Probe a capture: a square ``_00_`` master ``.insv`` and its ``_10_`` rear sibling."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from pathlib import Path
 

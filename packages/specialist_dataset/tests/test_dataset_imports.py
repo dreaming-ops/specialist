@@ -1,7 +1,5 @@
 """Reading a dataset does not import the solve's stack."""
 
-from __future__ import annotations
-
 import subprocess
 import sys
 

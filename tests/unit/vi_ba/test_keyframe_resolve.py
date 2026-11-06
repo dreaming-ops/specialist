@@ -1,7 +1,5 @@
 """The keyframe stride, its session-clock grid, and the finger stride that divides it."""
 
-from __future__ import annotations
-
 import numpy as np
 import pytest
 from specialist_dataset import schema

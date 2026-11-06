@@ -1,7 +1,5 @@
 """Decode Insta360's factory ``offset_v3``: both lenses' intrinsics and body_T_lens."""
 
-from __future__ import annotations
-
 import math
 from dataclasses import dataclass
 

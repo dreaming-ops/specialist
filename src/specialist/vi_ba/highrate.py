@@ -1,7 +1,5 @@
 """IMU trajectory between keyframes, each interval's end mismatch spread across it."""
 
-from __future__ import annotations
-
 import gtsam
 import numpy as np
 import numpy.typing as npt

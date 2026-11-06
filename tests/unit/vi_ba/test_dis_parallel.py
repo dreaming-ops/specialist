@@ -1,7 +1,5 @@
 """``_iter_dis_flows`` against a serial cv2 DIS loop and the GPU DIS stream."""
 
-from __future__ import annotations
-
 import cv2
 import numpy as np
 import pytest

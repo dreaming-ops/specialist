@@ -1,7 +1,5 @@
 """Decoding an Insta360 ``offset_v3`` array into two body-to-lens ``Pose3`` values."""
 
-from __future__ import annotations
-
 import json
 import math
 from pathlib import Path

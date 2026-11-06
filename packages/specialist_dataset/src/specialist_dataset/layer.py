@@ -1,7 +1,5 @@
 """The state-layer writer that specialist and specialist_sim share."""
 
-from __future__ import annotations
-
 from itertools import chain
 from pathlib import Path
 from typing import Any, cast

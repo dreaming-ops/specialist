@@ -1,7 +1,5 @@
 """The joint solve with a landmark cull-reoptimize pass, read back for export."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, replace
 
 import gtsam

@@ -1,7 +1,5 @@
 """Every CLI driver runs by path, as the README invokes it."""
 
-from __future__ import annotations
-
 import subprocess
 import sys
 from pathlib import Path

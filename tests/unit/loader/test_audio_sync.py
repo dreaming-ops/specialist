@@ -1,7 +1,5 @@
 """Audio sync: envelope correlation and two-capture offsets."""
 
-from __future__ import annotations
-
 import subprocess
 from pathlib import Path
 

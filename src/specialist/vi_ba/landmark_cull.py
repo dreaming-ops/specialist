@@ -1,7 +1,5 @@
 """Post-bundle cull of landmark observations that disagree with the solve."""
 
-from __future__ import annotations
-
 import gtsam
 import numpy as np
 import numpy.typing as npt

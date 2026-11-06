@@ -1,7 +1,5 @@
 """GPU DIS flow: the ``features._iter_dis_flows`` stream, each lens on its own GPU."""
 
-from __future__ import annotations
-
 import gc
 import os
 import queue

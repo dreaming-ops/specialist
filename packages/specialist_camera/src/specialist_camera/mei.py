@@ -1,7 +1,5 @@
 """MEI unified omnidirectional projection with Brown-Conrady distortion."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, replace
 from typing import Literal
 

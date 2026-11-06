@@ -1,7 +1,5 @@
 """Pinning a per-frame finger-angle series to the keyframe solution."""
 
-from __future__ import annotations
-
 import numpy as np
 
 from specialist.vi_ba.finger_kinematics import pin_angles_to_keyframes

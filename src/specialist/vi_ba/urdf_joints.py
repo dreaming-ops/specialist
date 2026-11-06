@@ -1,7 +1,5 @@
 """Revolute-joint kinematics from the gripper URDF, in the URDF root frame."""
 
-from __future__ import annotations
-
 import math
 from dataclasses import dataclass
 from pathlib import Path

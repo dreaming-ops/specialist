@@ -1,7 +1,5 @@
 """The lens imports numpy and nothing else."""
 
-from __future__ import annotations
-
 import subprocess
 import sys
 

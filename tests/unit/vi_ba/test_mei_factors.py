@@ -1,7 +1,5 @@
 """Native MEI factors: zero residual, numeric Jacobians and the bearing guard."""
 
-from __future__ import annotations
-
 import math
 from collections.abc import Callable
 from dataclasses import astuple, dataclass, field

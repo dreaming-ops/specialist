@@ -1,7 +1,5 @@
 """Trajectory seeding: multi-view triangulation and visual-inertial alignment."""
 
-from __future__ import annotations
-
 from bisect import bisect_left
 from dataclasses import dataclass
 

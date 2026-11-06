@@ -1,7 +1,5 @@
 """The solver's factorization on scipy, for tests without a GPU."""
 
-from __future__ import annotations
-
 from typing import Any
 
 import numpy as np

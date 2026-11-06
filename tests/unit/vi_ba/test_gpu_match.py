@@ -1,7 +1,5 @@
 """The GPU revisit matcher returns cv2's brute-force answer."""
 
-from __future__ import annotations
-
 import numpy as np
 import pytest
 

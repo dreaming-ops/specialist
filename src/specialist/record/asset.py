@@ -1,7 +1,5 @@
 """The gripper model as one static recording of every slot, named by the URDF digest."""
 
-from __future__ import annotations
-
 import os
 from hashlib import sha256
 from pathlib import Path

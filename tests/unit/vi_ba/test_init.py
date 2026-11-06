@@ -1,7 +1,5 @@
 """``vi_ba.init``: pose filling, triangulation and visual-inertial alignment."""
 
-from __future__ import annotations
-
 import gtsam
 import numpy as np
 import numpy.typing as npt

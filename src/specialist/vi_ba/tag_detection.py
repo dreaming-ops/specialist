@@ -1,7 +1,5 @@
 """AprilTag detection and lens_T_tag from planar PnP through the MEI lens."""
 
-from __future__ import annotations
-
 import threading
 from collections.abc import Callable, Iterable, Sequence
 from concurrent.futures import ThreadPoolExecutor

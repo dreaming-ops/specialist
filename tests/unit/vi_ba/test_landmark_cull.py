@@ -1,7 +1,5 @@
 """The map cull drops high-residual, behind-camera and degenerate-parallax landmarks."""
 
-from __future__ import annotations
-
 from collections.abc import Callable
 
 import gtsam

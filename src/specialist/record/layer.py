@@ -1,7 +1,5 @@
 """Estimate and viz layers: the base's recording id, never a ``RecordingInfo``."""
 
-from __future__ import annotations
-
 import math
 import subprocess
 from dataclasses import asdict

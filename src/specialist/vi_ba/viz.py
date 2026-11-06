@@ -1,7 +1,5 @@
 """Rerun chunks of a solved run, sorted into the estimate layer and the viz layer."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any

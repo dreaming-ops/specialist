@@ -1,7 +1,5 @@
 """Capture metadata, a video encoder and a solved run for the record and viz tests."""
 
-from __future__ import annotations
-
 import subprocess
 from pathlib import Path
 

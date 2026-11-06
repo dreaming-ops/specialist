@@ -1,7 +1,5 @@
 """One camera's lenses and IMU prepared for the joint graph."""
 
-from __future__ import annotations
-
 import ctypes
 import threading
 import time
@@ -99,7 +97,7 @@ def _resident() -> int | None:
     for line in Path("/proc/self/status").read_text().splitlines():
       if line.startswith("RssAnon:"):
         return int(line.split()[1]) * 1024
-  except (OSError, ValueError, IndexError):
+  except OSError, ValueError, IndexError:
     pass
   return None
 
@@ -177,7 +175,7 @@ def bound_malloc_arenas(limit: int) -> bool:
     libc = ctypes.CDLL("libc.so.6")
     m_arena_max = -8
     return bool(libc.mallopt(m_arena_max, limit))
-  except (OSError, AttributeError):
+  except OSError, AttributeError:
     return False
 
 
@@ -185,7 +183,7 @@ def release_freed_memory() -> None:
   """Return freed heap to the OS; a no-op without glibc's ``malloc_trim``."""
   try:
     ctypes.CDLL("libc.so.6").malloc_trim(0)
-  except (OSError, AttributeError):
+  except OSError, AttributeError:
     pass
 
 

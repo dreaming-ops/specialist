@@ -1,7 +1,5 @@
 """Frame times and H.264 frame decoding for a base recording's lens videos."""
 
-from __future__ import annotations
-
 import itertools
 import os
 import threading

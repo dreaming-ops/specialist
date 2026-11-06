@@ -1,7 +1,5 @@
 """Find a camera's base and finger tags from rear-lens corners and URDF finger arcs."""
 
-from __future__ import annotations
-
 from collections import Counter
 from dataclasses import dataclass
 

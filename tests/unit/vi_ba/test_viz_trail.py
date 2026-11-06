@@ -1,7 +1,5 @@
 """The trajectory ribbon carries one step per sample; the window is the view's."""
 
-from __future__ import annotations
-
 from pathlib import Path
 
 import gtsam

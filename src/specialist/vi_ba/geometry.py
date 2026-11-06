@@ -1,7 +1,5 @@
 """Shared geometric helpers for VI-BA."""
 
-from __future__ import annotations
-
 import gtsam
 import numpy as np
 import numpy.typing as npt

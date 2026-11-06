@@ -1,7 +1,5 @@
 """Numpy state-stream helpers: kept frames, row lattice, opening, hands and gestures."""
 
-from __future__ import annotations
-
 import math
 from functools import reduce
 

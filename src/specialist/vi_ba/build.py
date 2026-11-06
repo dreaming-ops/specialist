@@ -1,8 +1,6 @@
 """The VI-BA factor graph: a pose per keyframe, a point per landmark, a MEI factor
 per observation and IMU factors between keyframes."""
 
-from __future__ import annotations
-
 from collections.abc import Callable, Sequence
 from dataclasses import astuple, dataclass, field
 

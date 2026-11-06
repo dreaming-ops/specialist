@@ -1,7 +1,5 @@
 """Visual frontend: DIS flow tracking, essential RANSAC, and revisit-matching ORB."""
 
-from __future__ import annotations
-
 import os
 import time
 from collections.abc import Callable, Iterable, Iterator, Sequence
@@ -97,12 +95,12 @@ def available_ram() -> int:
       field, _, rest = line.partition(":")
       if field == "MemAvailable":
         return int(rest.split()[0]) * 1024
-  except (OSError, ValueError, IndexError):
+  except OSError, ValueError, IndexError:
     pass
   page = os.sysconf("SC_PAGE_SIZE")
   try:
     return page * os.sysconf("SC_AVPHYS_PAGES")
-  except (ValueError, OSError):
+  except ValueError, OSError:
     return page * os.sysconf("SC_PHYS_PAGES")
 
 

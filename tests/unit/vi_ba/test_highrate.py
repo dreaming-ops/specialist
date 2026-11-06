@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import gtsam
 import numpy as np
 

@@ -1,7 +1,5 @@
 """``vi_ba.single_camera`` and the revisit landmark merge of ``vi_ba.tracks``."""
 
-from __future__ import annotations
-
 import sys
 from concurrent.futures import ThreadPoolExecutor
 

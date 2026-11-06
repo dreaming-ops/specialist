@@ -1,7 +1,5 @@
 """``CameraKeys`` gives each camera a disjoint slice of the integer-key space."""
 
-from __future__ import annotations
-
 import gtsam
 import pytest
 

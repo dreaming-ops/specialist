@@ -1,7 +1,5 @@
 """The lens as the policy sees it: block-averaged and masked to the fisheye disc."""
 
-from __future__ import annotations
-
 import numpy as np
 import numpy.typing as npt
 

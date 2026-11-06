@@ -1,7 +1,5 @@
 """Video-IMU offset and rolling-shutter probe; it needs a capture with yaw motion."""
 
-from __future__ import annotations
-
 import math
 import sys
 from dataclasses import dataclass

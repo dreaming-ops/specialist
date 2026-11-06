@@ -1,7 +1,5 @@
 """Every module this member imports is a dependency it declares."""
 
-from __future__ import annotations
-
 import ast
 import sys
 import tomllib

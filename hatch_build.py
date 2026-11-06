@@ -1,7 +1,5 @@
 """Hatchling build hook: compile the native MEI factor at install time."""
 
-from __future__ import annotations
-
 import runpy
 from pathlib import Path
 

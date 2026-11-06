@@ -1,7 +1,5 @@
 """The solve's view of a base recording: slots, video, IMU and calibration."""
 
-from __future__ import annotations
-
 import shutil
 import tempfile
 from pathlib import Path

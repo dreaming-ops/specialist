@@ -1,7 +1,5 @@
 """The drop policy for the capture metadata the base recording keeps."""
 
-from __future__ import annotations
-
 import numpy as np
 
 from specialist.loader.parse_insv import capture_metadata

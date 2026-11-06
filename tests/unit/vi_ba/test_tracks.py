@@ -1,7 +1,5 @@
 """The parallax filter and track unprojection of ``vi_ba.tracks``."""
 
-from __future__ import annotations
-
 import numpy as np
 from specialist_camera import MeiParams, mei_project, mei_unproject
 

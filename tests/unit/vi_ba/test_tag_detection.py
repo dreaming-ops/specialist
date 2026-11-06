@@ -1,7 +1,5 @@
 """Tag poses, the shared detector and window following in ``tag_detection``."""
 
-from __future__ import annotations
-
 import gc
 import math
 import resource

@@ -1,7 +1,5 @@
 """Read a dataset layer as numpy through the selectors ``schema`` mints."""
 
-from __future__ import annotations
-
 from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
