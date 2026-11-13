@@ -38,6 +38,9 @@ def hold(
   anchor_distance: Float64Array,
   speed: Float64Array,
   span: tuple[float, float],
+  *,
+  min_duration: float = _HOLD_MIN_DURATION,
+  head_fraction: float = _HOLD_HEAD,
 ) -> float:
   """When the start hold ends; refuses one too short or ending past the first tenth."""
   slow = speed <= _HOLD_SPEED
@@ -49,13 +52,13 @@ def hold(
     lo -= 1
   while hi < len(slow) - 1 and slow[hi + 1]:
     hi += 1
-  if times[hi] - times[lo] < _HOLD_MIN_DURATION:
+  if times[hi] - times[lo] < min_duration:
     raise ValueError(
       f"the closest slow anchor approach lasts {times[hi] - times[lo]:.2f} s, "
-      f"under the {_HOLD_MIN_DURATION} s hold"
+      f"under the {min_duration} s hold"
     )
   at = (times[hi] - span[0]) / (span[1] - span[0])
-  if at > _HOLD_HEAD:
+  if at > head_fraction:
     raise ValueError(f"the hold ends at {at:.0%} of the capture, past its first tenth")
   return float(times[hi])
 

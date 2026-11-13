@@ -5,6 +5,7 @@ Usage:
         --output-dir dataset
 """
 
+import json
 import sys
 import tempfile
 from collections import deque
@@ -78,6 +79,12 @@ class Args:
 
   # Seconds kept clear of the bracket gestures at each end of the window.
   margin: float = 1.0
+
+  # For split continuous episodes: show the tags, holding still, for this long.
+  episode_hold_seconds: float = 1.0
+
+  # Find that hold within this many seconds after the starting triple.
+  episode_hold_window: float = 5.0
 
   # The gripper URDF; defaults to the packaged description.
   urdf_path: Path | None = None
@@ -321,6 +328,19 @@ def main(args: Args) -> None:
   stage = tempfile.TemporaryDirectory(prefix="lenses-")
   lap = stage_timer()
   session = SessionRecording(args.base, Path(stage.name))
+  episode_path = args.base.with_suffix(".episode.json")
+  episode = (
+    json.loads(episode_path.read_text(encoding="utf-8"))
+    if episode_path.exists()
+    else None
+  )
+  if (
+    args.episode_hold_seconds <= 0
+    or args.episode_hold_window < args.episode_hold_seconds
+  ):
+    raise SystemExit(
+      "episode hold durations must be positive and fit the search window"
+    )
   slots = session.slots
   if not 1 <= len(slots) <= 2:
     raise SystemExit(f"the state layer takes one or two cameras, got {slots}")
@@ -368,14 +388,33 @@ def main(args: Args) -> None:
       fingers[slot] = finger_pair(estimate, slot)
       gripper = grippers[slot] = gripper_state(estimate, slot)
       distance = np.linalg.norm(gripper[1][:, None] - anchors[None], axis=2).min(axis=1)
-      hold_ends.append(
-        hold(gripper[0], distance, np.linalg.norm(gripper[3], axis=1), span)
-      )
+      if episode is None:
+        hold_ends.append(
+          hold(gripper[0], distance, np.linalg.norm(gripper[3], axis=1), span)
+        )
+      else:
+        start = float(episode["capture_start"])
+        stop = min(start + args.episode_hold_window, float(episode["task_end"]))
+        selected = (gripper[0] >= start) & (gripper[0] <= stop)
+        hold_ends.append(
+          hold(
+            gripper[0][selected],
+            distance[selected],
+            np.linalg.norm(gripper[3][selected], axis=1),
+            (start, stop),
+            min_duration=args.episode_hold_seconds,
+            head_fraction=1.0,
+          )
+        )
   lap("gripper states")
   with refusing():
-    strike = tap(
-      {slot: imu.t for slot, imu in imus.items()},
-      {slot: imu.accel for slot, imu in imus.items()},
+    strike = (
+      float(episode["task_end"])
+      if episode
+      else tap(
+        {slot: imu.t for slot, imu in imus.items()},
+        {slot: imu.accel for slot, imu in imus.items()},
+      )
     )
 
   window = usable_window(hold_ends, strike, args.margin, times, keyframes, fingers)
@@ -395,6 +434,12 @@ def main(args: Args) -> None:
     float(t[0]) for t in times.values()
   )
   account = layer_account(args, estimate, digest, session, layer, window, covered)
+  if episode:
+    account.update(
+      source_session=episode["source_session"],
+      episode_id=episode["episode_id"],
+      task=episode.get("task", ""),
+    )
 
   states: dict[str, tuple[Int64Array, State]] = {}
   for slot in slots:
