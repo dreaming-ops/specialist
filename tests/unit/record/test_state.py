@@ -1,5 +1,7 @@
 """The state layer of a synthetic base and estimate, read back as a trainer sees it."""
 
+import json
+import shutil
 from dataclasses import replace
 from pathlib import Path
 
@@ -267,6 +269,43 @@ def test_the_writer_refuses_what_it_cannot_honor(dataset: Path, tmp_path: Path) 
   ):
     with pytest.raises(SystemExit, match=message):
       _state(dataset, tmp_path, **kwargs)
+
+
+def test_short_episode_hold_produces_a_rejection_without_a_training_layer(
+  dataset: Path,
+  tmp_path: Path,
+) -> None:
+  base = tmp_path / "sess.rrd"
+  shutil.copyfile(schema.layer_rrd(dataset, schema.BASE, "sess"), base)
+  base.with_suffix(".episode.json").write_text(
+    json.dumps(
+      dict(
+        source_session="source",
+        episode_id="ep0004",
+        capture_start=-1,
+        task_end=29,
+        capture_end=30,
+      )
+    )
+  )
+  report = tmp_path / "rejections/ep0004.json"
+  with pytest.raises(SystemExit) as rejected:
+    main(
+      Args(
+        base=base,
+        estimate=schema.layer_rrd(dataset, schema.ESTIMATE, "sess"),
+        output_dir=tmp_path / "output",
+        urdf_path=dataset / "robot.urdf",
+        scale=_SCALE,
+        rejection_report=report,
+      )
+    )
+  assert rejected.value.code == 3
+  data = json.loads(report.read_text())
+  assert data["episode_id"] == "ep0004" and data["source_session"] == "source"
+  assert data["session_id"] == "sess" and data["check"] == "initial_hold"
+  assert "under the 1.0 s hold" in data["reason"]
+  assert not list((tmp_path / "output").rglob("*.rrd"))
 
 
 def test_each_frame_is_a_chunk_of_its_own(dataset: Path, tmp_path: Path) -> None:

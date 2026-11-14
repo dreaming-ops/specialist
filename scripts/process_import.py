@@ -130,12 +130,13 @@ def process(folder: Path, resume: bool) -> None:
         if not progress.get("split"):
           progress.update(split=True, manifest_sha256=fingerprint, completed=[])
           write_json(progress_path, progress)
+        progress.setdefault("rejected", {})
         # Full review video is reconstructible from the retained INSV originals.
         discard_base(output / "base" / f"{session_id}.rrd", output)
         for episode in manifest["episodes"]:
           identifier = episode["episode_id"]
           base = output / "base" / f"{session_id}_{identifier}.rrd"
-          if identifier in progress["completed"]:
+          if identifier in progress["completed"] or identifier in progress["rejected"]:
             discard_base(base, output)
             continue
           discard_base(base, output)
@@ -166,20 +167,48 @@ def process(folder: Path, resume: bool) -> None:
           )
           status("writing_state", episode=identifier)
           require_space(folder, base.stat().st_size + DISK_RESERVE)
-          run(
-            "state",
-            "--base",
-            str(base),
-            "--output-dir",
-            str(output),
-            "--left-slot",
-            left_slot,
-            "--overwrite",
-          )
+          report_path = output / "rejections" / f"{session_id}_{identifier}.json"
+          report_path.unlink(missing_ok=True)
+          try:
+            run(
+              "state",
+              "--base",
+              str(base),
+              "--output-dir",
+              str(output),
+              "--left-slot",
+              left_slot,
+              "--rejection-report",
+              str(report_path),
+              "--overwrite",
+            )
+          except subprocess.CalledProcessError as exc:
+            if exc.returncode != 3 or not report_path.is_file():
+              raise
+            report = read_json(report_path)
+            if not (
+              report.get("version") == 1
+              and report.get("check") == "initial_hold"
+              and report.get("session_id") == f"{session_id}_{identifier}"
+              and report.get("source_session") == session_id
+              and report.get("episode_id") == identifier
+              and isinstance(report.get("reason"), str)
+            ):
+              raise
+            progress["rejected"][identifier] = report
+            write_json(progress_path, progress)
+            print(f"Rejected {identifier}: {report['reason']}", flush=True)
+            discard_base(base, output)
+            continue
           progress["completed"].append(identifier)
           write_json(progress_path, progress)
           discard_base(base, output)
-        status("complete", episodes=len(progress["completed"]), output=str(output))
+        status(
+          "complete_with_rejections" if progress["rejected"] else "complete",
+          episodes=len(progress["completed"]),
+          rejected=len(progress["rejected"]),
+          output=str(output),
+        )
     except Exception as exc:
       status("failed", error=str(exc), log=str(folder / "worker.log"))
       traceback.print_exc()

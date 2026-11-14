@@ -46,6 +46,7 @@ from specialist_dataset.state import (
   tap,
 )
 
+from specialist.ingest import write_json
 from specialist.record.asset import resolve_urdf_path, urdf_sha
 from specialist.record.layer import git_sha
 from specialist.record.session import SessionRecording, fps_from_times
@@ -88,6 +89,9 @@ class Args:
 
   # Explicit hand identity from the importer; otherwise infer it geometrically.
   left_slot: str | None = None
+
+  # Write a structured rejection if a split episode fails its initial hold check.
+  rejection_report: Path | None = None
 
   # The gripper URDF; defaults to the packaged description.
   urdf_path: Path | None = None
@@ -399,8 +403,8 @@ def main(args: Args) -> None:
         start = float(episode["capture_start"])
         stop = min(start + args.episode_hold_window, float(episode["task_end"]))
         selected = (gripper[0] >= start) & (gripper[0] <= stop)
-        hold_ends.append(
-          hold(
+        try:
+          hold_end = hold(
             gripper[0][selected],
             distance[selected],
             np.linalg.norm(gripper[3][selected], axis=1),
@@ -408,7 +412,24 @@ def main(args: Args) -> None:
             min_duration=args.episode_hold_seconds,
             head_fraction=1.0,
           )
-        )
+        except ValueError as exc:
+          if args.rejection_report is None:
+            raise
+          write_json(
+            args.rejection_report,
+            dict(
+              version=1,
+              session_id=session.session_id,
+              source_session=episode["source_session"],
+              episode_id=episode["episode_id"],
+              check="initial_hold",
+              slot=slot,
+              reason=str(exc),
+            ),
+          )
+          print(f"Episode rejected: {slot}: {exc}", file=sys.stderr)
+          raise SystemExit(3) from exc
+        hold_ends.append(hold_end)
   lap("gripper states")
   with refusing():
     strike = (

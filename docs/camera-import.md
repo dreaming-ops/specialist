@@ -82,6 +82,15 @@ python scripts/import_camera.py resume --session capture_20261113_120000
 ```
 
 Remote job files: `status.json`, `progress.json`, `worker.log`, and `output/`.
+If an episode fails the one-second initial hold check, its reason is saved in
+`output/rejections/<session>_<episode>.json`. It is excluded from training output,
+and the worker continues with the next episode. Final status is
+`complete_with_rejections` when any episode was rejected; `episodes` counts only
+successful exports and `rejected` counts these quality rejections. Rejections are
+checkpointed separately from successful episodes. A normal resume skips both.
+Technical errors still stop the job and produce `failed`; they are not treated as
+quality rejections. Original recordings are retained in either case.
+
 Original and final processed files remain on the server; reconstructible base RRDs
 are released as described above. No automatic dataset registration is performed.
 The default anchor IDs are 0 and 1. For custom IDs,
