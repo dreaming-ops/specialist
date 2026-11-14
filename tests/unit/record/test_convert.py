@@ -23,13 +23,17 @@ def test_session_name_refuses_a_capture_it_cannot_name() -> None:
     session_name(Path("VID_20260908_044638_00_001.insv"), "")
 
 
-def test_split_preserves_clock_and_telemetry_windows(tmp_path, monkeypatch) -> None:
+@pytest.mark.parametrize("sync_method", ["single", "audio", "imu"])
+def test_split_preserves_clock_and_telemetry_windows(
+  tmp_path, monkeypatch, sync_method
+) -> None:
   """Exercise conversion orchestration without camera IO or a native solve."""
   import json
 
   from specialist_dataset.episodes import Episode, manifest
 
   source = Path("VID_20260908_044638_00_001.insv")
+  other = Path("VID_20260908_044640_00_002.insv")
   name = session_name(source, "serial")
   episode = Episode("ep0001", 3.0, 12.0, 13.0, "stack")
   data = manifest(name, [], [episode], [])
@@ -46,7 +50,25 @@ def test_split_preserves_clock_and_telemetry_windows(tmp_path, monkeypatch) -> N
   monkeypatch.setattr(
     convert,
     "load_insv",
-    lambda _p: SimpleNamespace(capture={"serial_number": "serial"}),
+    lambda p: SimpleNamespace(
+      capture={"serial_number": "serial" if p == source else "serial2"},
+      imu_timestamps=None,
+      accel=None,
+    ),
+  )
+
+  def audio_sync(*_args):
+    if sync_method == "imu":
+      raise RuntimeError("audio alignment is ambiguous")
+    return SimpleNamespace(offset=-1.87, peak_ratio=3)
+
+  monkeypatch.setattr(convert, "sync_two_captures", audio_sync)
+  monkeypatch.setattr(
+    convert,
+    "sync_two_imus",
+    lambda *_args: SimpleNamespace(
+      offset=-1.87, confidence=23, matches=23, residual_seconds=0.034
+    ),
   )
   monkeypatch.setattr(
     convert, "probe_capture", lambda p: SimpleNamespace(duration=60, rear_path=p)
@@ -66,16 +88,30 @@ def test_split_preserves_clock_and_telemetry_windows(tmp_path, monkeypatch) -> N
   monkeypatch.setattr(convert, "imu_chunks", telemetry)
   monkeypatch.setattr(convert, "exposure_chunks", telemetry)
   monkeypatch.setattr(convert, "calibration_chunks", lambda *_a: [])
-  monkeypatch.setattr(convert, "capture_chunk", lambda *_a: None)
+  clocks = []
+  monkeypatch.setattr(convert, "capture_chunk", lambda *args: clocks.append(args[3:]))
   monkeypatch.setattr(convert, "write_review", lambda *_a: None)
   monkeypatch.setattr(
     convert, "write_base_recording", lambda path, *_a: path.write_bytes(b"test")
   )
   convert.main(
-    convert.Args(input_insvs=(source,), output_dir=tmp_path, episodes=review)
+    convert.Args(
+      input_insvs=(source,) if sync_method == "single" else (source, other),
+      output_dir=tmp_path,
+      episodes=review,
+      imu_sync_fallback=sync_method == "imu",
+    )
   )
-  assert len(calls) == 4
-  assert all(shift == 0 and window == (3, 13) for _, shift, window in calls)
+  assert len(calls) == (4 if sync_method == "single" else 8)
+  assert all(shift == 0 and window == (3, 13) for _, shift, window in calls[:4])
+  assert all(shift == 1.87 and window == (3, 13) for _, shift, window in calls[4:])
+  assert clocks[0][2] == "reference"
+  if sync_method != "single":
+    assert clocks[1] == (
+      1.87,
+      23 if sync_method == "imu" else 3,
+      "imu_triple_taps" if sync_method == "imu" else "audio",
+    )
   metadata = json.loads((tmp_path / "base" / f"{name}_ep0001.episode.json").read_text())
   assert metadata["task_end"] == 12
   assert metadata["task"] == "stack"

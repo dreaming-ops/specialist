@@ -85,6 +85,7 @@ def process(folder: Path, resume: bool) -> None:
           "--output-dir",
           str(output),
           "--low-disk",
+          "--imu-sync-fallback",
         ]
         if not progress.get("detected"):
           require_space(folder, conversion_space(job))

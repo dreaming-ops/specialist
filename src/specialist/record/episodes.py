@@ -32,7 +32,21 @@ def write_review(
         ],
         columns=rr.Scalars.columns(scalars=[1.0, 1.0]),
       )
-    for marker in markers:
+    for index, marker in enumerate(markers, start=1):
+      # Keep every boundary visible even when an odd count prevents pairing.
+      entity = f"episodes/markers/{index:04d}"
+      stream.log(
+        entity,
+        rr.SeriesLines(
+          colors=[(40, 210, 100, 150)], widths=8, names=[f"Triple tap {index}"]
+        ),
+        static=True,
+      )
+      stream.send_columns(
+        entity,
+        indexes=[rr.TimeColumn(schema.TIMELINE, duration=[marker.first, marker.last])],
+        columns=rr.Scalars.columns(scalars=[0.5, 0.5]),
+      )
       stream.set_time(schema.TIMELINE, duration=marker.first)
       stream.log("episode_markers", rr.TextLog(f"Triple tap {marker.first:.3f}s"))
     stream.send_blueprint(

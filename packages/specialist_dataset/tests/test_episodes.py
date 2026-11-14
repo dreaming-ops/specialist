@@ -52,6 +52,27 @@ def test_rebound_is_debounced() -> None:
   assert triple_taps(t, a, TapConfig()) == [Marker(2, 2.6)]
 
 
+def test_strongest_impact_wins_over_weak_early_contact() -> None:
+  t, a = signal([1.96, 2.26, 2.56])
+  for at in [2, 2.3, 2.6]:
+    a[np.argmin(abs(t - at)), 2] = 210
+  assert triple_taps(t, a, TapConfig()) == [Marker(2, 2.6)]
+
+
+def test_small_rebounds_outside_debounce_do_not_hide_triple() -> None:
+  t, a = signal([2.14, 2.44, 2.74])
+  for at in [2, 2.3, 2.6]:
+    a[np.argmin(abs(t - at)), 2] = 210
+  assert triple_taps(t, a, TapConfig()) == [Marker(2, 2.6)]
+
+
+def test_weak_contacts_cannot_bridge_separate_strong_impacts() -> None:
+  t, a = signal([2.4, 2.8, 3.4, 3.8])
+  for at in [2, 3, 4]:
+    a[np.argmin(abs(t - at)), 2] = 210
+  assert triple_taps(t, a, TapConfig()) == []
+
+
 def test_missing_camera_triple_is_reported() -> None:
   t, a = signal([2, 2.3, 2.6])
   _, b = signal([2, 2.3])

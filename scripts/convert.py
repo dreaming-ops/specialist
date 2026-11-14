@@ -23,6 +23,7 @@ from specialist_dataset.episodes import (
 
 from specialist.loader.audio_sync import sync_two_captures
 from specialist.loader.capture import probe_capture
+from specialist.loader.imu_sync import sync_two_imus
 from specialist.loader.parse_insv import load_insv
 from specialist.record.base import (
   calibration_chunks,
@@ -61,6 +62,9 @@ class Args:
   # Keep only one temporary lens MP4 on disk; compressed chunks live in memory.
   low_disk: bool = False
 
+  # If audio is ambiguous, require a unique IMU triple-tap consensus instead.
+  imu_sync_fallback: bool = False
+
 
 _CAPTURE_STAMP = re.compile(r"_(\d{8}_\d{6})_")
 
@@ -89,13 +93,40 @@ def main(args: Args) -> None:
   captures = [probe_capture(master) for master in args.input_insvs]
   # Capture clock minus session clock (s), per capture.
   offsets, confidences = [0.0], [float("inf")]
-  for later in args.input_insvs[1:]:
-    sync = sync_two_captures(args.input_insvs[0], later)
-    offsets.append(sync.offset)
-    confidences.append(sync.peak_ratio)
+  clock_methods = ["reference"]
+  for index, later in enumerate(args.input_insvs[1:], start=1):
+    try:
+      sync = sync_two_captures(args.input_insvs[0], later)
+      offset, confidence, method = sync.offset, sync.peak_ratio, "audio"
+    except RuntimeError as audio_error:
+      if not args.imu_sync_fallback:
+        raise
+      try:
+        fallback = sync_two_imus(
+          loaded[0].imu_timestamps,
+          loaded[0].accel,
+          loaded[index].imu_timestamps,
+          loaded[index].accel,
+        )
+      except ValueError as imu_error:
+        raise RuntimeError(
+          f"{audio_error}; IMU fallback refused: {imu_error}"
+        ) from imu_error
+      offset, confidence, method = (
+        fallback.offset,
+        fallback.confidence,
+        "imu_triple_taps",
+      )
+      print(f"Audio sync rejected: {audio_error}")
+      print(
+        f"IMU consensus: {fallback.matches} triples, maximum endpoint residual "
+        f"{fallback.residual_seconds * 1000:.1f} ms"
+      )
+    offsets.append(offset)
+    confidences.append(confidence)
+    clock_methods.append(method)
     print(
-      f"audio sync: {later.name} offset={sync.offset:+.3f}s "
-      f"peak_ratio={sync.peak_ratio:.2f}"
+      f"{method} sync: {later.name} offset={offset:+.6f}s confidence={confidence:.2f}"
     )
 
   window = (
@@ -177,8 +208,14 @@ def main(args: Args) -> None:
     for name, selected, episode in exports:
       video_streams = []
       sidecars = []
-      for master, insv, slot, offset, confidence in zip(
-        args.input_insvs, loaded, slots, offsets, confidences, strict=True
+      for master, insv, slot, offset, confidence, clock_method in zip(
+        args.input_insvs,
+        loaded,
+        slots,
+        offsets,
+        confidences,
+        clock_methods,
+        strict=True,
       ):
         for lens in schema.LENSES:
           if args.low_disk:
@@ -203,7 +240,9 @@ def main(args: Args) -> None:
         sidecars += imu_chunks(slot, insv, time_shift=-offset, window=selected)
         sidecars += exposure_chunks(slot, insv, time_shift=-offset, window=selected)
         sidecars += calibration_chunks(slot, insv)
-        sidecars.append(capture_chunk(slot, insv, master.name, -offset, confidence))
+        sidecars.append(
+          capture_chunk(slot, insv, master.name, -offset, confidence, clock_method)
+        )
       out_path = schema.layer_rrd(args.output_dir, schema.BASE, name)
       out_path.parent.mkdir(parents=True, exist_ok=True)
       write_base_recording(out_path, name, video_streams, sidecars)

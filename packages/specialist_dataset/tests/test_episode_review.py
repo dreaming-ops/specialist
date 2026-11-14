@@ -29,3 +29,17 @@ def test_review_layer_roundtrip(tmp_path: Path) -> None:
     times = [v.value / 1e9 for b in batches for v in b.column(schema.TIMELINE)]
     assert times == [start, end]
   assert schema.TIMELINE == "video_time"
+
+
+def test_unpaired_markers_remain_visible_on_review_plot(tmp_path: Path) -> None:
+  path = tmp_path / "unpaired.rrd"
+  write_review(path, "session", ["cam00"], [], [Marker(2, 2.6)])
+  chunks = [
+    c
+    for c in RrdReader(str(path)).stream()
+    if c.entity_path.strip("/") == "episodes/markers/0001" and not c.is_static
+  ]
+  times = [
+    v.value / 1e9 for c in chunks for v in c.to_record_batch().column(schema.TIMELINE)
+  ]
+  assert times == [2, 2.6]

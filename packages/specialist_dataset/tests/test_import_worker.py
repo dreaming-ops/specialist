@@ -72,6 +72,7 @@ def test_worker_waits_for_review_then_processes_and_checkpoints(
   process_import.process(folder, resume=False)
   assert ingest.read_json(folder / "status.json")["state"] == "awaiting_review"
   assert len(calls) == 1
+  assert "--imu-sync-fallback" in calls[0]
   assert (folder / "output/base/session.rrd").exists()
   process_import.process(folder, resume=True)
   assert len(calls) == 1  # --resume cannot bypass unreviewed boundaries.

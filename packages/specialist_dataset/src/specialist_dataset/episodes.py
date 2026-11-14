@@ -19,6 +19,8 @@ class TapConfig:
   debounce: float = 0.12
   max_gap: float = 0.65
   camera_tolerance: float = 0.15
+  # Ignore small contacts relative to the strongest impact in each burst.
+  relative_strength: float = 0.25
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,7 @@ def triple_taps(t: Array, accel: Array, config: TapConfig) -> list[Marker]:
     and config.min_excess > 0
     and config.z_threshold > 0
     and config.camera_tolerance > 0
+    and 0 <= config.relative_strength < 1
   ):
     raise ValueError("invalid tap thresholds")
   norm = np.linalg.norm(accel, axis=1)
@@ -58,17 +61,29 @@ def triple_taps(t: Array, accel: Array, config: TapConfig) -> list[Marker]:
   spread = 1.4826 * float(np.median(np.abs(norm - center)))
   threshold = max(config.min_excess, config.z_threshold * spread)
   edges = np.flatnonzero(np.diff(np.r_[False, norm - center > threshold, False]))
-  hits: list[float] = []
+  hits: list[tuple[float, float]] = []
   for lo, hi in zip(edges[::2], edges[1::2], strict=True):
-    at = float(t[lo + np.argmax(norm[lo:hi])])
-    if not hits or at - hits[-1] >= config.debounce:
-      hits.append(at)
-  bursts: list[list[float]] = []
-  for at in hits:
-    if not bursts or at - bursts[-1][-1] > config.max_gap:
+    index = lo + np.argmax(norm[lo:hi])
+    hits.append((float(t[index]), float(norm[index] - center)))
+  bursts: list[list[tuple[float, float]]] = []
+  for hit in hits:
+    if not bursts or hit[0] - bursts[-1][-1][0] > config.max_gap:
       bursts.append([])
-    bursts[-1].append(at)
-  return [Marker(b[0], b[-1]) for b in bursts if len(b) == 3]
+    bursts[-1].append(hit)
+  markers = []
+  for burst in bursts:
+    strongest = max(strength for _, strength in burst)
+    kept: list[float] = []
+    # Select the strongest impact first, rather than an earlier weak precursor.
+    for at, strength in sorted(burst, key=lambda hit: (-hit[1], hit[0])):
+      if strength >= strongest * config.relative_strength and all(
+        abs(at - previous) >= config.debounce for previous in kept
+      ):
+        kept.append(at)
+    kept.sort()
+    if len(kept) == 3 and max(np.diff(kept)) <= config.max_gap:
+      markers.append(Marker(kept[0], kept[-1]))
+  return markers
 
 
 def detect(

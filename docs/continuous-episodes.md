@@ -30,7 +30,7 @@ environment required by Specialist:
 ```bash
 uv run python scripts/convert.py \
   --input-insvs path/to/left_00.insv path/to/right_00.insv \
-  --output-dir logs --detect-episodes
+  --output-dir logs --detect-episodes --imu-sync-fallback
 ```
 
 The converter writes the usual full `base/<session>.rrd`, plus:
@@ -39,6 +39,17 @@ The converter writes the usual full `base/<session>.rrd`, plus:
 - `episodes/<session>.rrd`: a review layer with translucent green spans on a
   dedicated time plot beside the video, sharing the `video_time` playback cursor.
   This is a separate episode track, not a recoloring of Rerun's built-in time bar.
+  Short green segments mark every shared triple, including when an odd marker
+  count prevents proposing complete episode spans.
+
+Audio remains the primary clock alignment. The optional `--imu-sync-fallback`
+(enabled by the import worker) uses simultaneous triple taps if audio alignment
+is ambiguous. It requires at least three matching triples spanning half the
+capture, a clear advantage over competing offsets, and endpoint disagreement
+below 40 ms. It rejects ambiguous sequences instead of lowering the audio
+confidence threshold. Capture metadata records `clock_method` so the chosen
+method is visible. Both methods estimate one constant offset; the IMU residual
+includes differences in hand impact timing and is not a sub-frame accuracy claim.
 
 ```bash
 uv run rerun logs/base/<session>.rrd logs/episodes/<session>.rrd
@@ -73,7 +84,7 @@ after successful state export. The manual commands below retain bases by default
 ```bash
 uv run python scripts/convert.py \
   --input-insvs path/to/left_00.insv path/to/right_00.insv \
-  --output-dir logs --episodes logs/episodes/<session>.json
+  --output-dir logs --episodes logs/episodes/<session>.json --imu-sync-fallback
 
 uv run python scripts/estimate.py \
   --base logs/base/<session>_ep0001.rrd --anchor.tag-ids 0 1 --output-dir logs
@@ -98,7 +109,7 @@ visibility must be checked in the video and successful pose estimation.
 
 The splitter does not concatenate camera-created chapters. If a long recording
 produces multiple INSV pairs per camera, those need separate handling first.
-Audio synchronization still estimates one constant offset; check alignment near
-both ends of long recordings. Start with a 2–3 minute pilot containing several
-episodes, then validate a longer capture. No real camera capture was available
-when this implementation was authored.
+Check alignment near both ends of long recordings. Start with a 2–3 minute pilot
+containing several episodes, then validate a longer capture. The detector has
+been checked against a real dual-camera capture with strong tap rebounds;
+complete trajectory and dataset export still need validation on reviewed clips.

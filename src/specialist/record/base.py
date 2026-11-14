@@ -138,6 +138,7 @@ def capture_chunk(
   source: str,
   clock_shift: float,
   clock_confidence: float,
+  clock_method: str = "audio",
 ) -> Chunk:
   """The camera's metadata and its shift ``t_session = t_capture + clock_shift``."""
   return Chunk.from_columns(
@@ -147,6 +148,7 @@ def capture_chunk(
       source=[source],
       clock_shift=[clock_shift],
       clock_confidence=[clock_confidence],
+      clock_method=[clock_method],
       **{name: [value] for name, value in insv.capture.items()},
     ),
   )
