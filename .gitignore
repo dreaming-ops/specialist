@@ -115,6 +115,7 @@ cython_debug/
 **/artifacts/
 /scratchpad/
 /run_*.sh
+/.import-processing.lock
 
 # macOS
 .DS_Store

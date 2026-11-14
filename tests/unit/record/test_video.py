@@ -7,7 +7,7 @@ import pytest
 from rerun.chunk import Chunk
 from specialist_dataset import schema
 
-from specialist.record.video import normalize_h264, video_chunks
+from specialist.record.video import materialized_video, normalize_h264, video_chunks
 from tests.record_fixtures import encode_clip
 
 _FRAMES = 12
@@ -79,6 +79,24 @@ def test_normalize_and_chunks(clean_clip: Path) -> None:
   frame_ns = round(1e9 / _RATE)
   assert abs(times[1] - frame_ns) <= 1
   assert sync[0] is True
+
+
+def test_materialized_lens_survives_deleted_temporary_mp4(
+  h264_clip: Path, tmp_path: Path
+) -> None:
+  temporary = tmp_path / "temporary.mp4"
+  stream = materialized_video(h264_clip, temporary, "image/cam/front", 0.5, _WHOLE_CLIP)
+  assert not temporary.exists()
+  assert h264_clip.exists()
+  chunks = stream.to_chunks()
+  rows = [
+    row
+    for c in chunks
+    if _samples(c)
+    for row in c.to_record_batch().column(schema.TIMELINE)
+  ]
+  assert len(rows) == _FRAMES
+  assert rows[0].value == 500_000_000
 
 
 def test_time_shift(clean_clip: Path) -> None:
