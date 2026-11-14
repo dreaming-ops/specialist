@@ -68,9 +68,9 @@ def _factor_observation_lines(
   cross_by_kf: dict[int, list[tuple[LensSetup, Float64Array]]] = {}
   for s in cross_obs_for_observer:
     owner_corners = base_tag_corners_world.get(s.owner, [])
-    if s.finger is None and s.keyframe < len(owner_corners):
+    if s.finger is None and s.owner_keyframe < len(owner_corners):
       cross_by_kf.setdefault(s.keyframe, []).append(
-        (s.setup, owner_corners[s.keyframe])
+        (s.setup, owner_corners[s.owner_keyframe])
       )
   poses = observer_poses[: observer.n_keyframes]
   return _rays(poses, anchor_by_kf), _rays(poses, cross_by_kf)

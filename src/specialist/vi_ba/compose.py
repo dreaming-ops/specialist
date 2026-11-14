@@ -238,6 +238,7 @@ class CrossSighting:
   observer: str
   owner: str
   keyframe: int
+  owner_keyframe: int
   setup: LensSetup
   corners: Float64Array  # (4, 2) detected corner pixels
   bearing: Float64Array  # (3,) lens-frame tag direction
@@ -248,17 +249,25 @@ def cross_sightings(
   cameras: list[PreparedCamera],
   base_tag_size: float,
 ) -> list[CrossSighting]:
-  """Every sighting of a camera's base or finger tag in another camera's rear lens;
-  raise when two keyframe grids disagree."""
+  """Pair sightings by session-frame ID, preserving each camera's local index.
+
+  Trimming may leave an extra leading keyframe on one camera. Cross factors must
+  join the same session instant, not equal positions in those unequal lists.
+  """
+  for camera in cameras:
+    if len(camera.keyframe_frames) != camera.n_keyframes or np.any(
+      np.diff(camera.keyframe_frames) <= 0
+    ):
+      raise ValueError(f"{camera.slot}: keyframe IDs must be unique and increasing")
   for a, b in itertools.combinations(cameras, 2):
-    n = min(a.n_keyframes, b.n_keyframes)
-    if not np.array_equal(a.keyframe_frames[:n], b.keyframe_frames[:n]):
+    if not np.intersect1d(a.keyframe_frames, b.keyframe_frames).size:
       raise ValueError(
-        f"keyframe grids of {a.slot!r} and {b.slot!r} disagree over their "
-        f"shared span; cross-camera sightings would pair the wrong instants"
+        f"keyframe grids of {a.slot!r} and {b.slot!r} have no common session frames; "
+        "cross-camera sightings would pair the wrong instants"
       )
   sightings: list[CrossSighting] = []
   for owner in cameras:
+    owner_indices = {int(frame): kf for kf, frame in enumerate(owner.keyframe_frames)}
     # The base tag, plus each finger tag with URDF joint kinematics.
     targets: dict[int, int | None] = {owner.tags.base: None}
     fingers = zip(FINGER_JOINTS, owner.tags.fingers, strict=True)
@@ -268,9 +277,11 @@ def cross_sightings(
     for observer in cameras:
       if observer is owner:
         continue
-      n = min(observer.n_keyframes, owner.n_keyframes)
       ch = observer.rear
-      for kf in range(n):
+      for kf, frame in enumerate(observer.keyframe_frames):
+        owner_kf = owner_indices.get(int(frame))
+        if owner_kf is None:
+          continue
         for det in ch.tags[kf]:
           if det.tag_id not in targets:
             continue
@@ -284,6 +295,7 @@ def cross_sightings(
               observer=observer.slot,
               owner=owner.slot,
               keyframe=kf,
+              owner_keyframe=owner_kf,
               setup=ch.setup,
               corners=det.corners,
               bearing=tag_center_bearing(det, ch.setup.params),
@@ -570,7 +582,7 @@ def _add_cross_camera_factors(
   base_count = finger_count = 0
   for sighting in cross_obs:
     obs_key = keys.pose_key(sighting.observer, sighting.keyframe)
-    owner_key = keys.pose_key(sighting.owner, sighting.keyframe)
+    owner_key = keys.pose_key(sighting.owner, sighting.owner_keyframe)
     owner_bt_key = keys.base_tag_key(sighting.owner)
     seat_key = keys.seat_key(sighting.observer)
     noise = corner_noise(sighting.corners, sighting.setup, _CROSS_REPROJ_SIGMA)
@@ -588,7 +600,9 @@ def _add_cross_camera_factors(
         )
       base_count += 4
     elif values.exists(
-      theta_key := keys.theta_key(sighting.owner, sighting.finger, sighting.keyframe)
+      theta_key := keys.theta_key(
+        sighting.owner, sighting.finger, sighting.owner_keyframe
+      )
     ):
       finger_name = FINGER_JOINTS[sighting.finger]
       reproj = camera_by_slot[sighting.owner].finger_reproj[finger_name]

@@ -13,6 +13,7 @@ from specialist.vi_ba.compose import (
   CameraKeys,
   _add_anchor_factors,
   _add_corner_factors_for_anchor,
+  _add_cross_camera_factors,
   _bfs_world_alignments,
   align_to_shared_world,
   anchor_sightings,
@@ -42,6 +43,7 @@ from specialist.vi_ba.tag_detection import (
 )
 from specialist.vi_ba.tag_discovery import GripperTags
 from specialist.vi_ba.urdf_joints import FINGER_JOINTS
+from specialist.vi_ba.viz_build import _factor_observation_lines
 from tests.mei_fixtures import (
   WIDE_CALIBRATED_RADIUS,
   narrow_mei_params,
@@ -588,3 +590,74 @@ def test_cross_sightings_keeps_finger_tag_zero() -> None:
   observer = _dummy_camera("b", [gtsam.Pose3()], rear_tags_per_kf=[[sighting]])
   sightings = cross_sightings([owner, observer], 0.05)
   assert [(s.owner, s.observer, s.finger) for s in sightings] == [("a", "b", 0)]
+
+
+def test_cross_sightings_use_matching_frames_after_unequal_episode_trimming() -> None:
+  reproj = FingerReproj(
+    base_T_joint=gtsam.Pose3(), joint_t_corners=np.zeros((4, 3)), observations={}
+  )
+  owner = replace(
+    _dummy_camera("a", [gtsam.Pose3()] * 2),
+    keyframe_frames=np.array([3, 6]),
+    tags=GripperTags(2000, (0, None)),
+    finger_reproj={FINGER_JOINTS[0]: reproj},
+  )
+  pose = gtsam.Pose3(gtsam.Rot3.Rx(2.9), gtsam.Point3(0.0, 0.0, 0.3))
+  detected = [
+    synthetic_tag_detection(pose, tag, 0.05, narrow_mei_params()) for tag in [2000, 0]
+  ]
+  assert all(d is not None for d in detected)
+  observer = _dummy_camera(
+    "b",
+    [gtsam.Pose3()] * 3,
+    rear_tags_per_kf=[[d for d in detected if d is not None]] * 3,
+  )
+  sightings = cross_sightings([owner, observer], 0.05)
+  assert [(s.keyframe, s.owner_keyframe, s.finger) for s in sightings] == [
+    (1, 0, None),
+    (1, 0, 0),
+    (2, 1, None),
+    (2, 1, 0),
+  ]
+
+  keys = CameraKeys(["a", "b"])
+  values = gtsam.Values()
+  for kf in range(2):
+    values.insert(keys.theta_key("a", 0, kf), 0.0)
+  graph = gtsam.NonlinearFactorGraph()
+  counts = _add_cross_camera_factors(
+    [owner, observer],
+    keys,
+    Args(base=Path("unused.rrd"), anchor=AnchorCfg(tag_ids=(1,))),
+    sightings,
+    graph,
+    values,
+  )
+  assert counts == (8, 8)
+  for i in range(graph.size()):
+    owner_kf = 0 if i < 8 else 1
+    factor_keys = list(graph.at(i).keys())
+    assert factor_keys[:2] == [
+      keys.pose_key("b", owner_kf + 1),
+      keys.pose_key("a", owner_kf),
+    ]
+    if len(factor_keys) == 5:
+      assert factor_keys[3] == keys.theta_key("a", 0, owner_kf)
+
+  corners = [np.ones((4, 3)), np.full((4, 3), 2.0)]
+  _, rays = _factor_observation_lines(
+    observer, observer.body_poses, sightings, {}, {"a": corners}
+  )
+  assert rays[0].size == 0
+  np.testing.assert_allclose(rays[1][:, 1], corners[0])
+  np.testing.assert_allclose(rays[2][:, 1], corners[1])
+
+
+@pytest.mark.parametrize("frames", [[1, 4], [0, 0], [3, 0]])
+def test_cross_sightings_refuse_unmatched_or_ambiguous_frame_ids(
+  frames: list[int],
+) -> None:
+  a = _dummy_camera("a", [gtsam.Pose3()] * 2)
+  b = replace(_dummy_camera("b", [gtsam.Pose3()] * 2), keyframe_frames=np.array(frames))
+  with pytest.raises(ValueError, match="common session frames|unique and increasing"):
+    cross_sightings([a, b], 0.05)
