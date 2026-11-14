@@ -46,6 +46,8 @@ uv run pytest
 
 For continuous recording with multiple tasks, triple-tap episode boundaries and
 a green review timeline, see [Continuous episodes](docs/continuous-episodes.md).
+For a two-field Windows importer that submits to a Linux server over SSH, see
+[Camera import](docs/camera-import.md).
 
 A capture is one camera's `.insv` pair. A session is the simultaneous captures,
 one per camera, converted into one base recording. The session id names the

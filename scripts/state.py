@@ -86,6 +86,9 @@ class Args:
   # Find that hold within this many seconds after the starting triple.
   episode_hold_window: float = 5.0
 
+  # Explicit hand identity from the importer; otherwise infer it geometrically.
+  left_slot: str | None = None
+
   # The gripper URDF; defaults to the packaged description.
   urdf_path: Path | None = None
 
@@ -421,9 +424,15 @@ def main(args: Args) -> None:
   lap("window")
   with refusing():
     frames = image_frames(times, fps, window)
-  left, right = hand_slots(
-    slots, keyframes, {s: poses.kf_translations_by_slot[s] for s in slots}
-  )
+  left: str | None
+  if args.left_slot is not None:
+    if len(slots) != 2 or args.left_slot not in slots:
+      raise SystemExit("--left-slot must name one of the two camera slots")
+    left, right = args.left_slot, next(s for s in slots if s != args.left_slot)
+  else:
+    left, right = hand_slots(
+      slots, keyframes, {s: poses.kf_translations_by_slot[s] for s in slots}
+    )
   named = f"right {right}" if left is None else f"left {left}, right {right}"
   print(
     f"session {session.session_id}: {layer}, window [{window[0]:.2f}, "
