@@ -110,6 +110,8 @@ visibility must be checked in the video and successful pose estimation.
 The splitter does not concatenate camera-created chapters. If a long recording
 produces multiple INSV pairs per camera, those need separate handling first.
 Check alignment near both ends of long recordings. Start with a 2–3 minute pilot
-containing several episodes, then validate a longer capture. The detector has
-been checked against a real dual-camera capture with strong tap rebounds;
-complete trajectory and dataset export still need validation on reviewed clips.
+containing several episodes, then validate a longer capture. On a real dual-camera
+capture, the fallback matched 23 triples despite ambiguous audio and strong tap
+rebounds. A reviewed episode completed conversion, GPU trajectory estimation and
+state export on Linux. A missing start marker in that capture still required
+video review; this is not a guarantee of automatic segmentation on new recordings.
