@@ -13,6 +13,13 @@ from pathlib import Path
 from typing import Any
 
 NAME = re.compile(r"VID_\d{8}_\d{6}_00_\d+\.insv", re.IGNORECASE)
+DISK_RESERVE = 5 * 1024**3
+
+
+def conversion_space(job: dict[str, Any]) -> int:
+  """Additional free bytes after upload: one base, one lens and working reserve."""
+  sizes = [int(f["size"]) for h in job["hands"].values() for f in h["files"]]
+  return sum(sizes) + max(sizes) + DISK_RESERVE
 
 
 def read_json(path: Path) -> dict[str, Any]:
@@ -227,9 +234,11 @@ def submit(root: Path, name: str, config: dict[str, Any]) -> dict[str, Any]:
     )
     free = int(ssh(config, f"df -B1 --output=avail {config['remote_root']} | tail -1"))
     size = sum(f["size"] for h in job["hands"].values() for f in h["files"])
-    if free < size * 4 + 5 * 1024**3:
+    required = size + conversion_space(job)
+    if free < required:
       raise ValueError(
-        "Server needs at least 4× raw file size + 5 GiB free; no upload started"
+        f"Server needs {required / 1024**3:.1f} GiB free for low-disk processing "
+        f"({free / 1024**3:.1f} GiB available); no upload started"
       )
     # Retry reuses a staging directory; it never overwrites a published remote job.
     incoming = remote + ".uploading"

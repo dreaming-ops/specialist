@@ -26,8 +26,9 @@ def prepare(tmp_path: Path) -> Path:
   return tmp_path / "jobs/take1"
 
 
+@pytest.mark.parametrize("count", [1, 2])
 def test_worker_waits_for_review_then_processes_and_checkpoints(
-  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch, count: int
 ) -> None:
   folder = prepare(tmp_path)
   calls: list[list[str]] = []
@@ -42,10 +43,23 @@ def test_worker_waits_for_review_then_processes_and_checkpoints(
           session_id="session",
           reviewed=False,
           episodes=[
-            dict(episode_id="ep0001", capture_start=3, task_end=12, capture_end=13)
+            dict(
+              episode_id=f"ep{i + 1:04d}",
+              capture_start=3 + i * 20,
+              task_end=12 + i * 20,
+              capture_end=13 + i * 20,
+            )
+            for i in range(count)
           ],
         ),
       )
+      (folder / "output/base").mkdir(parents=True, exist_ok=True)
+      (folder / "output/base/session.rrd").write_bytes(b"review video")
+    elif "--episode-id" in command:
+      identifier = command[command.index("--episode-id") + 1]
+      assert not (folder / "output/base/session.rrd").exists()
+      assert not list((folder / "output/base").glob("*.rrd"))
+      (folder / f"output/base/session_{identifier}.rrd").write_bytes(b"episode video")
 
   monkeypatch.setattr(process_import.subprocess, "run", run)
   monkeypatch.setattr(
@@ -58,6 +72,7 @@ def test_worker_waits_for_review_then_processes_and_checkpoints(
   process_import.process(folder, resume=False)
   assert ingest.read_json(folder / "status.json")["state"] == "awaiting_review"
   assert len(calls) == 1
+  assert (folder / "output/base/session.rrd").exists()
   process_import.process(folder, resume=True)
   assert len(calls) == 1  # --resume cannot bypass unreviewed boundaries.
   manifest = folder / "output/episodes/session.json"
@@ -65,16 +80,17 @@ def test_worker_waits_for_review_then_processes_and_checkpoints(
   data["reviewed"] = True
   ingest.write_json(manifest, data)
   process_import.process(folder, resume=True)
-  assert [c[1] for c in calls] == [
-    "scripts/convert.py",
+  assert [c[1] for c in calls] == ["scripts/convert.py"] + [
     "scripts/convert.py",
     "scripts/estimate.py",
     "scripts/state.py",
-  ]
+  ] * count
   assert calls[-1][calls[-1].index("--left-slot") + 1] == "cam00"
   assert ingest.read_json(folder / "status.json")["state"] == "complete"
   process_import.process(folder, resume=True)
-  assert len(calls) == 4
+  assert len(calls) == 1 + count * 3
+  assert not list((folder / "output/base").glob("*.rrd"))
+  ingest.verify_job(folder, ingest.read_json(folder / "import.json"))
   data["episodes"][0]["task_end"] = 11
   ingest.write_json(manifest, data)
   with pytest.raises(ValueError, match="Boundaries changed"):
@@ -90,3 +106,21 @@ def test_worker_records_corrupt_upload_failure(tmp_path: Path) -> None:
   status = ingest.read_json(folder / "status.json")
   assert status["state"] == "failed"
   assert "verification failed" in status["error"]
+
+
+def test_low_disk_check_stops_before_running_next_stage(
+  tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+  monkeypatch.setattr(
+    process_import.shutil, "disk_usage", lambda _p: SimpleNamespace(free=100)
+  )
+  with pytest.raises(ValueError, match="Free space and resume"):
+    process_import.require_space(tmp_path, 101)
+
+
+def test_cannot_discard_raw_as_generated_base(tmp_path: Path) -> None:
+  raw = tmp_path / "raw.insv"
+  raw.write_bytes(b"keep")
+  with pytest.raises(ValueError, match="outside"):
+    process_import.discard_base(raw, tmp_path / "output")
+  assert raw.read_bytes() == b"keep"

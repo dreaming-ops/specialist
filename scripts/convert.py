@@ -32,7 +32,7 @@ from specialist.record.base import (
   write_base_recording,
 )
 from specialist.record.episodes import write_review
-from specialist.record.video import normalize_h264, video_chunks
+from specialist.record.video import materialized_video, normalize_h264, video_chunks
 
 
 @dataclass
@@ -54,6 +54,12 @@ class Args:
 
   # Export separate bases from a reviewed JSON manifest, preserving telemetry.
   episodes: Path | None = None
+
+  # Export just this reviewed episode, for sequential processing.
+  episode_id: str | None = None
+
+  # Keep only one temporary lens MP4 on disk; compressed chunks live in memory.
+  low_disk: bool = False
 
 
 _CAPTURE_STAMP = re.compile(r"_(\d{8}_\d{6})_")
@@ -102,6 +108,8 @@ def main(args: Args) -> None:
 
   if args.detect_episodes and args.episodes:
     raise SystemExit("choose --detect-episodes or --episodes, not both")
+  if args.episode_id is not None and args.episodes is None:
+    raise SystemExit("--episode-id requires --episodes")
   exports: list[tuple[str, tuple[float, float], Episode | None]] = [
     (session_id, window, None)
   ]
@@ -110,7 +118,10 @@ def main(args: Args) -> None:
     exports = [
       (f"{session_id}_{e.episode_id}", (e.capture_start, e.capture_end), e)
       for e in episodes
+      if args.episode_id is None or e.episode_id == args.episode_id
     ]
+    if not exports:
+      raise SystemExit(f"episode {args.episode_id!r} is not in the reviewed manifest")
   # Preflight all output paths before writing any episode.
   for name, _, _ in exports:
     target = schema.layer_rrd(args.output_dir, schema.BASE, name)
@@ -158,7 +169,11 @@ def main(args: Args) -> None:
     videos = {}
     for master, capture, slot in zip(args.input_insvs, captures, slots, strict=True):
       for lens, src in (("front", master), ("rear", capture.rear_path)):
-        videos[slot, lens] = normalize_h264(src, Path(tmp) / f"{slot}_{lens}.mp4")
+        videos[slot, lens] = (
+          src
+          if args.low_disk
+          else normalize_h264(src, Path(tmp) / f"{slot}_{lens}.mp4")
+        )
     for name, selected, episode in exports:
       video_streams = []
       sidecars = []
@@ -166,6 +181,17 @@ def main(args: Args) -> None:
         args.input_insvs, loaded, slots, offsets, confidences, strict=True
       ):
         for lens in schema.LENSES:
+          if args.low_disk:
+            video_streams.append(
+              materialized_video(
+                videos[slot, lens],
+                Path(tmp) / f"{slot}_{lens}.mp4",
+                schema.video(slot, lens),
+                -offset,
+                selected,
+              )
+            )
+            continue
           video_streams.append(
             video_chunks(
               videos[slot, lens],

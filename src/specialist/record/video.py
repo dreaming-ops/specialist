@@ -37,6 +37,22 @@ def normalize_h264(src: Path, dst: Path) -> Path:
   return dst
 
 
+def materialized_video(
+  src: Path, temporary: Path, entity: str, shift: float, window: tuple[float, float]
+) -> LazyChunkStream:
+  """Read one lens into the converter's chunk store, then release its disk copy.
+
+  The base writer already collects compressed video chunks in memory. Materialize
+  each lens early so no temporary MP4 is needed while writing the final RRD.
+  """
+  try:
+    normalized = normalize_h264(src, temporary)
+    store = video_chunks(normalized, entity, time_shift=shift, window=window).collect()
+    return store.stream()
+  finally:
+    temporary.unlink(missing_ok=True)
+
+
 def _shift_chunk(
   chunk: Chunk,
   shift_ns: int,

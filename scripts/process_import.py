@@ -2,6 +2,8 @@
 
 import argparse
 import os
+import re
+import shutil
 import subprocess
 import sys
 import traceback
@@ -9,7 +11,31 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
-from specialist.ingest import read_json, verify_job, write_json  # noqa: E402
+from specialist.ingest import (  # noqa: E402
+  DISK_RESERVE,
+  conversion_space,
+  read_json,
+  verify_job,
+  write_json,
+)
+
+
+def require_space(folder: Path, required: int) -> None:
+  free = shutil.disk_usage(folder).free
+  if free < required:
+    raise ValueError(
+      f"Need {required / 1024**3:.1f} GiB free for the next stage; "
+      f"only {free / 1024**3:.1f} GiB available. Free space and resume."
+    )
+
+
+def discard_base(path: Path, output: Path) -> None:
+  """Release only a reconstructible generated base, never raw camera data."""
+  if path.parent != output / "base" or not path.resolve().is_relative_to(
+    output.resolve()
+  ):
+    raise ValueError("Refusing to remove a base outside this job's output")
+  path.unlink(missing_ok=True)
 
 
 def process(folder: Path, resume: bool) -> None:
@@ -38,6 +64,8 @@ def process(folder: Path, resume: bool) -> None:
         verify_job(folder, job)
         progress = read_json(progress_path) if progress_path.exists() else {}
         output = folder / "output"
+        temporary = folder / ".tmp"
+        temporary.mkdir(exist_ok=True)
         masters = [
           str(folder / job["hands"][hand]["master"]) for hand in ("left", "right")
         ]
@@ -45,11 +73,21 @@ def process(folder: Path, resume: bool) -> None:
         def run(script: str, *arguments: str) -> None:
           print(f"Running {script}", flush=True)
           subprocess.run(
-            [sys.executable, f"scripts/{script}.py", *arguments], cwd=repo, check=True
+            [sys.executable, f"scripts/{script}.py", *arguments],
+            cwd=repo,
+            check=True,
+            env={**os.environ, "TMPDIR": str(temporary)},
           )
 
-        conversion = ["--input-insvs", *masters, "--output-dir", str(output)]
+        conversion = [
+          "--input-insvs",
+          *masters,
+          "--output-dir",
+          str(output),
+          "--low-disk",
+        ]
         if not progress.get("detected"):
+          require_space(folder, conversion_space(job))
           status("detecting")
           run("convert", *conversion, "--detect-episodes", "--overwrite")
           candidates = list((output / "episodes").glob("*.json"))
@@ -66,6 +104,13 @@ def process(folder: Path, resume: bool) -> None:
             candidates=len(manifest.get("episodes", [])),
           )
           return
+        from specialist_dataset.episodes import read_manifest
+
+        session_id = str(manifest["session_id"])
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", session_id):
+          raise ValueError("Invalid source session ID")
+        # Validate all reviewed paths/ranges before deleting any generated file.
+        read_manifest(manifest_path, session_id, (float("-inf"), float("inf")))
         from specialist.ingest import digest
 
         fingerprint = digest(manifest_path)
@@ -82,15 +127,30 @@ def process(folder: Path, resume: bool) -> None:
             "Boundaries changed after export; create a new job to reprocess"
           )
         if not progress.get("split"):
-          status("splitting")
-          run("convert", *conversion, "--episodes", str(manifest_path), "--overwrite")
           progress.update(split=True, manifest_sha256=fingerprint, completed=[])
           write_json(progress_path, progress)
+        # Full review video is reconstructible from the retained INSV originals.
+        discard_base(output / "base" / f"{session_id}.rrd", output)
         for episode in manifest["episodes"]:
           identifier = episode["episode_id"]
+          base = output / "base" / f"{session_id}_{identifier}.rrd"
           if identifier in progress["completed"]:
+            discard_base(base, output)
             continue
-          base = output / "base" / f"{manifest['session_id']}_{identifier}.rrd"
+          discard_base(base, output)
+          require_space(folder, conversion_space(job))
+          status("splitting", episode=identifier)
+          run(
+            "convert",
+            *conversion,
+            "--episodes",
+            str(manifest_path),
+            "--episode-id",
+            identifier,
+            "--overwrite",
+          )
+          # The solver stages lens video from this one episode's base.
+          require_space(folder, base.stat().st_size + DISK_RESERVE)
           status("estimating", episode=identifier)
           # Default anchor IDs match Specialist's supplied tags.
           run(
@@ -104,6 +164,7 @@ def process(folder: Path, resume: bool) -> None:
             "--overwrite",
           )
           status("writing_state", episode=identifier)
+          require_space(folder, base.stat().st_size + DISK_RESERVE)
           run(
             "state",
             "--base",
@@ -116,6 +177,7 @@ def process(folder: Path, resume: bool) -> None:
           )
           progress["completed"].append(identifier)
           write_json(progress_path, progress)
+          discard_base(base, output)
         status("complete", episodes=len(progress["completed"]), output=str(output))
     except Exception as exc:
       status("failed", error=str(exc), log=str(folder / "worker.log"))

@@ -117,3 +117,14 @@ def test_server_space_gate_runs_before_scp(
   )
   with pytest.raises(ValueError, match="no upload"):
     ingest.submit(root, "take1", config)
+
+
+def test_low_disk_budget_is_derived_from_largest_lens() -> None:
+  job = {
+    "hands": {
+      "left": {"files": [{"size": 30}, {"size": 20}]},
+      "right": {"files": [{"size": 40}, {"size": 10}]},
+    }
+  }
+  # Raw upload is counted separately. Conversion reserves one base and one lens.
+  assert ingest.conversion_space(job) == 100 + 40 + ingest.DISK_RESERVE

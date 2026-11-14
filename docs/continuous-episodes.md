@@ -66,6 +66,10 @@ automatic segmentation or automatic visual verification of tag visibility.
 
 ## Export and process each episode
 
+The SSH import worker uses `--low-disk` and `--episode-id ep0001` to convert one
+episode at a time. It releases the full base after review, and each episode base
+after successful state export. The manual commands below retain bases by default.
+
 ```bash
 uv run python scripts/convert.py \
   --input-insvs path/to/left_00.insv path/to/right_00.insv \
